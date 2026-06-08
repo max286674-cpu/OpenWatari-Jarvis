@@ -13,13 +13,17 @@ the real brain, and barge-in. Run:
 
 from __future__ import annotations
 
-import asyncio
+# Printed BEFORE the heavy pipecat/numpy/onnxruntime import below, so a slow cold
+# start on Windows (antivirus scanning) doesn't look like a freeze.
+print("Jarvis: loading audio stack (first start can take ~15-30s)…", flush=True)
 
-from loguru import logger
+import asyncio  # noqa: E402
+
+from loguru import logger  # noqa: E402
 from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
+from pipecat.workers.runner import WorkerRunner
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
@@ -65,8 +69,10 @@ def build_task() -> PipelineTask:
 
     tts = ElevenLabsTTSService(
         api_key=settings.elevenlabs_api_key,
-        voice_id=settings.elevenlabs_voice_id,
-        model=settings.elevenlabs_model,
+        settings=ElevenLabsTTSService.Settings(
+            voice=settings.elevenlabs_voice_id,
+            model=settings.elevenlabs_model,
+        ),
     )
 
     pipeline = Pipeline(
@@ -87,7 +93,7 @@ async def main() -> None:
         f"TTS={settings.tts_provider.value} voice={settings.elevenlabs_voice_id}"
     )
     logger.info("Speak into the mic — Jarvis will echo you. Ctrl-C to stop.")
-    await PipelineRunner().run(build_task())
+    await WorkerRunner().run(build_task())
 
 
 if __name__ == "__main__":
