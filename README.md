@@ -19,7 +19,31 @@ becomes the fleet. Pipecat is the voice shell; **Jarvis is the mind; OpenClaw is
 ## Voice stack
 - **TTS:** ElevenLabs (streaming) for the chosen Jarvis voice; Piper/Kokoro local fallback.
 - **STT:** Deepgram (streaming, accurate) by default; faster-whisper / Moonshine local fallback.
-- **Wake word:** openWakeWord "hey jarvis" (CPU).
+- **Wake words:** see below (local, CPU).
+
+## Wake words (Alex's required set — do not drop any)
+Jarvis must wake on **any** of these:
+
+| Phrase | Engine status |
+|---|---|
+| **jarvis** | ✅ live now (openWakeWord `hey_jarvis`; also built-in in Porcupine) |
+| **alfred** | ⏳ custom — needs Porcupine `.ppn` or a trained openWakeWord model |
+| **robbin** | ⏳ custom |
+| **assist** | ⏳ custom |
+| **time to work** | ⏳ custom (multi-word) |
+| **wake up** | ⏳ custom (multi-word) |
+| **six-one-nine** | ⏳ custom (multi-word) |
+
+openWakeWord only ships ~6 pretrained models (only "jarvis" matches). The full custom set is
+best done with **Picovoice Porcupine** (local, instant custom keywords, free for personal use) —
+wired behind `JARVIS_WAKE_WORD_ENGINE=porcupine` once a Picovoice AccessKey + `.ppn` files exist.
+The desired list lives in `JARVIS_WAKE_WORDS` and is enforced here so none are forgotten.
+
+## Barge-in (interrupting Jarvis on speakers)
+Alex uses open speakers and wants to talk over Jarvis → requires **acoustic echo cancellation**.
+The only AEC in Pipecat is **Krisp** (paid `krisp_audio` SDK + dev account + `.kef` model + API key
+from krisp.ai/developers). Wired behind `audio_in_filter` once that key exists. Until then the
+`HalfDuplexGate` mutes the mic while Jarvis speaks (no self-hearing, but no barge-in yet).
 
 ## Setup
 ```bash

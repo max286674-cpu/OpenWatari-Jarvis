@@ -26,7 +26,7 @@ from pipecat.workers.runner import WorkerRunner  # noqa: E402
 from jarvis.config import settings  # noqa: E402
 from jarvis.edge.audio_gate import HalfDuplexGate  # noqa: E402
 from jarvis.edge.echo_brain import EchoBrain  # noqa: E402
-from jarvis.edge.wake_word import WakeWordGate  # noqa: E402
+from jarvis.edge.wake_word import WakeWordGate, resolve_openwakeword_models  # noqa: E402
 
 
 def build_worker() -> PipelineWorker:
@@ -54,13 +54,21 @@ def build_worker() -> PipelineWorker:
 
     stages: list = [transport.input()]
     if settings.wake_word_enabled:
-        stages.append(
-            WakeWordGate(
-                model_name=settings.wake_word_model,
-                threshold=settings.wake_word_threshold,
-                listen_window_s=settings.wake_listen_window_s,
+        models, pending = resolve_openwakeword_models(settings.wake_words_list)
+        if pending:
+            logger.warning(
+                f"wake words pending custom engine (Porcupine/training): {pending}"
             )
-        )
+        if models:
+            stages.append(
+                WakeWordGate(
+                    models=models,
+                    threshold=settings.wake_word_threshold,
+                    listen_window_s=settings.wake_listen_window_s,
+                )
+            )
+        else:
+            logger.warning("no loadable wake words — mic ungated (open)")
     if settings.half_duplex:
         stages.append(HalfDuplexGate())
     stages += [stt, EchoBrain(), tts, transport.output()]
