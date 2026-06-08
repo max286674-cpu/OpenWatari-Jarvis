@@ -24,6 +24,7 @@ from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransp
 from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
 from jarvis.config import settings  # noqa: E402
+from jarvis.edge.audio_devices import resolve_output_index  # noqa: E402
 from jarvis.edge.audio_gate import HalfDuplexGate  # noqa: E402
 from jarvis.edge.echo_brain import EchoBrain  # noqa: E402
 from jarvis.edge.wake_word import WakeWordGate, resolve_openwakeword_models  # noqa: E402
@@ -36,13 +37,17 @@ def build_worker() -> PipelineWorker:
     if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
         raise RuntimeError("ElevenLabs api key / voice id not set (.env)")
 
-    transport = LocalAudioTransport(
-        LocalAudioTransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            audio_in_sample_rate=16000,  # 16k for openWakeWord + Deepgram
-        )
+    # Resolve which speaker/headphone Jarvis plays through (config or saved voice pref).
+    out_index, out_label = resolve_output_index(settings.audio_output_device)
+    logger.info(f"audio output -> {out_label} (index {out_index})")
+    params = LocalAudioTransportParams(
+        audio_in_enabled=True,
+        audio_out_enabled=True,
+        audio_in_sample_rate=16000,  # 16k for openWakeWord + Deepgram
     )
+    if out_index is not None:
+        params.output_device_index = out_index
+    transport = LocalAudioTransport(params)
     stt = DeepgramSTTService(api_key=settings.deepgram_api_key)
     tts = ElevenLabsTTSService(
         api_key=settings.elevenlabs_api_key,

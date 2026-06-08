@@ -1,11 +1,11 @@
 """WakeWordGate — true always-listening, directed-only, multi-wake-word.
 
 Audio is analysed **locally** by openWakeWord and is NOT forwarded to the (cloud) STT
-until one of Alex's wake words is heard. After a wake, a listening window opens so a
+until one of Vazghen's wake words is heard. After a wake, a listening window opens so a
 command — and short follow-ups after Jarvis replies — flow through. The window closes on
 silence, so ambient speech/media is ignored. Keeps Deepgram engaged only when addressed.
 
-Alex's required wake set (see README): jarvis, alfred, robbin, assist, time to work,
+Vazghen's required wake set (see README): jarvis, alfred, robbin, assist, time to work,
 wake up, six-one-nine. openWakeWord only ships pretrained models for a few phrases, so only
 the resolvable ones load here; the rest are reported as pending (Porcupine path). The engine
 is pluggable via ``JARVIS_WAKE_WORD_ENGINE``.

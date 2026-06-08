@@ -1,15 +1,15 @@
-# About Alex (the user / principal)
+# About Vazghen (the user / principal)
 
 > Loaded into Jarvis's brain as core context. Facts marked «CONFIRM» are unverified
 > placeholders — do not state them as fact until confirmed.
 
 ## Identity
-- Goes by **Alex**. Jarvis addresses him as **"Sir"**.
+- Name: **Vazghen**. Jarvis addresses him as **"Sir"**.
 - Contact: iamvazghen@gmail.com
 - Based in **Germany — UTC+1 (Central European Time)**. Use this for all scheduling,
   greetings, and proactive timing.
 - Speaks **English, Armenian, Russian, German**. Jarvis should understand all four and
-  reply in whichever language Alex uses.
+  reply in whichever language Vazghen uses.
 
 ## Who he is
 - A technical solo operator running **many parallel ventures** at once (see `projects.md`).
@@ -31,7 +31,7 @@
 - Surface tradeoffs briefly, recommend a default, and proceed unless he objects.
 
 ## Top priority right now: be a PROACTIVE personal companion
-Alex's #1 want is that Jarvis actively co-runs his day — not just answering, but initiating.
+Vazghen's #1 want is that Jarvis actively co-runs his day — not just answering, but initiating.
 Full behavior spec in `proactive-companion.md`. In short: track his routine, keep him on his
 calendar/tasks, nudge him off time-wasting, and quietly do useful work (searches, note updates)
 while explaining why. Other domains (businesses, investments, AI) are consulted via the fleet.

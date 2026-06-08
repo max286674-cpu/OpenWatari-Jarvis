@@ -21,7 +21,7 @@ becomes the fleet. Pipecat is the voice shell; **Jarvis is the mind; OpenClaw is
 - **STT:** Deepgram (streaming, accurate) by default; faster-whisper / Moonshine local fallback.
 - **Wake words:** see below (local, CPU).
 
-## Wake words (Alex's required set — do not drop any)
+## Wake words (Vazghen's required set — do not drop any)
 Jarvis must wake on **any** of these:
 
 | Phrase | Engine status |
@@ -40,10 +40,28 @@ wired behind `JARVIS_WAKE_WORD_ENGINE=porcupine` once a Picovoice AccessKey + `.
 The desired list lives in `JARVIS_WAKE_WORDS` and is enforced here so none are forgotten.
 
 ## Barge-in (interrupting Jarvis on speakers)
-Alex uses open speakers and wants to talk over Jarvis → requires **acoustic echo cancellation**.
+Vazghen uses open speakers and wants to talk over Jarvis → requires **acoustic echo cancellation**.
 The only AEC in Pipecat is **Krisp** (paid `krisp_audio` SDK + dev account + `.kef` model + API key
 from krisp.ai/developers). Wired behind `audio_in_filter` once that key exists. Until then the
 `HalfDuplexGate` mutes the mic while Jarvis speaks (no self-hearing, but no barge-in yet).
+
+## Audio output: speakers ↔ headphones (incl. AirPods Pro Max)
+Jarvis can play through the laptop speakers or your headphones, switchable by voice.
+
+```bash
+uv run python bench/list_audio_devices.py          # see devices + how Jarvis resolves them
+uv run python -m jarvis.edge.switch_audio headphones
+uv run python -m jarvis.edge.switch_audio speakers
+```
+
+**AirPods Pro Max — realistic answer:** yes, for *output*. On Windows they pair as a *generic*
+Bluetooth device (no Apple SDK), appearing as two endpoints: "Headphones (… Stereo)" = A2DP,
+high-quality playback; "Headset (… Hands-Free)" = HFP, bidirectional but telephone-grade. Jarvis
+routes **output** to the A2DP endpoint and keeps the **laptop mic for input** — because using the
+AirPods as the mic forces the whole link down to low-quality HFP (you can't have HQ playback + the
+AirPods mic at the same time). The `switch_audio` preference is honored when the edge worker
+(re)starts; the live in-conversation voice toggle is registered as a brain tool in Phase 2.
+Set a fixed default with `JARVIS_AUDIO_OUTPUT_DEVICE` in `.env`.
 
 ## Setup
 ```bash

@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # --- Wake word ----------------------------------------------------------------------
     wake_word_enabled: bool = True
     wake_word_engine: str = "openwakeword"   # openwakeword (now) | porcupine (custom phrases)
-    # Alex's required wake set. Only phrases with a pretrained openWakeWord model load today
+    # Vazghen's required wake set. Only phrases with a pretrained openWakeWord model load today
     # (currently just "jarvis"); the rest are pending the Porcupine path (see README).
     wake_words: str = "jarvis,alfred,robbin,assist,time to work,wake up,six-one-nine"
     wake_word_threshold: float = 0.5
@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     deepgram_api_key: str | None = None
     deepgram_model: str = "nova-3"
     deepgram_language: str = "en"
+
+    # --- Audio routing (speakers <-> headphones / AirPods) ------------------------------
+    # Output target: a name fragment or alias ("speakers", "headphones", "airpods") or a
+    # numeric device index. None = OS default. A saved voice-command preference overrides
+    # this at startup (see edge/audio_devices.py). Input stays on the laptop mic by default
+    # so Bluetooth stays in high-quality A2DP output mode (using AirPods as mic forces HFP).
+    audio_output_device: str | None = None
+    audio_input_device: str | None = None
 
     # --- Local engine assets (used when provider == local) ------------------------------
     whisper_model: str = "base"           # faster-whisper size; "small" for more accuracy

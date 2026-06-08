@@ -1,4 +1,4 @@
-# Alex's projects & ventures
+# Vazghen's projects & ventures
 
 > Context for Jarvis. Each maps (roughly) to an OpenClaw domain agent he can consult
 > via ispir (see `openclaw-fleet.md`). Details marked «CONFIRM» need verification.
@@ -6,7 +6,7 @@
 ## AI / software
 - **Jarvis** (this project, `C:\Jarvis`) — 24/7 local-first voice assistant. Jarvis's own brain
   + the OpenClaw fleet as a tool. Replaces the abandoned `D:\JARVIS` / `C:\openjarvis`.
-- **OpenClaw fleet** — 8 domain agents on VPS `100.107.141.83` (router = ispir). Alex's
+- **OpenClaw fleet** — 8 domain agents on VPS `100.107.141.83` (router = ispir). Vazghen's
   autonomous "team". Jarvis delegates deep work to it.
 - **Coding projects** — general software/automation work.
 

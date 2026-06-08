@@ -28,16 +28,16 @@ Legend: ✅ done & verified end-to-end · 🟡 in progress · ⬜ not started
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 — Scaffolding & hello-voice | ✅ | `python -m jarvis.edge.hello_voice`: mic→Deepgram STT→echo→ElevenLabs voice→speaker; cold-start msg; self-hearing fixed via `HalfDuplexGate`; **user-confirmed working** |
-| 1 — Local always-listening loop | 🟡 | **wake word "hey jarvis" built + startup-verified** (openWakeWord, 16× realtime on CPU, audio stays local until woken; `jarvis.edge.assistant`) — awaiting Alex's live voice test. VAD/SmartTurn (bundled, CPU) + AEC/barge-in pending the headphones-vs-speakers decision |
+| 1 — Local always-listening loop | 🟡 | **wake word "hey jarvis" built + startup-verified** (openWakeWord, 16× realtime on CPU, audio stays local until woken; `jarvis.edge.assistant`) — awaiting Vazghen's live voice test. VAD/SmartTurn (bundled, CPU) + AEC/barge-in pending the headphones-vs-speakers decision |
 | 2 — Jarvis's own brain + OpenClaw tool | ⬜ | own agent loop (llama-3.3-70b + fallbacks) + personality + memory; OpenClaw via ispir as a tool |
 | 3 — Knowledge & channels | ⬜ | Obsidian vault MCP · Telegram · Browserbase |
 | 4 — Proactivity & 24/7 | ⬜ | scheduler · ntfy · background services |
 | 5 — Identity & benchmarks | ⬜ | speaker biometrics · TTFW/VAQI |
 | 6 — Multi-device | ⬜ | Android/Termux · iPhone · Mentra glasses |
 
-**Brain-context** (`personality/jarvis.md` + `memory/*.md`): ✅ about-alex (Sir · Germany UTC+1 · EN/HY/RU/DE) · projects · openclaw-fleet · environment · **proactive-companion**.
+**Brain-context** (`personality/jarvis.md` + `memory/*.md`): ✅ about-vazghen (Sir · Germany UTC+1 · EN/HY/RU/DE) · projects · openclaw-fleet · environment · **proactive-companion**.
 
-> **Proactive companion is Alex's #1 priority** (`memory/proactive-companion.md`): track routine
+> **Proactive companion is Vazghen's #1 priority** (`memory/proactive-companion.md`): track routine
 > (wake/training), calendar + task nudges, anti-distraction interventions, and autonomous
 > search/note actions with reported purpose. This concretizes Phase 3 (calendar/Notion/vault MCP +
 > activity awareness) and Phase 4 (proactive scheduler + nudge channel + routine memory). Open
