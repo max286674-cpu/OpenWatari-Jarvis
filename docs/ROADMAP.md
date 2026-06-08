@@ -35,7 +35,13 @@ Legend: ✅ done & verified end-to-end · 🟡 in progress · ⬜ not started
 | 5 — Identity & benchmarks | ⬜ | speaker biometrics · TTFW/VAQI |
 | 6 — Multi-device | ⬜ | Android/Termux · iPhone · Mentra glasses |
 
-**Brain-context** (`personality/jarvis.md` + `memory/*.md`): 🟡 about-alex · projects · openclaw-fleet · environment.
+**Brain-context** (`personality/jarvis.md` + `memory/*.md`): ✅ about-alex (Sir · Germany UTC+1 · EN/HY/RU/DE) · projects · openclaw-fleet · environment · **proactive-companion**.
+
+> **Proactive companion is Alex's #1 priority** (`memory/proactive-companion.md`): track routine
+> (wake/training), calendar + task nudges, anti-distraction interventions, and autonomous
+> search/note actions with reported purpose. This concretizes Phase 3 (calendar/Notion/vault MCP +
+> activity awareness) and Phase 4 (proactive scheduler + nudge channel + routine memory). Open
+> «CONFIRM»: calendar provider, Notion task DB, local activity-monitoring scope.
 
 ---
 
