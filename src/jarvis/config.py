@@ -26,9 +26,15 @@ class TTSProvider(str, Enum):
 
 
 class LLMBackend(str, Enum):
-    openclaw = "openclaw"      # delegate to the existing 8-agent fleet via Gateway
-    freellmapi = "freellmapi"  # direct answer via the free OpenAI-compatible proxy
+    """The model that powers Jarvis's OWN brain / reasoning.
+
+    OpenClaw is deliberately NOT in this enum: it is an external team Jarvis can
+    consult, not the engine of his mind. Jarvis always thinks and speaks as himself.
+    """
+
+    freellmapi = "freellmapi"  # default — free OpenAI-compatible proxy (on the VPS)
     ollama = "ollama"          # fully-offline local model
+    openai = "openai"          # any OpenAI-compatible endpoint
 
 
 class Settings(BaseSettings):
@@ -39,7 +45,7 @@ class Settings(BaseSettings):
     # --- Provider selection (the three knobs that define a deployment) -------------------
     stt_provider: STTProvider = STTProvider.deepgram
     tts_provider: TTSProvider = TTSProvider.elevenlabs
-    llm_backend: LLMBackend = LLMBackend.openclaw
+    llm_backend: LLMBackend = LLMBackend.freellmapi   # Jarvis's OWN reasoning model
 
     # --- Wake word ----------------------------------------------------------------------
     wake_word_enabled: bool = True
@@ -63,19 +69,34 @@ class Settings(BaseSettings):
     kokoro_voice: str = "am_adam"
 
     # --- Brain / orchestrator -----------------------------------------------------------
-    brain_ws_url: str = "ws://127.0.0.1:8770/voice"   # edge -> brain socket
-    brain_host: str = "0.0.0.0"
-    brain_port: int = 8770
+    brain_ws_url: str = "ws://127.0.0.1:8765/voice"   # edge -> brain socket
+    brain_host: str = "127.0.0.1"
+    brain_port: int = 8765
+    api_auth_token: str | None = None                 # empty = loopback-only, no auth
 
-    # OpenClaw Gateway (existing fleet) — the actual "agent brain"
-    openclaw_gateway_url: str = "http://127.0.0.1:8800"
-    openclaw_gateway_token: str | None = None
+    # OpenClaw Gateway (existing fleet) — an EXTERNAL team Jarvis can DELEGATE to, by
+    # messaging ispir through the gateway. It is ONE of Jarvis's tools, not his brain.
+    openclaw_delegation_enabled: bool = True
+    openclaw_gateway_url: str = "http://100.107.141.83:3200"
+    openclaw_token: str | None = None
+    openclaw_remote_token: str | None = None
+    openclaw_gateway_password: str | None = None
     openclaw_router_agent: str = "ispir"
+    openclaw_request_timeout_seconds: int = 30
 
-    # freellmapi proxy (direct-answer LLM, runs on the VPS)
-    freellmapi_base_url: str = "http://127.0.0.1:3001/v1"
+    # freellmapi proxy — Jarvis's OWN reasoning LLM (runs on the VPS, tunneled to localhost).
+    freellmapi_base_url: str = "http://localhost:3001/v1"
     freellmapi_api_key: str | None = None
-    freellmapi_model: str = "default"
+    # Primary + ordered fallbacks (rate-limit/error -> next model). See bench/llm_bench.py.
+    llm_primary_model: str = "llama-3.3-70b-versatile"
+    llm_fallback_models: str = "llama-3.1-8b-instant,groq/compound,mistral-small-latest,openai/gpt-oss-20b:free"
+    llm_request_timeout_seconds: int = 60
+
+    # --- Channels & knowledge -----------------------------------------------------------
+    telegram_bot_token: str | None = None
+    telegram_allowed_users: str | None = None
+    vault_path: str | None = None
+    audit_log_dir: str | None = None
 
     # --- Latency / behaviour ------------------------------------------------------------
     directed_only: bool = True            # ignore ambient speech & own playback
@@ -88,6 +109,15 @@ class Settings(BaseSettings):
             self.stt_provider == STTProvider.deepgram
             or self.tts_provider == TTSProvider.elevenlabs
         )
+
+    @property
+    def llm_chain(self) -> list[str]:
+        """Primary model first, then ordered fallbacks (deduped, blanks dropped)."""
+        chain = [self.llm_primary_model] + [
+            m.strip() for m in self.llm_fallback_models.split(",") if m.strip()
+        ]
+        seen: set[str] = set()
+        return [m for m in chain if not (m in seen or seen.add(m))]
 
 
 settings = Settings()

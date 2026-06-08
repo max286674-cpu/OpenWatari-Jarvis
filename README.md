@@ -5,13 +5,16 @@ A 24/7, voice-first, local-first living assistant.
 - **Edge** (`src/jarvis/edge`) — a [Pipecat](https://github.com/pipecat-ai/pipecat)
   voice pipeline that runs on the local PC: wake word → VAD → STT → TTS, with
   streaming and barge-in. The "LLM" slot is a thin `BrainBridge` that talks to the brain.
-- **Brain** (`src/jarvis/brain`) — a FastAPI orchestrator that runs 24/7 on the VPS.
-  It answers simple things directly (freellmapi) and delegates real work to the existing
-  **OpenClaw 8-agent fleet** (Gateway `agent` + `agent.wait`). It also owns the proactive
-  scheduler and the Telegram / MCP channels.
+- **Brain** (`src/jarvis/brain`) — Jarvis's **own** agent, running 24/7 on the VPS: his own
+  reasoning LLM (freellmapi), his own memory, his own personality, and his own tool-calling
+  loop. He reasons and answers as himself first. It also owns the proactive scheduler and
+  the Telegram / MCP channels.
 
-The brain is **not** a new agent framework — Jarvis's "agent brain" *is* the OpenClaw fleet,
-reached over a WebSocket. Pipecat is the voice shell; OpenClaw is the mind.
+**Jarvis and OpenClaw are separate.** Jarvis has his own brain. The **OpenClaw 8-agent fleet**
+is an *external team of specialists* Jarvis can **consult** — one tool among many — by messaging
+`ispir` through the Gateway (`agent` + `agent.wait`) when a task needs deep domain work. When he
+relays a specialist's result, he stays Jarvis and re-voices it in his own persona; he never
+becomes the fleet. Pipecat is the voice shell; **Jarvis is the mind; OpenClaw is a resource.**
 
 ## Voice stack
 - **TTS:** ElevenLabs (streaming) for the chosen Jarvis voice; Piper/Kokoro local fallback.
