@@ -1,0 +1,56 @@
+[project]
+name = "jarvis"
+version = "0.0.1"
+description = "Jarvis — a 24/7 local-first, voice-first living assistant (Pipecat edge + OpenClaw brain)"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# Base deps shared by edge + brain. Provider-specific heavy deps live in optional groups
+# so a CPU-only edge install doesn't pull GPU/cloud stacks it won't use.
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+# The real-time voice pipeline (edge). Pinned in Phase 0; providers added per-phase.
+edge = [
+    "pipecat-ai[silero,webrtc]>=0.0.90",
+    "textual>=0.79",
+]
+# Cloud voice providers (default for quality per user decision): ElevenLabs TTS + Deepgram STT.
+cloud-voice = [
+    "pipecat-ai[elevenlabs,deepgram]>=0.0.90",
+]
+# Local CPU-friendly fallbacks (Phase 1): wake word + local STT/TTS.
+local-voice = [
+    "openwakeword>=0.6",
+    "pipecat-ai[moonshine,whisper,piper]>=0.0.90",
+    "kokoro-onnx>=0.4",
+]
+# The 24/7 orchestrator (brain): FastAPI + OpenClaw bridge + scheduler + channels.
+brain = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "websockets>=12.0",
+    "httpx>=0.27",
+    "apscheduler>=3.10",
+]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jarvis"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
