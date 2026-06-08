@@ -22,14 +22,15 @@ import asyncio  # noqa: E402
 from loguru import logger  # noqa: E402
 from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.task import PipelineTask
-from pipecat.workers.runner import WorkerRunner
+from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+from pipecat.workers.runner import WorkerRunner
 
 from jarvis.config import settings
+from jarvis.edge.audio_gate import HalfDuplexGate
 
 
 class EchoBrain(FrameProcessor):
@@ -51,7 +52,7 @@ class EchoBrain(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def build_task() -> PipelineTask:
+def build_worker() -> PipelineWorker:
     """Assemble the Phase-0 pipeline. Construction only — no audio I/O until run."""
     if not settings.deepgram_api_key:
         raise RuntimeError("JARVIS_DEEPGRAM_API_KEY is not set (.env)")
@@ -78,13 +79,14 @@ def build_task() -> PipelineTask:
     pipeline = Pipeline(
         [
             transport.input(),   # mic
+            HalfDuplexGate(),    # drop mic audio while Jarvis speaks (no self-hearing)
             stt,                 # speech -> text
             EchoBrain(),         # stand-in brain
             tts,                 # text -> Jarvis's voice
             transport.output(),  # speaker
         ]
     )
-    return PipelineTask(pipeline)
+    return PipelineWorker(pipeline)
 
 
 async def main() -> None:
@@ -93,7 +95,9 @@ async def main() -> None:
         f"TTS={settings.tts_provider.value} voice={settings.elevenlabs_voice_id}"
     )
     logger.info("Speak into the mic — Jarvis will echo you. Ctrl-C to stop.")
-    await WorkerRunner().run(build_task())
+    runner = WorkerRunner()
+    await runner.add_workers(build_worker())
+    await runner.run()
 
 
 if __name__ == "__main__":
