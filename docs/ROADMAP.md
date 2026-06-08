@@ -21,6 +21,24 @@ The previous JARVIS (`D:\JARVIS`, Tauri+SvelteKit+FastAPI) and `C:\openjarvis` a
 
 ---
 
+## Build Status (updated 2026-06-08)
+
+Legend: ✅ done & verified end-to-end · 🟡 in progress · ⬜ not started
+
+| Phase | Status | Evidence |
+|---|---|---|
+| 0 — Scaffolding & hello-voice | ✅ | `python -m jarvis.edge.hello_voice`: mic→Deepgram STT→echo→ElevenLabs voice→speaker; cold-start msg; self-hearing fixed via `HalfDuplexGate`; **user-confirmed working** |
+| 1 — Local always-listening loop | 🟡 | wake word "hey jarvis" + Silero VAD + SmartTurn + AEC/barge-in |
+| 2 — Jarvis's own brain + OpenClaw tool | ⬜ | own agent loop (llama-3.3-70b + fallbacks) + personality + memory; OpenClaw via ispir as a tool |
+| 3 — Knowledge & channels | ⬜ | Obsidian vault MCP · Telegram · Browserbase |
+| 4 — Proactivity & 24/7 | ⬜ | scheduler · ntfy · background services |
+| 5 — Identity & benchmarks | ⬜ | speaker biometrics · TTFW/VAQI |
+| 6 — Multi-device | ⬜ | Android/Termux · iPhone · Mentra glasses |
+
+**Brain-context** (`personality/jarvis.md` + `memory/*.md`): 🟡 about-alex · projects · openclaw-fleet · environment.
+
+---
+
 ## Target Architecture
 
 Two cooperating processes, one shared protocol:
@@ -92,7 +110,7 @@ jarvis/
 
 Each phase ships a runnable deliverable + a concrete verification. Phases are ~1–2 weeks each solo.
 
-### Phase 0 — Scaffolding & "hello voice" (Week 1)
+### Phase 0 — Scaffolding & "hello voice" (Week 1) — ✅ DONE
 - Create monorepo + `uv` env; pin `pipecat-ai`. Config via `pydantic-settings` + `.env` with provider flags (`stt_provider`, `tts_provider`, `llm_backend`).
 - Minimal Pipecat pipeline, **CLI only**: Mic → STT → echo transcript → TTS → speaker. Start with cloud STT/TTS just to prove the pipe, then swap to local in Phase 1.
 - `textual` TUI panel showing live transcript + pipeline state.
