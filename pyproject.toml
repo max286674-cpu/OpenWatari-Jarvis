@@ -30,8 +30,10 @@ local-voice = [
     "pipecat-ai[moonshine,whisper,piper]>=0.0.90",
     "kokoro-onnx>=0.4",
 ]
-# The 24/7 orchestrator (brain): FastAPI + OpenClaw bridge + scheduler + channels.
+# The 24/7 orchestrator (brain): own LLM + FastAPI + OpenClaw bridge + scheduler + channels.
 brain = [
+    "openai>=1.40",            # OpenAI-compatible client -> freellmapi (Jarvis's own LLM)
+    "tzdata>=2024.1",          # IANA tz db (Windows has none) for Europe/Berlin scheduling
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",

@@ -1,9 +1,10 @@
-"""Phase 1 — wake-word assistant (still EchoBrain until Phase 2).
+"""Phase 2 — wake-word assistant with Jarvis's real brain.
 
     mic -> WakeWordGate("Hey Jarvis") -> HalfDuplexGate -> Deepgram STT
-        -> EchoBrain -> ElevenLabs TTS -> speaker
+        -> JarvisBrain (own LLM + personality + memory + tools) -> ElevenLabs TTS -> speaker
 
-Now it only responds after "Hey Jarvis" and ignores ambient speech / its own playback.
+It responds only after a wake word, ignores ambient speech / its own playback, reasons as
+Jarvis using his memory, and can consult the OpenClaw fleet as a tool (once authorized).
 Run:
 
     uv run python -m jarvis.edge.assistant
@@ -26,12 +27,12 @@ from pipecat.workers.runner import WorkerRunner  # noqa: E402
 from jarvis.config import settings  # noqa: E402
 from jarvis.edge.audio_devices import resolve_output_index  # noqa: E402
 from jarvis.edge.audio_gate import HalfDuplexGate  # noqa: E402
-from jarvis.edge.echo_brain import EchoBrain  # noqa: E402
+from jarvis.edge.brain_bridge import JarvisBrain  # noqa: E402
 from jarvis.edge.wake_word import WakeWordGate, resolve_openwakeword_models  # noqa: E402
 
 
-def build_worker() -> PipelineWorker:
-    """Assemble the Phase-1 pipeline. Construction loads the wake-word model."""
+def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
+    """Assemble the pipeline. Construction loads the wake-word model + Jarvis's brain."""
     if not settings.deepgram_api_key:
         raise RuntimeError("JARVIS_DEEPGRAM_API_KEY is not set (.env)")
     if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
@@ -76,7 +77,7 @@ def build_worker() -> PipelineWorker:
             logger.warning("no loadable wake words — mic ungated (open)")
     if settings.half_duplex:
         stages.append(HalfDuplexGate())
-    stages += [stt, EchoBrain(), tts, transport.output()]
+    stages += [stt, brain or JarvisBrain(), tts, transport.output()]
 
     return PipelineWorker(Pipeline(stages))
 
@@ -88,8 +89,10 @@ async def main() -> None:
         f"TTS={settings.tts_provider.value}"
     )
     logger.info('Say "Hey Jarvis", then your command. Ambient speech is ignored. Ctrl-C to stop.')
+    brain = JarvisBrain()
+    await brain.warmup()  # prime the LLM so the first reply isn't a cold ~3s TTFT
     runner = WorkerRunner()
-    await runner.add_workers(build_worker())
+    await runner.add_workers(build_worker(brain))
     await runner.run()
 
 

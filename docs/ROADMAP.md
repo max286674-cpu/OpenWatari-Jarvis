@@ -29,7 +29,7 @@ Legend: ✅ done & verified end-to-end · 🟡 in progress · ⬜ not started
 |---|---|---|
 | 0 — Scaffolding & hello-voice | ✅ | `python -m jarvis.edge.hello_voice`: mic→Deepgram STT→echo→ElevenLabs voice→speaker; cold-start msg; self-hearing fixed via `HalfDuplexGate`; **user-confirmed working** |
 | 1 — Local always-listening loop | 🟡 | **wake word "hey jarvis" built + startup-verified** (openWakeWord, 16× realtime on CPU, audio stays local until woken; `jarvis.edge.assistant`) — awaiting Vazghen's live voice test. VAD/SmartTurn (bundled, CPU) + AEC/barge-in pending the headphones-vs-speakers decision |
-| 2 — Jarvis's own brain + OpenClaw tool | ⬜ | own agent loop (llama-3.3-70b + fallbacks) + personality + memory; OpenClaw via ispir as a tool |
+| 2 — Jarvis's own brain + OpenClaw tool | 🟡 | **own brain working & tested in-process** (`brain/`: LLMClient w/ failover, context loader, JarvisAgent tool-loop, warmup; wired into edge via `JarvisBrain`). Verified: direct reasoning grounded in memory (468ms warm), `get_time` tool, session recall, graceful fleet-gating. **OpenClaw transport fully mapped** (gateway `/ws` req-frame protocol) but a live connect needs Vazghen's authorization (shared infra) — `fleet.delegate_to_fleet` ready, gated off by default. Pending: WS-split to VPS brain service (Phase 4), live fleet auth |
 | 3 — Knowledge & channels | ⬜ | Obsidian vault MCP · Telegram · Browserbase |
 | 4 — Proactivity & 24/7 | ⬜ | scheduler · ntfy · background services |
 | 5 — Identity & benchmarks | ⬜ | speaker biometrics · TTFW/VAQI |
