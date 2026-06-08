@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     wake_word_enabled: bool = True
     wake_word_model: str = "hey_jarvis"   # openWakeWord bundled model
     wake_word_threshold: float = 0.5
+    wake_listen_window_s: float = 8.0     # how long the mic stays open after a wake/reply
+    half_duplex: bool = True              # mute mic while Jarvis speaks (no self-hearing);
+    #                                       set false only with headphones to allow barge-in
 
     # --- ElevenLabs (the Jarvis voice) --------------------------------------------------
     elevenlabs_api_key: str | None = None
