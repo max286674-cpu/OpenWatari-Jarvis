@@ -461,41 +461,23 @@ It gets much more useful **after** step 4 (calendar = the richest signal). Contr
 briefing" any time. **Verify:** with it on, leave the brain running — within a tick (5 min) of a
 real signal (e.g. an imminent calendar event) he'll speak up, or push to your phone if you're away.
 
-## 9. Phase 13 — GitHub repo + token, so Jarvis can self-improve (push) (~10 min)
+## 9. Phase 13 — GitHub repo (ALREADY DONE) + self-improvement loop
 
-**Why:** Jarvis can already read/edit his own code, run the suite, and make **reversible local
-commits** (no setup needed — he has no power to reset/force-push/rewrite history; a revert is always
-a new commit). To let him **push** those commits to a remote backup/repo, you give him a GitHub repo
-and a scoped token. He commits to GitHub; you can roll back anything from history.
+**✅ The repo is created, private, and pushed for you:**
+**https://github.com/iamvazghen/jarvis-companion** — the `origin` remote is set and the full
+Phase 0–13 codebase is on `master`. (I used a distinct name because your existing `iamvazghen/JARVIS`
+repo is the abandoned Tauri legacy — this rebuild lives at `jarvis-companion`.) The `.gitignore` keeps
+`.env`, sessions, `voiceprint.json`, `audit/`, `backups/` and his private memory **out** of git;
+I verified no secret is on the remote.
 
-**A baseline commit already exists** — I committed the full Phase 0–13 codebase locally as the
-starting point, with a hardened `.gitignore` that keeps `.env`, sessions, `voiceprint.json`,
-`audit/`, `backups/` and his private memory **out** of git. Verify: `git log --oneline -1`.
+**Nothing more is required for him to push** — your machine's `gh` credential helper authorises
+`git push origin` already (that's how I pushed). Jarvis's `git_push` tool will use it.
 
-**Step A — create the repo (in the browser):**
-1. https://github.com/new → name it e.g. `jarvis` → **Private** (it contains personal context) →
-   **don't** add a README/.gitignore (the repo already has history) → Create.
-
-**Step B — create a fine-grained Personal Access Token:**
-1. https://github.com/settings/tokens?type=beta → **Generate new token**.
-2. **Resource owner** = you; **Repository access** → **Only select repositories** → pick `jarvis`.
-3. **Permissions → Repository → Contents → Read and write** (that's all he needs to push). Generate,
-   copy the token (starts `github_pat_…`).
-
-**Step C — wire the remote (on the laptop, one time):**
-```powershell
-git -C C:\Jarvis remote add origin https://<PASTE_TOKEN>@github.com/<your-username>/jarvis.git
-git -C C:\Jarvis push -u origin master
-```
-(Embedding the token in the remote URL is the simplest PAT push; it lives in `.git/config`, which is
-never itself committed. Prefer SSH? `git remote add origin git@github.com:<you>/jarvis.git` after
-adding an SSH key.)
-
-**Step D (optional) — tell Jarvis about it** in `.env`, so his guidance is accurate:
-```
-JARVIS_GITHUB_REPO=<your-username>/jarvis
-JARVIS_GITHUB_TOKEN=github_pat_...        # only if you want token-aware automation; push works via the remote alone
-```
+**Optional — give Jarvis his own scoped token** (only if you want pushes to work independently of the
+`gh` login, e.g. when the brain runs on a different host):
+1. https://github.com/settings/tokens?type=beta → **Generate new token** → Resource owner = you →
+   **Only select repositories** → `jarvis-companion` → **Contents: Read and write** → generate.
+2. In `.env`: `JARVIS_GITHUB_REPO=iamvazghen/jarvis-companion` and `JARVIS_GITHUB_TOKEN=github_pat_...`
 
 **What you can now do:** "Jarvis, read your self-improvement skill, then make recall faster." He'll
 branch, edit, **run the tests**, read back the change, wait for your **yes**, commit, and — if you
@@ -551,7 +533,8 @@ Every capability, what it needs, and where its setup lives. Complete the **Requi
 | Cache across restarts | Redis | Optional | §6 |
 | Recall by meaning | `sentence-transformers` | Optional | §7 |
 | Proactive companion | on by default; set home location | On by default | §8 |
-| Self-improvement push | GitHub repo + PAT + remote | Recommended | §9 |
+| Self-improvement (local commits) | **nothing — works now** | — | §9 |
+| Self-improvement push to GitHub | **done — repo + remote set** (optional PAT for off-host) | Done | §9 |
 | Cloud browser | Browserbase keys | Optional | §Optional |
 | Spotify control | Spotify OAuth (Premium) | Optional | §Optional |
 | Extra wake words | Porcupine access key + .ppn | Optional | §Optional |
