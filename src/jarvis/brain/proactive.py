@@ -96,6 +96,8 @@ CONFIRM_TIER = {
     "create_event",
     # Phase 13 — self-improvement writes are reversible via git, but still consequential.
     "write_source", "git_commit", "git_push", "git_revert",
+    # Notion writes modify Vazghen's shared docs.
+    "notion_append", "notion_comment", "notion_create_page",
 }
 
 _PRONOUN_ONLY = {"it", "that", "this", "them", "those", "these", "him", "her", "they"}

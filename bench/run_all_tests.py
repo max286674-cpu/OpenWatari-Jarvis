@@ -51,6 +51,8 @@ TESTS = [
      "offline", ["checks passed ==="]),
     ("Phase 11: Gmail/Calendar/Home-Assistant (graceful degradation)",
      "test_phase11_integrations.py", "offline", ["checks passed ==="]),
+    ("Phase 11: Notion (read/write/comment, graceful)", "test_phase11_notion.py", "offline",
+     ["checks passed ==="]),
     ("Phase 12: utilities belt (weather/crypto/fx/convert/…)", "test_phase12_utility.py",
      "offline", ["checks passed ==="]),
     ("Phase X: audit log + self-health + modes/routines", "test_phasex_audit_health_modes.py",

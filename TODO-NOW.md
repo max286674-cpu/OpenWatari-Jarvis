@@ -1,13 +1,74 @@
-# Jarvis — TODO NOW (the 3 things only you can do)
+# Jarvis — deployment checklist (everything only you can do)
 
-Everything that could be built without hardware or your voice is done and green
-(`uv run python bench/run_all_tests.py` → **16 passed, 0 failed, 1 gated-skip**). The three items in
-this first section are physical — they need your voice, an SSH session, or the devices in your hands.
-(The Phase 9–12 activations further down are optional one-time logins/installs, not hardware.)
-Each is self-contained; do them in any order. Times are rough.
+This is the **complete** list of one-time setup steps to take Jarvis from "all code built & tested"
+to "deployed and fully capable." The code is done and green
+(`uv run python bench/run_all_tests.py` → **18 passed, 0 failed, 1 gated-skip**); these steps add the
+credentials and physical enrolments that, by design, only *you* can provide.
 
-> Convention below: **PowerShell** blocks run on this laptop (`C:\Jarvis`), **bash** blocks run on
-> the VPS. `# →` lines show what you should expect to see.
+**How to read this:** sections are grouped **Required** (Jarvis won't really function without them)
+→ **Recommended** → **Optional**. Each capability **degrades gracefully** — anything you skip just
+makes Jarvis say "that isn't configured yet" instead of crashing. **Do the Required block, then run
+the tests; complete the rest as you want each capability.** A capability matrix at the very bottom
+([§ Readiness matrix](#readiness-matrix)) maps every credential to what it unlocks.
+
+> Convention: **PowerShell** blocks run on this laptop (`C:\Jarvis`), **bash** blocks run on the VPS.
+> `# →` lines show what you should expect to see. All keys go in `.env` (copy from `.env.example`).
+
+---
+
+# REQUIRED — voice, brain, and memory (without these he can't really run)
+
+## 0. The foundations (~15 min)
+
+**Why:** these four give Jarvis a voice, a mind, ears, and his knowledge base. Everything else is
+additive; this block is the floor.
+
+**0a. `.env` exists.** `cp .env.example .env` (PowerShell: `Copy-Item .env.example .env`), then fill
+in the keys below. Never commit it (it's git-ignored).
+
+**0b. ElevenLabs — his voice (required).**
+1. Get an API key at https://elevenlabs.io → Profile → API key. Pick/clone a voice and copy its
+   **Voice ID** (Voice Lab → the voice → ID).
+2. In `.env`:
+   ```
+   JARVIS_ELEVENLABS_API_KEY=...
+   JARVIS_ELEVENLABS_VOICE_ID=...
+   ```
+*(Fully offline alternative: set `JARVIS_TTS_PROVIDER=piper` for a local CPU voice — lower quality,
+no key.)*
+
+**0c. Deepgram — his ears / speech-to-text (required for the default, accurate path).**
+1. Key at https://deepgram.com → free tier is generous. In `.env`: `JARVIS_DEEPGRAM_API_KEY=...`
+2. Deepgram can't do Armenian/Ukrainian. To understand **all six** of your languages offline, set
+   `JARVIS_STT_PROVIDER=whisper` instead (local faster-whisper, no key, heavier on CPU).
+
+**0d. The brain LLM — freellmapi (required).** Jarvis's reasoning runs through a free
+OpenAI-compatible proxy (the `jarvis-freellmapi` service on `127.0.0.1:3001`).
+1. Make sure that proxy is running/reachable (it's the same one the OpenClaw stack uses; start its
+   Docker container or open the tunnel to the VPS).
+2. In `.env`:
+   ```
+   JARVIS_FREELLMAPI_BASE_URL=http://127.0.0.1:3001/v1
+   JARVIS_FREELLMAPI_API_KEY=<the unified key>
+   ```
+3. Verify: `uv run python bench/run_all_tests.py` — the "Phase 2: brain agent" row should PASS (not
+   SKIP). If it SKIPs, the proxy isn't reachable.
+
+**0e. Obsidian vault — his L3 memory (required; validated at startup).**
+```
+JARVIS_VAULT_PATH=C:\Users\iamva\Documents\Obsidian Vault
+```
+He reads/searches it; he warns loudly if it's missing.
+
+**Verify the foundations:** `uv run python bench/check_config.py` (keys present) then
+`uv run python bench/run_all_tests.py` (Phase 2 brain row PASS, not SKIP).
+
+---
+
+# The three physical / hands-on items
+
+The three items in this section are physical — they need your voice, an SSH session, or the devices
+in your hands. Do them in any order.
 
 ---
 
@@ -190,6 +251,86 @@ works from phone and laptop. Jot the TTFW mean somewhere — that's your real Ph
   or a device-name fragment in `.env`.
 
 ---
+
+# RECOMMENDED — channels & knowledge (what makes him useful day-to-day)
+
+## A. Telegram — read *and* send your DMs (~10 min)
+
+**Why:** lets Jarvis read your last messages in **any** chat (read or unread, *without* marking them
+seen), mark chats read/unread, and send messages/GIFs/files. Reading needs a Telethon **user** login
+(the Bot API can't read your DMs); sending can also use a bot token.
+
+**Steps**
+1. Get an **API id + hash** at https://my.telegram.org → API development tools. In `.env`:
+   ```
+   JARVIS_TELEGRAM_API_ID=...
+   JARVIS_TELEGRAM_API_HASH=...
+   JARVIS_TELEGRAM_PHONE=+...          # your number, intl format, for the one-time sign-in
+   ```
+2. One-time interactive login (creates the `jarvis.session` file, which is git-ignored):
+   ```powershell
+   uv run python bench/telegram_login.py     # enter the code Telegram sends you
+   ```
+3. (Optional, for bot-based sending) create a bot via @BotFather and set
+   `JARVIS_TELEGRAM_BOT_TOKEN=...` and `JARVIS_TELEGRAM_DEFAULT_CHAT=<your chat id>`.
+
+**Verify:** "Jarvis, read me my last messages with <name>" (reads without marking seen);
+"mark that chat as read." Honest limit he'll tell you: once a sender has seen a read receipt,
+Telegram can't reverse it — `seen`→`delivered` on their side is impossible.
+
+## B. Web search & scrape (~5 min) — Tavily + Firecrawl
+
+**Why:** `web_search` (fast answer + sources) and `scrape_url` (read one page) for anything live.
+- **Tavily** — https://tavily.com → API key → `JARVIS_TAVILY_API_KEY=...`
+- **Firecrawl** — https://firecrawl.dev → API key → `JARVIS_FIRECRAWL_API_KEY=...`
+
+**Verify:** "what's the latest on <topic>" (web_search); "open <url> and read me the headline" (scrape).
+*(The utilities belt — weather, crypto, stocks, FX, news, wiki, dictionary — needs **no keys** and
+already works.)*
+
+## C. Notion — read / write / comment (~5 min)
+
+**Why:** Jarvis can search your Notion, read pages, append text, comment, and create sub-pages.
+1. Create an **internal integration** at https://www.notion.so/my-integrations → copy its secret
+   (`ntn_...`). In `.env`: `JARVIS_NOTION_TOKEN=...`
+2. **Share each page/database** you want him to touch with the integration: open the page → ••• →
+   **Connections** → add your integration. (Notion is deny-by-default — he sees only what you share.)
+
+**Verify:** "search my Notion for the project page", then "read it to me", then "add a line to it"
+(he'll confirm before writing).
+
+## D. Change the protocol passwords (~2 min, security)
+
+**Why:** the privileged routines ship with placeholder passwords. Set real ones before deployment:
+```
+JARVIS_PROTOCOL_GOODNIGHT_PASSWORD=...     # stop Jarvis
+JARVIS_PROTOCOL_PHOENIX_PASSWORD=...       # restart Jarvis
+JARVIS_PROTOCOL_RAGNAROK_PASSWORD=...       # restart the laptop
+```
+He never speaks or logs these; a wrong password runs nothing.
+
+## E. ntfy phone push (~3 min)
+
+**Why:** how reminders/alerts reach your phone when you're away from the mic (also used by the VPS
+ticker in item 2).
+1. Pick one unguessable topic string. In `.env`: `JARVIS_NTFY_TOPIC=jarvis-<something-unique>`
+2. Install the **ntfy** app on your phone and subscribe to that exact topic.
+
+**Verify:** "ping my phone with a test" (`send_push`) → it arrives.
+
+---
+
+# OPTIONAL — nice-to-haves
+
+- **Browserbase** (cloud headless browser for `browse_web`): `JARVIS_BROWSERBASE_API_KEY` +
+  `JARVIS_BROWSERBASE_PROJECT_ID`, then `uv sync --extra browse`. (The local visible `browser` tool
+  already works without this.)
+- **Spotify** playback control (Premium): make an app at developer.spotify.com, set
+  `JARVIS_SPOTIFY_CLIENT_ID/_SECRET`, run `uv run python bench/spotify_login.py`. (Everyday music
+  uses free YouTube Music — no setup.)
+- **Extra wake words** beyond "jarvis" (alfred/robbin/assist/…): needs a Picovoice **Porcupine**
+  AccessKey + `.ppn` files; set `JARVIS_WAKE_WORD_ENGINE=porcupine` + `JARVIS_PORCUPINE_ACCESS_KEY`.
+  See `README.md` wake-word notes.
 
 ---
 
@@ -383,6 +524,44 @@ genuinely need *you*:
 Nothing else is "configured but unwired" — every tool in `memory/tools.md` is registered and live;
 the credential-gated ones (Gmail, Home Assistant, Spotify, Telegram, Tavily/Firecrawl, GitHub push)
 simply say "not configured yet" until you complete their one-time setup above.
+
+---
+
+## Readiness matrix
+
+Every capability, what it needs, and where its setup lives. Complete the **Required** rows + a green
+`uv run python bench/run_all_tests.py`, and Jarvis runs; add the rest to unlock each capability.
+
+| Capability | Needs | Tier | Step |
+|---|---|---|---|
+| **His voice (TTS)** | ElevenLabs key + voice id (or local Piper) | Required | §0b |
+| **Speech-to-text** | Deepgram key (or local Whisper) | Required | §0c |
+| **His brain (reasoning)** | freellmapi proxy reachable + key | Required | §0d |
+| **L3 vault memory** | `JARVIS_VAULT_PATH` | Required | §0e |
+| Responds only to your voice | enrol voiceprint + flag | Recommended | §1 |
+| Recurring reminders, PC off | VPS ticker deploy | Recommended | §2 |
+| Real latency / device test | AirPods + phone, live run | Recommended | §3 |
+| Read/send Telegram DMs | Telethon login (+ bot token) | Recommended | §A |
+| Web search & scrape | Tavily + Firecrawl keys | Recommended | §B |
+| Notion read/write/comment | Notion integration + shared pages | Recommended | §C |
+| Protocol passwords | set 3 passwords | Recommended (security) | §D |
+| Phone push (ntfy) | ntfy topic + app subscribe | Recommended | §E |
+| Gmail + Calendar | Google OAuth app + login | Recommended | §4 |
+| Home Assistant | HA URL + long-lived token | Optional (if you run HA) | §5 |
+| Cache across restarts | Redis | Optional | §6 |
+| Recall by meaning | `sentence-transformers` | Optional | §7 |
+| Proactive companion | on by default; set home location | On by default | §8 |
+| Self-improvement push | GitHub repo + PAT + remote | Recommended | §9 |
+| Cloud browser | Browserbase keys | Optional | §Optional |
+| Spotify control | Spotify OAuth (Premium) | Optional | §Optional |
+| Extra wake words | Porcupine access key + .ppn | Optional | §Optional |
+| Utilities (weather/crypto/news/…) | **nothing — works now** | — | — |
+| Local music (YouTube Music) | **nothing — works now** | — | — |
+| Fleet consult | `JARVIS_FLEET_AUTHORIZED=true` | Optional | §10 |
+
+**"Ready for deployment" =** the four Required rows done + Telegram/web/Notion/push as you want them
++ protocol passwords changed + `uv run python bench/run_all_tests.py` all green. Then run the brain
+as a service (and the edge on your laptop) per [README → Deployment](README.md#deployment).
 
 ---
 

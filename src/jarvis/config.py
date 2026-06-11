@@ -223,6 +223,12 @@ class Settings(BaseSettings):
     ha_url: str | None = None
     ha_token: str | None = None
 
+    # Notion — internal integration token (https://www.notion.so/my-integrations). SHARE the pages
+    # you want Jarvis to touch with the integration (Notion is deny-by-default). read/append/comment/
+    # create; writes are confirm-gated. Degrades until set.
+    notion_token: str | None = None
+    notion_version: str = "2022-06-28"
+
     # --- System control (files / processes / PowerShell) --------------------------------
     # Jarvis can manage the local machine: create/delete files & folders, list/kill/start
     # processes, and run PowerShell (optionally elevated, which raises a Windows UAC prompt).

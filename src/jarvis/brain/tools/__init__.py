@@ -21,6 +21,7 @@ from jarvis.brain.tools import (
     memory,
     music,
     notify,
+    notion,
     protocols,
     reminders,
     routines,
@@ -37,7 +38,7 @@ from jarvis.brain.tools import (
 
 _MODULES = [vault, memory, web, telegram, voicechat, spotify, music, localplay, system, browser,
             protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
-            coding, skills]
+            coding, skills, notion]
 
 Handler = Callable[[dict], Awaitable[str]]
 

@@ -1,136 +1,272 @@
-# Jarvis
+# Jarvis — a 24/7, voice-first, local-first living assistant
 
-A 24/7, voice-first, local-first living assistant.
+Jarvis is a personal AI companion you **talk to**. He listens for a wake word, answers in a natural
+streaming voice, remembers across sessions, acts on your machine and your accounts, reaches you
+proactively when it matters, and can even **improve his own code** — safely and reversibly.
 
-- **Edge** (`src/jarvis/edge`) — a [Pipecat](https://github.com/pipecat-ai/pipecat)
-  voice pipeline that runs on the local PC: wake word → VAD → STT → TTS, with
-  streaming and barge-in. The "LLM" slot is a thin `BrainBridge` that talks to the brain.
-- **Brain** (`src/jarvis/brain`) — Jarvis's **own** agent, running 24/7 on the VPS: his own
-  reasoning LLM (freellmapi), his own memory, his own personality, and his own tool-calling
-  loop. He reasons and answers as himself first. It also owns the proactive scheduler and
-  the Telegram / MCP channels.
+He is built from scratch in Python, runs on a no-GPU Windows laptop, and is designed to be *on all
+the time*: his brain can run as a service on an always-on host while the voice front-end runs
+wherever you are (laptop, phone, smart-glasses).
 
-**Jarvis and OpenClaw are separate.** Jarvis has his own brain. The **OpenClaw 8-agent fleet**
-is an *external team of specialists* Jarvis can **consult** — one tool among many — by messaging
-`ispir` through the Gateway (`agent` + `agent.wait`) when a task needs deep domain work. When he
-relays a specialist's result, he stays Jarvis and re-voices it in his own persona; he never
-becomes the fleet. Pipecat is the voice shell; **Jarvis is the mind; OpenClaw is a resource.**
+> **Jarvis is his own agent.** He has his own reasoning model, his own memory, and his own
+> personality. The separate OpenClaw fleet is an *external team of specialists* he can **consult**
+> as one tool among many — he never becomes it. Pipecat is the voice shell; **Jarvis is the mind.**
 
-## Voice stack
-- **TTS:** ElevenLabs (streaming) for the chosen Jarvis voice; Piper/Kokoro local fallback.
-- **STT:** Deepgram (streaming, accurate) by default; faster-whisper / Moonshine local fallback.
-- **Wake words:** see below (local, CPU).
+---
 
-## Wake words (Vazghen's required set — do not drop any)
-Jarvis must wake on **any** of these:
+## Table of contents
+- [What he can do](#what-he-can-do)
+- [Architecture](#architecture)
+- [The build, phase by phase](#the-build-phase-by-phase)
+- [Memory — six layers](#memory--six-layers)
+- [The tool belt](#the-tool-belt)
+- [Proactive companion](#proactive-companion)
+- [Self-improvement](#self-improvement-phase-13)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Testing & benchmarks](#testing--benchmarks)
+- [Deployment](#deployment)
+- [Security](#security)
+- [Project layout](#project-layout)
 
-| Phrase | Engine status |
-|---|---|
-| **jarvis** | ✅ live now (openWakeWord `hey_jarvis`; also built-in in Porcupine) |
-| **alfred** | ⏳ custom — needs Porcupine `.ppn` or a trained openWakeWord model |
-| **robbin** | ⏳ custom |
-| **assist** | ⏳ custom |
-| **time to work** | ⏳ custom (multi-word) |
-| **wake up** | ⏳ custom (multi-word) |
-| **six-one-nine** | ⏳ custom (multi-word) |
+---
 
-openWakeWord only ships ~6 pretrained models (only "jarvis" matches). The full custom set is
-best done with **Picovoice Porcupine** (local, instant custom keywords, free for personal use) —
-wired behind `JARVIS_WAKE_WORD_ENGINE=porcupine` once a Picovoice AccessKey + `.ppn` files exist.
-The desired list lives in `JARVIS_WAKE_WORDS` and is enforced here so none are forgotten.
+## What he can do
 
-## VAD, turn-taking & barge-in (Phase 1)
-**Silero VAD** (CPU, bundled — `edge/vad_bargein.py`) detects speech start/stop and feeds the
-whole pipeline. Two duplex modes, picked by `JARVIS_BARGE_IN_ENABLED`:
+- **Natural voice.** Wake on "Jarvis" (and a configurable set), understand you across English /
+  French / German / Russian / Armenian / Ukrainian, and reply in a streaming ElevenLabs voice with
+  barge-in (you can talk over him on headphones).
+- **Think for himself.** His own LLM (via a free OpenAI-compatible proxy) with a model fallback
+  chain, his own personality, and a tool-calling loop — answering directly and fast.
+- **Remember.** A six-layer memory: the live conversation, durable learned facts, a daily journal,
+  your Obsidian vault, a hot-cache, and optional semantic recall.
+- **Act.** Files, processes, PowerShell, a real visible browser, music, reminders & phone push,
+  Telegram (read *and* send), Gmail, Google Calendar, Notion, Home Assistant smart-home.
+- **Look things up.** Weather, crypto, stocks, FX, news, Wikipedia, dictionary, unit/currency
+  conversion — mostly key-free.
+- **Reach you first.** A proactive engine that surfaces reminders, calendar events, and alerts
+  within an interruption budget and quiet hours — speaking if you're listening, pushing if you're not.
+- **Improve himself.** Read and edit his own source, run his own test suite, and make **reversible**
+  git commits — with hard guardrails so nothing destructive is possible.
 
-| Mode | When | Behaviour |
-|---|---|---|
-| **half** (default) | open laptop **speakers** | `HalfDuplexGate` mutes the mic while Jarvis speaks → no self-hearing, but you can't talk over him |
-| **full** | **headphones** (incl. AirPods) or AEC | mic stays open during TTS; `BargeInProcessor` interrupts Jarvis the moment you speak, and the brain cancels its in-flight turn |
+Everything **degrades gracefully**: a capability with no credentials simply says "that isn't
+configured yet" instead of crashing, so you can light up integrations one at a time.
 
-Enable barge-in: `JARVIS_BARGE_IN_ENABLED=true` in `.env` — **only with headphones**. On open
-speakers the mic re-hears Jarvis and he'd interrupt himself. The alternative for speakers is
-**acoustic echo cancellation**: the only AEC in Pipecat is **Krisp** (paid `krisp_audio` SDK + dev
-account + `.kef` model + API key from krisp.ai/developers), wired behind `audio_in_filter` once that
-key exists. Tune VAD with `JARVIS_VAD_CONFIDENCE` / `JARVIS_VAD_START_SECS` / `JARVIS_VAD_STOP_SECS`.
+---
 
-## Knowledge & channel tools (Phase 3)
-Jarvis has his **own** reach before he ever bothers the team — a config-driven tool registry
-(`src/jarvis/brain/tools/`). Every tool degrades gracefully: with no key it just says the
-capability "isn't configured yet" instead of crashing, so you can light them up one at a time.
+## Architecture
 
-| Tool | Does | Needs (in `.env`) |
-|---|---|---|
-| `search_vault` / `read_vault_note` | search & read your Obsidian vault (read-only; writes are delegated) | `JARVIS_VAULT_PATH` (works now) |
-| `web_search` | web search + synthesized answer (Tavily) | `JARVIS_TAVILY_API_KEY` |
-| `scrape_url` | open one page as clean text (Firecrawl) | `JARVIS_FIRECRAWL_API_KEY` |
-| `browse_web` | real headless Chrome for click/JS tasks (Browserbase) | `..._BROWSERBASE_API_KEY` + `_PROJECT_ID`, `uv sync --extra browse` |
-| `check_telegram` | read unread DMs (Telethon user-client) | `..._TELEGRAM_API_ID` + `_API_HASH` + one-time login, `uv sync --extra channels` |
-| `send_telegram` | send a message (Bot API; confirmed first) | `JARVIS_TELEGRAM_BOT_TOKEN` |
-| `spotify` | now-playing / play / pause / skip / search-and-play | `..._SPOTIFY_CLIENT_ID` + `_SECRET` + `_REFRESH_TOKEN` |
+Two cooperating processes over one streaming WebSocket protocol:
 
-**The fleet is ispir-only.** For deep multi-step work Jarvis hands a brief to **ispir** (the team
-lead) and ispir alone — `delegate_to_fleet` has no agent override by design. ispir decides which
-specialist handles it and briefs them in depth; Jarvis waits for his reply and re-voices it. He
-never addresses a specialist directly. (Live fleet connect is still gated pending a sanctioned
-gateway path; the code is ready.)
-
-## Agency — his hands on the machine (Phase 3.5)
-Jarvis can *do*, not just talk:
-
-| Tool | Does |
-|---|---|
-| `file_op` | create/delete files & folders, list (deletes refuse protected/system paths) |
-| `process_op` | list / kill / start processes & apps |
-| `run_powershell` | run PowerShell; `as_admin` relaunches elevated via a **UAC** prompt |
-| `browser` | a **real visible** Chromium he drives: open, click, fill, type, press, read, screenshot, tabs — **logs you in by typing your email + password** when you ask. (`uv sync --extra browse` then `playwright install chromium`) |
-
-The persona rule: he **confirms before anything destructive** (deleting, killing, elevated
-PowerShell, submitting a form that sends data/money).
-
-## Reminders & push (Phase 4)
-`set_reminder` ("remind me in 10 minutes / at 8:00 / daily 07:30"), `list_reminders`,
-`cancel_reminder` — backed by APScheduler + a SQLite jobstore so they survive a restart. When one
-fires Jarvis **speaks** it (and pushes to your phone via `send_push`/ntfy if `JARVIS_NTFY_TOPIC` is set).
-
-## Protocols — password-gated routines (Phase 7)
-FRIDAY/JARVIS-style privileged programs. He runs one **only** if you give the password:
-
-| Protocol | Password env | Does |
-|---|---|---|
-| `goodnight` | `JARVIS_PROTOCOL_GOODNIGHT_PASSWORD` | shut Jarvis down |
-| `phoenix` | `JARVIS_PROTOCOL_PHOENIX_PASSWORD` | restart Jarvis (kill old → start new) |
-| `ragnarok` | `JARVIS_PROTOCOL_RAGNAROK_PASSWORD` | restart the laptop |
-
-Say *"run protocol phoenix"* → Jarvis asks for the password → you give it → it runs. A wrong
-password runs nothing. **Change the default passwords in `.env`.** Add your own protocol by
-dropping a script in `src/jarvis/protocols/` and registering it in `src/jarvis/brain/protocols.py`.
-
-## Audio output: speakers ↔ headphones (incl. AirPods Pro Max)
-Jarvis can play through the laptop speakers or your headphones, switchable by voice.
-
-```bash
-uv run python bench/list_audio_devices.py          # see devices + how Jarvis resolves them
-uv run python -m jarvis.edge.switch_audio headphones
-uv run python -m jarvis.edge.switch_audio speakers
+```
+┌──────────────── LOCAL PC / phone / glasses (the "edge") ───────────────┐
+│  Mic → wake word (openWakeWord) → VAD (Silero) → STT (Deepgram/Whisper) │
+│      → [BrainBridge] ──WebSocket──┐                                     │
+│  Speaker ← TTS (ElevenLabs/Piper) ←┘  (barge-in, smart turn-taking)     │
+└────────────────────────────────────────────┬───────────────────────────┘
+                          streaming StreamEvents │
+┌─────────────────────── always-on host (the "brain") ───────▼───────────┐
+│  JarvisAgent: own LLM (+fallback chain) · tool-calling loop · memory     │
+│  Tools: vault · web · telegram · gmail · calendar · notion · smart-home  │
+│         · utilities · system · browser · reminders · coding/git · …      │
+│  Memory L0–L5 · proactive tick · audit log · self-health · protocols     │
+│  Optionally consults the external OpenClaw fleet (via ispir) as a tool   │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**AirPods Pro Max — realistic answer:** yes, for *output*. On Windows they pair as a *generic*
-Bluetooth device (no Apple SDK), appearing as two endpoints: "Headphones (… Stereo)" = A2DP,
-high-quality playback; "Headset (… Hands-Free)" = HFP, bidirectional but telephone-grade. Jarvis
-routes **output** to the A2DP endpoint and keeps the **laptop mic for input** — because using the
-AirPods as the mic forces the whole link down to low-quality HFP (you can't have HQ playback + the
-AirPods mic at the same time). The `switch_audio` preference is honored when the edge worker
-(re)starts; the live in-conversation voice toggle is registered as a brain tool in Phase 2.
-Set a fixed default with `JARVIS_AUDIO_OUTPUT_DEVICE` in `.env`.
+- **Edge** (`src/jarvis/edge/`) keeps audio + STT/TTS **local** (privacy, low mic latency).
+- **Brain** (`src/jarvis/brain/`) holds the 24/7 obligations (reasoning, memory, scheduler,
+  channels) and can run in-process or as a shared WebSocket server (`brain/server.py`) so a laptop,
+  the iPhone web client (`clients/iphone/`), and the Mentra glasses all share **one** brain + memory.
 
-## Setup
+---
+
+## The build, phase by phase
+
+| Phase | What | Status |
+|---|---|---|
+| 0 | Scaffolding & hello-voice (mic→STT→TTS) | ✅ |
+| 1 | Local always-listening loop: wake word, VAD, barge-in | ✅ |
+| 2 | Jarvis's own brain (LLM + personality + memory + tools) | ✅ |
+| 3 | Knowledge & channels: vault, web, Telegram, browser | ✅ |
+| 4 | Proactivity & true 24/7: scheduler, ntfy push, VPS ticker | ✅ |
+| 5 | Speaker biometrics + TTFW/VAQI benchmarks | ✅ |
+| 6 | Multi-device: brain WS server + iPhone client + glasses bridge | ✅ |
+| 7 | Password-gated protocols (goodnight/phoenix/ragnarok) | ✅ |
+| 9 | **Elite memory** — L1 learned facts, L2 journal, L3 vault, L4 cache, L5 semantic | ✅ |
+| 10 | **Proactive engine** — budget, quiet hours, clarify/confirm, modes | ✅ |
+| 11 | **Email · Calendar · Notion · Smart-home** | ✅ |
+| 12 | **Utilities belt** — weather, crypto, stocks, FX, news, wiki, convert | ✅ |
+| X | Audit log · self-health · routines/modes (focus/lockdown/briefing/…) | ✅ |
+| 13 | **Coding & self-improvement** — repo-scoped edits + reversible git + skills | ✅ |
+
+The full plan and per-phase detail live in [`docs/ROADMAP.md`](docs/ROADMAP.md);
+the expansion design in [`docs/EXPANSION-PLAN.md`](docs/EXPANSION-PLAN.md);
+efficiency measurements + fine-tune targets in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+---
+
+## Memory — six layers
+
+| Layer | What | Where |
+|---|---|---|
+| **L0 Working** | the live conversation (rolling turns) | RAM |
+| **L1 Learned** | durable facts he saves (`remember`/`recall`/`forget`) | `memory/learned/*.md` |
+| **L2 Journal** | a one-line daily summary for continuity | `memory/journal/*.md` |
+| **L3 Vault** | your Obsidian knowledge base (read-only, validated always-on) | `JARVIS_VAULT_PATH` |
+| **L4 Hot-cache** | front the slow paths (search, utilities) | in-process TTL + optional Redis |
+| **L5 Semantic** | recall by *meaning*, not just keywords | optional local embedder |
+
+L4/L5 are graceful accelerators: no Redis → in-process cache; no embedder → keyword recall. The
+Markdown layers are always the source of truth.
+
+---
+
+## The tool belt
+
+All tools live in `src/jarvis/brain/tools/` and self-degrade when unconfigured. Highlights:
+
+- **Knowledge** — `search_vault`, `read_vault_note`, `web_search` (Tavily), `scrape_url`
+  (Firecrawl), `browse_web` (Browserbase).
+- **Memory** — `remember`, `recall`, `forget`, `read_journal`.
+- **Channels** — `check_telegram`, **`read_chat`** (read the last messages of any chat *without*
+  marking them seen), **`mark_telegram`**, `send_telegram` (text/GIF/file), `read_email` /
+  `draft_email` / `send_email` (Gmail), `notion_search` / `read` / `append` / `comment` / `create`.
+- **Calendar & home** — `list_events`, `create_event`, `ha_state`, `ha_call` (Home Assistant).
+- **Utilities** — `weather`, `crypto_price`, `stock_price`, `fx_rate`, `news_brief`, `wiki_lookup`,
+  `define_word`, `convert`.
+- **Media** — `play_music` (YouTube Music, free), `telegram_music`, `spotify`, `stop_music`.
+- **The machine** — `file_op`, `process_op`, `run_powershell`, `browser` (a real visible Chromium).
+- **Proactive** — `set_reminder`, `list_reminders`, `cancel_reminder`, `send_push`.
+- **Routines & health** — `routine` (briefing/focus/lockdown/guest/commute/panic/backup),
+  `self_health`.
+- **Self-improvement** — `read_source`, `write_source`, `run_tests`, `lint`, `git_status/diff/log`,
+  `git_new_branch/commit/push/revert`, `list_skills`, `read_skill`.
+- **The team** — `delegate_to_fleet` (ispir-only; gated by default).
+
+A spoken filler is shown for slow tools so a turn is never dead air, and **every tool call is
+written to a redacted audit log** (`audit/*.jsonl`).
+
+---
+
+## Proactive companion
+
+A background tick weighs signals (routine, calendar, unread, open threads, self-health) and decides
+whether to say something **unprompted** — within an **interruption budget** and **quiet hours**, so
+he's helpful, never noisy. He can:
+
+- **remind**, **pause** (hold a thought / lockdown), **ask for context** (clarify before guessing),
+  **re-ask / confirm** (before anything outward-facing), **interrupt**, and **speak on his own**.
+- Speak to a listening device, or fall back to an ntfy phone push when you're away.
+- Be muted on demand: *"focus mode for an hour"*, *"lockdown"*, *"normal"*, *"give me my briefing"*.
+
+It's **on by default** for a 24/7 deployment (toggle `JARVIS_PROACTIVE_ENABLED`).
+
+---
+
+## Self-improvement (Phase 13)
+
+Jarvis can improve his own codebase, with a hard safety rail: **every change is reversible and
+verified.**
+
+- **Repo-scoped, secret-blocked file I/O** — he can read/edit project files but never `.env`,
+  session files, `voiceprint.json`, the audit log, or anything outside the repo.
+- **Verify before trusting** — `run_tests` runs the full suite; he's told to only commit green code.
+- **Reversible-only git** — there is *no* reset, force-push, rebase, or branch-delete tool. A revert
+  is always a new commit, so history can't be rewritten or lost.
+- **Confirm-gated** — writes, commits, and pushes are read back to you for a yes first.
+- **Skill playbooks** (`skills/*.md`) — self-improvement loop, a map of his own architecture, Python
+  conventions, how to add a tool, git discipline, debugging — read on demand, not bloating the prompt.
+
+Ask: *"read your self-improvement skill, then make recall faster."* He branches, edits, tests, reads
+the change back, waits for your yes, commits — and reverts cleanly if anything regresses.
+
+---
+
+## Quick start
+
+Requires **Python 3.11** and [`uv`](https://github.com/astral-sh/uv).
+
 ```bash
-cp .env.example .env        # then fill in ElevenLabs + Deepgram keys
-# Full install (voice + wake word + brain + scheduler). Include every extra you use, because
-# `uv sync` PRUNES anything not requested — omitting one drops e.g. openwakeword or pyaudio.
-uv sync --extra edge --extra cloud-voice --extra brain --extra local-voice
-uv sync --extra browse --extra channels   # optional: local browser (then `playwright install chromium`) + Telegram reading
+cp .env.example .env        # then fill in at least ElevenLabs + Deepgram + JARVIS_VAULT_PATH
+# uv sync PRUNES extras you don't list — install the FULL set you intend to use in one go:
+uv sync --extra edge --extra cloud-voice --extra local-voice --extra brain --extra channels --extra browse --extra identity --extra dev
+
+# verify everything (one command):
+uv run python bench/run_all_tests.py        # → 18 passed, 0 failed, 1 gated-skip
+
+# talk to him:
+uv run python -m jarvis.edge.assistant      # local voice loop
+# or run the shared brain (for phone/glasses):
+uv run python -m jarvis.brain.server
 ```
 
-See `docs/` for the phased roadmap (the approved plan).
+`TODO-NOW.md` is the **deployment checklist**: every one-time login/credential, in depth, in order.
+Complete it + a green test run = ready to deploy.
+
+---
+
+## Configuration
+
+Everything is driven by environment variables (prefix `JARVIS_`) read from `.env`. See
+[`.env.example`](.env.example) — every knob is documented inline. Nothing is hard-coded; the same
+codebase runs CPU-local-only or cloud-quality just by flipping provider flags. **Never commit
+`.env`** (it's gitignored).
+
+---
+
+## Testing & benchmarks
+
+- **`uv run python bench/run_all_tests.py`** — the single gate. Each phase has a hermetic
+  `bench/test_phase*.py` (offline, no real network/keys) that prints `=== N/N checks passed ===`.
+  Network/fleet tests report SKIP (not FAIL) when their backend is unreachable, so an offline run
+  still passes.
+- **`uv run python bench/efficiency_report.py`** — measures the hot paths (memory recall, cache,
+  brain TTFT, full-turn latency, prompt size) against efficient-operation targets and flags what to
+  fine-tune. See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+---
+
+## Deployment
+
+1. Work through `TODO-NOW.md` (voice enrollment, VPS ticker, Google/Notion/Home-Assistant logins,
+   GitHub repo, optional Redis/embedder, proactive switch-on).
+2. `uv run python bench/run_all_tests.py` → all green.
+3. Run the brain as a service on an always-on host and the edge on your laptop (helper scripts in
+   `scripts/`). The VPS ticker (`deploy/vps/`) delivers recurring reminders even with the PC off.
+
+---
+
+## Security
+
+Jarvis is powerful — he runs PowerShell, drives a browser, sends messages, and edits his own code.
+The safety model (secret handling, confirm tiers, protocol passwords, self-improvement guardrails,
+fleet gating, audit log, what's kept out of git) is documented in **[`SECURITY.md`](SECURITY.md)**.
+Read it before deploying.
+
+---
+
+## Project layout
+
+```
+src/jarvis/
+  edge/        # voice pipeline: wake word, VAD, STT/TTS, device routing, barge-in
+  brain/       # the agent: LLM, memory, cache, semantic, proactive, audit, health, protocols
+    tools/     # the tool belt (one module per capability; SCHEMAS + HANDLERS)
+  shared/      # the edge↔brain WebSocket protocol
+  protocols/   # password-gated routine scripts
+personality/   # jarvis.md — who he is (system-prompt persona)
+memory/        # what he knows (Markdown): about-vazghen, projects, tools, learned/, journal/
+skills/        # on-demand playbooks (self-improvement, architecture, python, …)
+clients/iphone # the phone web client
+glasses/       # Mentra OS bridge (TypeScript)
+deploy/vps/    # the always-on recurring-reminder ticker
+bench/         # the test suite + benchmarks + one-time login helpers
+docs/          # ROADMAP, EXPANSION-PLAN, BENCHMARKS, multi-device
+TODO-NOW.md    # the deployment checklist (everything only you can do)
+```
+
+---
+
+*Built for Vazghen. Jarvis thinks and speaks as himself; the OpenClaw fleet is a resource he
+consults, never his mind.*
