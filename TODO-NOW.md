@@ -412,23 +412,13 @@ and private — he talks straight to your HA box, nothing via the cloud.
 - Can't reach it → use the numeric IP rather than `homeassistant.local`, and make sure the laptop is
   on the same network.
 
-## 6. (Optional) Redis — make the cache survive restarts (~5 min)
+## 6. Redis — cache survives restarts (✅ ALREADY DONE)
 
-**Why:** the L4 hot-cache (Phase 9b) already works in-process (repeat lookups are instant within a
-run). Redis extends that across **brain restarts** — worth it once the brain runs 24/7, skippable
-before then. Without it, nothing breaks; you just don't keep a warm cache across restarts.
-
-**Steps** — run Redis (Docker is easiest), then point Jarvis at it:
-```powershell
-docker run -d --name jarvis-redis -p 6379:6379 redis:7-alpine
-```
-```
-# .env
-JARVIS_REDIS_URL=redis://127.0.0.1:6379/0
-```
-**Verify:** ask the same web/utility question twice across two separate runs — the second is instant,
-and the logs show `L4 cache: connected to Redis`. (If Redis is down, Jarvis logs once and falls back
-to the in-process cache — no failure.)
+**Done for you during the legacy-`.env` migration:** Redis is already running locally on `6379`,
+`JARVIS_REDIS_URL=redis://localhost:6379/0` was copied from your old `D:\JARVIS\.env`, and the
+`redis` Python client is installed. Verified: the cache logs `L4 cache: connected to Redis` and
+`CACHE.backend == "redis"`. Nothing to do. (If you ever move the brain to another host, point this
+URL at that host's Redis — or leave it blank to fall back to the in-process cache, no failure.)
 
 ## 7. (Optional) Semantic memory — recall by meaning (~5 min, ~90 MB)
 
@@ -530,7 +520,7 @@ Every capability, what it needs, and where its setup lives. Complete the **Requi
 | Phone push (ntfy) | ntfy topic + app subscribe | Recommended | §E |
 | Gmail + Calendar | Google OAuth app + login | Recommended | §4 |
 | Home Assistant | HA URL + long-lived token | Optional (if you run HA) | §5 |
-| Cache across restarts | Redis | Optional | §6 |
+| Cache across restarts | Redis | **DONE** (URL migrated from legacy, server running, client installed) | §6 |
 | Recall by meaning | `sentence-transformers` | Optional | §7 |
 | Proactive companion | on by default; set home location | On by default | §8 |
 | Self-improvement (local commits) | **nothing — works now** | — | §9 |
