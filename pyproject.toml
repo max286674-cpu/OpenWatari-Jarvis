@@ -43,6 +43,7 @@ brain = [
     "sqlalchemy>=2.0",         # SQLite jobstore so reminders survive a restart (Phase 4)
     "yt-dlp>=2024.8",          # resolve a song -> YouTube video for free playback (no Premium)
     "ytmusicapi>=1.7",         # YouTube Music search (music-tuned, free) — the Spotify replacement
+    "redis>=5.0",              # L4 hot-cache backend (Phase 9b); graceful no-op if unreachable
 ]
 # Phase 3 channels: Telethon user-client to READ unread Telegram DMs (Bot API can't).
 channels = [

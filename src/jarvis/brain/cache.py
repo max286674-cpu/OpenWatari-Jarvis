@@ -57,11 +57,15 @@ class _InProcessTTL:
         self._data.clear()
 
 
+_UNSET = object()  # distinguishes "argument omitted" from an explicit None/"" (= force no Redis)
+
+
 class Cache:
     """L4 hot-cache: in-process always, Redis too when configured. Async, fail-open."""
 
-    def __init__(self, redis_url: str | None = None) -> None:
-        self._url = redis_url if redis_url is not None else settings.redis_url
+    def __init__(self, redis_url: str | None = _UNSET) -> None:  # type: ignore[assignment]
+        # Omitted -> use the configured URL; explicit None/"" -> force in-process only (tests).
+        self._url = settings.redis_url if redis_url is _UNSET else redis_url
         self._local = _InProcessTTL()
         self._redis = None            # lazily connected redis.asyncio client
         self._redis_tried = False     # connect attempted (success or give-up)
