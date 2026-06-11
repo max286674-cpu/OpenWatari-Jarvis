@@ -21,19 +21,31 @@ The previous JARVIS (`D:\JARVIS`, Tauri+SvelteKit+FastAPI) and `C:\openjarvis` a
 
 ---
 
-## Build Status (updated 2026-06-08)
+## Build Status (updated 2026-06-12)
 
 Legend: ✅ done & verified end-to-end · 🟡 in progress · ⬜ not started
+
+**Run every check:** `uv run python bench/run_all_tests.py` (config · Phase 1 VAD/barge-in · Phase 3 tools · Phase 4+4b · wake-word perf · Phase 5 biometrics+benchmarks · Phase 6 multi-device · Phase 6 brain-WS-server · Phase 9/9b/9c memory+cache+semantic · Phase 10 proactive · Phase 11 email/calendar/smart-home · Phase 12 utilities · Phase X audit/health/modes · Phase 2 brain). As of 2026-06-12: **17 passed, 0 failed, 1 gated-skip (fleet)** (+ Phase 13 coding/self-improvement). Efficiency analysis + fine-tune targets: `docs/BENCHMARKS.md`. Production switch-on notes: `TODO-NOW.md` §10.
 
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 — Scaffolding & hello-voice | ✅ | `python -m jarvis.edge.hello_voice`: mic→Deepgram STT→echo→ElevenLabs voice→speaker; cold-start msg; self-hearing fixed via `HalfDuplexGate`; **user-confirmed working** |
-| 1 — Local always-listening loop | 🟡 | **wake word "hey jarvis" built + startup-verified** (openWakeWord, 16× realtime on CPU, audio stays local until woken; `jarvis.edge.assistant`) — awaiting Vazghen's live voice test. VAD/SmartTurn (bundled, CPU) + AEC/barge-in pending the headphones-vs-speakers decision |
-| 2 — Jarvis's own brain + OpenClaw tool | 🟡 | **own brain working & tested in-process** (`brain/`: LLMClient w/ failover, context loader, JarvisAgent tool-loop, warmup; wired into edge via `JarvisBrain`). Verified: direct reasoning grounded in memory (468ms warm), `get_time` tool, session recall, graceful fleet-gating. **OpenClaw transport fully mapped** (gateway `/ws` req-frame protocol) but a live connect needs Vazghen's authorization (shared infra) — `fleet.delegate_to_fleet` ready, gated off by default. Pending: WS-split to VPS brain service (Phase 4), live fleet auth |
-| 3 — Knowledge & channels | ⬜ | Obsidian vault MCP · Telegram · Browserbase |
-| 4 — Proactivity & 24/7 | ⬜ | scheduler · ntfy · background services |
-| 5 — Identity & benchmarks | ⬜ | speaker biometrics · TTFW/VAQI |
-| 6 — Multi-device | ⬜ | Android/Termux · iPhone · Mentra glasses |
+| 1 — Local always-listening loop | ✅* | **wake word "hey jarvis"** (openWakeWord, 15.4× realtime CPU, audio local until woken). **Silero VAD** wired (`edge/vad_bargein.py`, CPU). **Barge-in** via `BargeInProcessor` — interrupts mid-reply on user speech, brain cancels its in-flight turn (`InterruptionFrame`). **Smart barge-in identifier** (`edge/device_profile.py`): `JARVIS_BARGE_IN_MODE=auto` detects the live endpoint and auto-enables full-duplex barge-in ONLY on a private device (headphones/AirPods/**Mentra glasses**/**iPhone+earbuds**) and stays half-duplex on open speakers; remote clients declare `JARVIS_DEVICE_HINT`. Pipeline assembles + 25/25 offline checks pass (`bench/test_phase1_vad_bargein.py`). **\*Deferred:** local STT/TTS (Moonshine/Piper) — using cloud Deepgram/ElevenLabs by user's quality choice; + Vazghen's live mic test |
+| 2 — Jarvis's own brain + OpenClaw tool | ✅ | **own brain working & tested in-process** (`brain/`: LLMClient w/ failover, context loader, JarvisAgent tool-loop, warmup; wired into edge via `JarvisBrain`). Verified (`bench/test_brain_agent.py`): direct reasoning grounded in memory (570ms warm), `get_time` tool (2.1s), session recall (1.0s), graceful fleet-gating with no sentinel leak. **OpenClaw transport fully mapped** (gateway `/ws` req-frame protocol); live connect needs Vazghen's authorization (shared infra) — `fleet.delegate_to_fleet` ready, gated off. Pending: WS-split to VPS brain service (Phase 4), live fleet auth |
+| 3 — Knowledge & channels | ✅* | **Jarvis's own tool layer** (`brain/tools/`, config-driven registry, all degrade gracefully w/o keys). **Obsidian vault** read/search live-verified against the real vault (30 hits for "rabbit farm"; path-traversal blocked; writes stay VPS-authoritative→delegated). **Web**: `web_search` (Tavily) · `scrape_url` (Firecrawl) · `browse_web` (Browserbase+Playwright). **Telegram**: `check_telegram` (Telethon user-client) + `send_telegram` (Bot API). **Spotify**: `spotify` play/pause/next/prev/search. **Fleet locked to ispir-only** — `delegate_to_fleet` has no agent override; ispir is team lead who briefs specialists in depth (persona + memory rules updated). 20/20 offline checks (`bench/test_phase3_tools.py`). **\*Pending:** Vazghen's API keys (Tavily/Firecrawl/Browserbase/Spotify) + one-time Telethon login to light up the cloud tools |
+| 3.5 — Agency: system + browser control | ✅ | **`file_op`** (create/delete files+folders, list; protected-path guard) · **`process_op`** (list/kill/start) · **`run_powershell`** (incl. `as_admin` via UAC) · **`browser`** (real visible Chromium: open/click/fill/type/press/read/screenshot/tabs — logs in by typing email+password). All in `brain/tools/`, verified `bench/test_phase4_system_protocols.py` |
+| 4 — Proactivity & 24/7 | ✅ (incl. 4b true-24/7) | **Scheduler** (`brain/scheduler.py`, APScheduler + **SQLite** jobstore → reminders survive restart) wired into the edge brain so fired reminders are **spoken** (fired live-verified); **`set_reminder`/`list_reminders`/`cancel_reminder`** (one-shot/at/daily) + **ntfy `send_push`** phone fallback. **Edge boot service** (`scripts/install_edge_service.ps1`) registers a hidden, auto-restarting logon task running `pythonw -m jarvis.edge.assistant` (parse-verified; user ran it — task Ready). **4b TRUE 24/7 (PC-off) — done:** one-shot/`at` reminders are handed to **ntfy server-side scheduled delivery** (`At` header; window 10s–3d) so they reach the phone with the PC off (no double-push: the in-process job then only speaks); **recurring `daily`** reminders register with an always-on **VPS ticker** (`deploy/vps/`, APScheduler+ntfy+HTTP, systemd) via `JARVIS_TICKER_URL` — graceful no-op if unset. 29/29 offline checks (incl. dedicated 4b block). *Deferred (not needed): VPS brain WS-split — brain runs in-process in the edge* |
+| 5 — Identity & benchmarks | ✅* | **Speaker biometrics** (`edge/speaker_id.py` + `edge/speaker_gate.py`): SpeechBrain **ECAPA** voiceprint, enrolled via `bench/enroll_voice.py`; `SpeakerGate` drops transcripts that aren't Vazghen's voice (cosine ≥ `JARVIS_SPEAKER_THRESHOLD`). Graceful: no-op until enrolled + `JARVIS_SPEAKER_ID_ENABLED=true`, and degrades to accept-all if the (opt-in `identity` extra) torch backend is absent — never locks him out. **Benchmarks** (`bench/benchmarks.py`→`jarvis.bench_metrics`): **TTFW** (user-stop→first word, measured live by `edge/latency_meter.py`) + **VAQI** 0–100 (latency·responsiveness·smoothness). 23/23 offline checks. **\*Pending:** `uv sync --extra identity` + one-time `enroll_voice.py` to light up the gate (logic fully verified with a stub embedder) |
+| 6 — Multi-device | ✅* | **Four devices enabled + routed** (`edge/device_profile.py::resolve_device_route` + `SUPPORTED_DEVICES`): **this host laptop** (speakers, full local pipeline), **iPhone** (thin client→brain WS), **AirPods Pro Max** (private→barge-in ON), **Mentra OS glasses** (`glasses/` MentraOS TS bridge→brain WS, private→barge-in ON). **AirPods auto-route:** connected to *either* phone or laptop ⇒ everything routes to the headphones + barge-in auto-on (laptop via `audio_devices.prefer_private_output`; phone via `headphones_connected` on the `Hello` frame). Protocol carries `device_id` (`shared/protocol.py`: `Hello`+`Utterance`). **Brain WS server built** (`brain/server.py`): hosts ONE shared `JarvisAgent` so phone+glasses+laptop reach the SAME brain+memory; Hello handshake → `lifecycle:thinking` → `tool` fillers → per-sentence `assistant` chunks (incremental TTS) → barge/supersede cancel; optional bearer auth; also serves the phone client over HTTP. **iPhone client built** (`clients/iphone/index.html`): self-contained Safari web app (push-to-talk via Web Speech API + text fallback, `speechSynthesis` playback, "AirPods on this phone" toggle → `headphones_connected`). 22/22 (routing) + 23/23 (server, hermetic) offline checks + a live-socket round-trip; see `docs/multi-device.md`. **\*Pending:** live test needs the physical phone/glasses; Mentra bridge SDK transcription calls still scaffolded (brain link + routing done) |
+| **7 — Protocols** | ✅ | password-gated executable routines (FRIDAY/JARVIS style): **`goodnight`** (stop Jarvis) · **`phoenix`** (restart Jarvis) · **`ragnarok`** (restart laptop). `run_protocol(name,password)` tool + `brain/protocols.py` (constant-time password check) + detached scripts in `src/jarvis/protocols/`. Jarvis asks for the password first (persona+memory rules). Verified |
+| 8 — Memory & automation infra | ✅ | Folded into Phase 9 as memory layers: **Redis** = L4 hot-cache (9b, built, graceful) · **vector** = L5 semantic recall (9c, built, graceful) · **n8n** skipped (overlaps Phase 4). Old `D:\JARVIS` Docker containers are abandoned/disposable |
+| **9 — Elite multi-layer memory** | ✅ | **L0–L5 all built.** L1 learned facts + L2 journal (`brain/memory.py`); L3 vault validated always-on at warmup; **L4 hot-cache** (`brain/cache.py`: in-process TTL always-on + optional Redis, fail-open, wired into `web_search`/utilities); **L5 semantic recall** (`brain/semantic.py`: optional embedder, blends cosine into keyword recall, graceful no-op without `sentence-transformers`). Tools `remember`/`recall`/`forget`/`read_journal`. 17+9+8 offline checks (`test_phase9*.py`) |
+| **10 — Proactive engine** | ✅ | `brain/proactive.py`: background **tick** + relevance threshold + **interruption budget** + **quiet hours** + repeat-suppression + day-rollover; speaks to listening clients (interrupt) or ntfy push; wired into `brain/server.py` (off unless `JARVIS_PROACTIVE_ENABLED`). Six verbs covered, incl. `confirm_required`/`needs_clarification` policy + a system-prompt clarify/confirm rule. **Modes** (focus/lockdown) mute it on demand. 26/26 checks (`test_phase10_proactive.py`) |
+| **11 — Email · Calendar · Smart-home** | ✅ | **Gmail** (`brain/tools/gmail.py`: read/draft, `send` confirm-gated) + **Calendar** (`calendar.py`: list/create) over one Google OAuth app (`brain/google.py`, REST, one-time `bench/google_login.py`) · **Home Assistant** (`smarthome.py`: `ha_state`/`ha_call`, locks confirmed). All self-degrade until credentials set. 15/15 checks. **Needs a one-time user login** (see `TODO-NOW.md` §4–5) |
+| **12 — Utilities belt** | ✅ | `brain/tools/utility.py` — weather (Open-Meteo), crypto (CoinGecko), stocks (Yahoo), FX (Frankfurter/ECB), news (HN), wiki, dictionary, unit/currency convert. All no-key, cached, self-degrading; **verified live**. 19/19 checks (`test_phase12_utility.py`) |
+| **X — Protocols expansion + audit + self-health** | ✅ | Non-privileged **routines/modes** (`brain/modes.py` + `tools/routines.py`): briefing/focus/lockdown/guest/commute/panic/backup/normal + `self_health`. **Audit log** (`brain/audit.py`: redacted JSONL of every tool call, wired into the agent loop). **Self-health** (`brain/health.py`: vault/cache/ticker, feeds the proactive tick). 23/23 checks (`test_phasex_audit_health_modes.py`) |
+| **13 — Coding & self-improvement** | ✅ | `brain/tools/coding.py` — repo-scoped read/write/list + `run_tests`/`lint` + **reversible-only git** (status/diff/log/new_branch/commit/push/revert; NO reset/force-push/rebase by design). Secrets (`.env`, sessions, voiceprint, audit/, backups/) hard-blocked; writes/commits/pushes confirm-gated. **Skills library** (`brain/tools/skills.py` + `skills/*.md`: self-improvement, jarvis-architecture, python, adding-a-tool, git-workflow, debugging, web-and-typescript) read on demand (not prompt-injected). Hardened `.gitignore`; baseline commit made. 30/30 checks (`test_phase13_coding.py`). **GitHub push needs a one-time repo+PAT** (`TODO-NOW.md` §9) |
+| **+ Telegram DM reading** | ✅ | `read_chat` (last N of any chat, read or unread, **without** marking seen) + `mark_telegram` (seen/unread, honest that a sent read-receipt can't be reversed). In the brain tool registry |
 
 **Brain-context** (`personality/jarvis.md` + `memory/*.md`): ✅ about-vazghen (Sir · Germany UTC+1 · EN/HY/RU/DE) · projects · openclaw-fleet · environment · **proactive-companion**.
 
@@ -140,36 +152,253 @@ Each phase ships a runnable deliverable + a concrete verification. Phases are ~1
 - **Memory/personality/skills loaders:** read `.md` files; maintain long-term memory + rolling session context (dialogue awareness) so Jarvis remembers flow across turns.
 - **Verify:** "Hey Jarvis, ask the finance agent for BTC price" → brain delegates → ispir/fleet returns cited number → spoken. "What did I just ask you?" → recalls prior turn from session context.
 
-### Phase 3 — Knowledge & channels (Weeks 5–6)
-- **MCP client framework** (config-driven server registry).
-- **Obsidian MCP** → read/write/search the canonical vault (Jarvis leverages all memory/projects). Respect the VPS-authoritative one-way sync (writes go through VPS vault).
-- **Telegram:** Telethon user-client to read unread DMs + summarize aloud; send replies by voice command.
-- **Browserbase MCP:** cloud browser for navigate/extract/fill-form tasks.
-- **Repos:** `modelcontextprotocol/python-sdk`, an Obsidian MCP server (e.g. `MarkusPfundstein/mcp-obsidian`), `browserbase/mcp-server-browserbase`, `LonamiWebs/Telethon`.
-- **Verify:** "Hey Jarvis, search my vault for the rabbit-farm charter and read me the summary"; "Any unread Telegram?"; "Open example.com and tell me the headline."
+### Phase 3 — Knowledge & channels (Weeks 5–6) — ✅ built (keys pending)
+- **Tool registry** (`brain/tools/`): each module exposes `SCHEMAS`+`HANDLERS`; the agent merges
+  them with its built-ins. Every handler **degrades gracefully** when unconfigured (returns a
+  speakable "isn't configured yet" note) so the full set is always safe to register.
+- **Implementation note — direct REST over spawning MCP servers.** Rather than run Node MCP
+  servers as subprocesses (brittle on Windows, heavy), each integration is a clean async `httpx`
+  call to the same upstream API the MCP server would wrap — functionally identical from Jarvis's
+  view (a tool he calls), but more robust + unit-testable offline. The registry can still host a
+  real stdio-MCP client later without touching the agent.
+- **Obsidian vault** (`tools/vault.py`) → `search_vault` / `read_vault_note` over the LOCAL mirror.
+  Path-traversal blocked. **Writes stay VPS-authoritative** → Jarvis asks ispir to write.
+- **Web** (`tools/web.py`): `web_search` (**Tavily**), `scrape_url` (**Firecrawl**), `browse_web`
+  (**Browserbase** via Playwright-over-CDP). Other search scrapers slot in the same way.
+- **Telegram** (`tools/telegram.py`): `check_telegram` (**Telethon** user-client — reads unread
+  DMs) + `send_telegram` (**Bot API** — confirm-before-send per persona).
+- **Spotify** (`tools/spotify.py`): `spotify(action,query)` — now_playing/play/pause/next/prev/search.
+- **Fleet = ispir only.** `delegate_to_fleet` has **no agent override**; ispir is the team lead who
+  picks the specialist and briefs them in depth. Enforced in code (schema + signature) and in the
+  persona/memory rules.
+- **Repos/APIs:** Tavily · Firecrawl · `browserbase` + `microsoft/playwright` · `LonamiWebs/Telethon` · Spotify Web API.
+- **Verify:** `bench/test_phase3_tools.py` (20/20 offline). Voice: "search my vault for the
+  rabbit-farm charter"; "any unread Telegram?"; "open example.com and tell me the headline";
+  "play some jazz on Spotify". (Cloud tools need their keys in `.env`; vault works now.)
 
-### Phase 4 — Proactivity & true 24/7 (Week 7)
-- **Scheduler** (APScheduler+SQLite) in brain: cron-style proactive skills defined in `skills/*.md` ("remind me every morning at 8").
-- **ntfy** push gateway for notifications when PC/voice is unavailable.
-- **Background services:** brain as `systemd` unit on VPS; edge as Windows Task Scheduler / NSSM service (starts on boot, no terminal window).
-- **Proactive bridge:** brain events (new Telegram, cron fire) → if edge online, speak the nudge; else ntfy.
-- **Repos:** `agronholm/apscheduler`, `binwiederhier/ntfy`.
-- **Verify:** schedule a 2-min-out reminder; confirm it speaks on the PC if on, or pushes via ntfy if off. Reboot PC → edge auto-starts and reconnects to brain.
+### Phase 3.5 — Agency: system + browser control — ✅ built
+Jarvis's hands on the machine, so he can *do*, not just talk. All in `brain/tools/`, graceful
+when disabled, verified in `bench/test_phase4_system_protocols.py`:
+- **`file_op`** — create/delete files & folders, list. Deletes refuse `JARVIS_SYSTEM_PROTECTED_PATHS`
+  and drive roots; persona confirms first.
+- **`process_op`** — list / kill (by name or pid) / start processes & apps.
+- **`run_powershell`** — run PowerShell, `as_admin=true` relaunches elevated via **UAC**.
+- **`browser`** (`tools/browser.py`) — a real **visible** persistent Chromium (Playwright): open,
+  click (text/selector), fill, type, press, read, screenshot, new_tab, back, close. Logs Vazghen
+  in by filling email+password when asked; persistent profile keeps sessions. Needs
+  `uv sync --extra browse` + `playwright install chromium`.
 
-### Phase 5 — Identity, polish & benchmarks (Week 8)
-- **Speaker biometrics:** SpeechBrain ECAPA enrollment ("respond only to your voice"); gate command execution by speaker match.
-- **Benchmarks:** `bench/` instruments **TTFW** (user-stop → first audible word) and **VAQI** (interruption rate + missed-response rate + latency → single score); surfaced in TUI.
-- **Personality pass:** finalize `personality/jarvis.md`; optional voice-modes reusing the OpenClaw Armenian persona pattern.
-- **Repos:** `speechbrain/speechbrain` (or Picovoice Eagle).
-- **Verify:** a different speaker is ignored; your voice is served. TTFW measured (<~1.2s local target on CPU); VAQI logged across a 10-utterance battery.
+### Phase 4 — Proactivity & 24/7 (Week 7) — ✅ engine + desktop always-on + 4b true-24/7
 
-### Phase 6 — Multi-device expansion (Weeks 9–12)
-- **Android:** Termux + Termux:Boot edge-lite (stream mic → brain, play TTS), battery-optimization disabled.
-- **iPhone:** thin client to brain (Shortcuts/WebRTC) since no Termux equivalent.
-- **Mentra glasses:** `glasses/` MentraOS **TypeScript** SDK service — glasses are pure mic/speaker/display bridge; brain still does the thinking.
-- **Scaling option:** if many devices must share one *live* session concurrently, introduce **LiveKit** rooms as an alternate transport (agent already abstracted behind `BrainBridge`).
-- **Repos:** MentraOS SDK (`Mentra-Community`/AugmentOS), `livekit/agents` (only if adopted).
-- **Verify:** issue the same command from phone and glasses, hitting the same brain/session; glasses display shows the reply text.
+> **Status:** the proactivity *engine* is complete and **fired live-verified** (reminder triggered
+> → speak callback + ntfy push), the edge **auto-starts at logon** (`JarvisEdge` task, confirmed
+> Ready), and **4b true-24/7 is now done** (see below) — reminders reach the phone even with the PC
+> off. While the PC is on, a fired reminder is also spoken live; misfire grace (24h) + coalesce
+> still catch anything that was due during a restart.
+- **Scheduler** (`brain/scheduler.py`, **APScheduler + SQLite jobstore** → reminders survive a
+  restart). Triggers: one-shot delay, absolute `at`, or recurring `daily HH:MM`.
+- **Reminder tools**: `set_reminder` / `list_reminders` / `cancel_reminder`. Wired into the edge
+  brain (`JarvisBrain.warmup` → `SCHEDULER.start(on_speak=…)`) so a fired reminder is **spoken**.
+- **ntfy** (`tools/notify.py`): `send_push` tool + the scheduler's phone-push fallback when voice
+  isn't available.
+- **Edge boot service** (`scripts/install_edge_service.ps1` / `uninstall_edge_service.ps1`):
+  registers a Windows Scheduled Task that launches `.venv\Scripts\pythonw.exe -m jarvis.edge.assistant`
+  **at logon, hidden, auto-restart ×3**, working dir = repo (so `.env` loads). Runs as an Interactive
+  principal so it reaches the mic/speakers; wake-word gating keeps it idle (no STT/LLM/TTS cost) until
+  "Hey Jarvis". One-time activation in the user's own session: `powershell -ExecutionPolicy Bypass -File scripts\install_edge_service.ps1`.
+- **Real audio playback** (answering "can Jarvis actually PLAY music?"): YES — YouTube/YouTube Music
+  make sound in the autoplay browser, and the **Telegram playlist plays out loud locally** via
+  `localplay.py` (download → **ffplay**, windowless) with `stop_music` to halt it. Verified end-to-end
+  (played + stopped the latest track).
+- **4b · TRUE 24/7 (PC-off) — ✅ done.** Reminders fire/push at the right time even with the laptop
+  off, split by kind:
+  - **One-shot / `at`** → handed to **ntfy.sh server-side scheduled delivery** (`At` header; ntfy
+    holds the message and delivers in its 10s–3d window regardless of PC state). No VPS needed.
+    `set_reminder` POSTs the scheduled push at set-time and flips the in-process job to
+    `push_phone=False` so the live edge only *speaks* it — no double-push. If ntfy refuses, the
+    in-process push is re-enabled as a fallback.
+  - **Recurring `daily`** (ntfy can't hold a repeating schedule) → an always-on **VPS ticker**
+    (`deploy/vps/jarvis_ticker.py`: APScheduler cron + the same ntfy topic + a tiny HTTP ingest,
+    systemd-managed). `set_reminder(daily=…)` best-effort registers the job there over
+    `JARVIS_TICKER_URL`; `cancel_reminder` removes it from both. Fully decoupled from the OpenClaw
+    fleet/gateway. Deploy with one command — `deploy/vps/install.sh` (see `deploy/vps/README.md`).
+    Graceful no-op when `JARVIS_TICKER_URL` is unset (local spoken path still works).
+- **Repos:** `agronholm/apscheduler`, `binwiederhier/ntfy`, `ffmpeg` (ffplay).
+- **Verify:** `bench/test_phase4_system_protocols.py` (29/29, incl. a dedicated 4b block: ntfy
+  window logic, one-shot→ntfy with `at`, push_phone flag, daily→ticker-not-ntfy) + ntfy scheduled
+  POST confirmed holding 30s server-side + ticker daemon exercised locally (health/add/list/cancel,
+  persisted + cron-scheduled). Voice: "remind me in 2 minutes to stretch" → spoken live + queued to
+  phone; "remind me every day at 8 to train" → registered on the always-on host.
+
+### Phase 5 — Identity, polish & benchmarks (Week 8) — ✅ built (enrollment pending)
+- **Speaker biometrics** (`edge/speaker_id.py` + `edge/speaker_gate.py`): SpeechBrain **ECAPA-TDNN**
+  voiceprint. Enroll once (`bench/enroll_voice.py` records a few clips → averaged, L2-normalised
+  embedding → `JARVIS_SPEAKER_PROFILE`). At runtime `SpeakerGate` (after the STT) buffers the
+  utterance audio, embeds it, and **drops** the transcript if cosine-sim < `JARVIS_SPEAKER_THRESHOLD`
+  — Jarvis stays silent for a stranger / the TV. **Graceful:** a no-op until a profile exists +
+  `JARVIS_SPEAKER_ID_ENABLED=true`; if the (opt-in) torch backend is missing it accepts-all rather
+  than locking Vazghen out. The gate *decision* is a pure function (`should_accept`) so it's tested
+  without torch.
+- **Benchmarks** (`jarvis.bench_metrics`, re-exported by `bench/benchmarks.py`): **TTFW** (ms from
+  user-stop to first spoken word) measured live by `edge/latency_meter.py` (a pass-through
+  processor) into a `TTFW` accumulator (mean/median/p95); **VAQI** = one 0–100 score blending
+  latency-vs-target (w .4), responsiveness=1−missed (w .35) and smoothness=1−false-interruptions
+  (w .25).
+- **Repos:** `speechbrain/speechbrain` (opt-in `identity` extra: speechbrain+torch+torchaudio).
+- **Verify:** `bench/test_phase5_identity_bench.py` (23/23) — gate logic, verifier degradation,
+  SpeakerGate drop-stranger/pass-Vazghen with a stub embedder, TTFW/VAQI math. Live: `uv sync
+  --extra identity` → `enroll_voice.py` → a different speaker is ignored, your voice is served.
+
+### Phase 6 — Multi-device expansion (Weeks 9–12) — ✅ built (live devices pending)
+The four devices Vazghen uses are all **enabled and routed from one brain**
+(`edge/device_profile.py`, `docs/multi-device.md`):
+- **This host laptop** — runs the full local pipeline (`jarvis.edge.assistant`).
+- **iPhone** — thin client **built** at `clients/iphone/index.html`: a self-contained Safari web app
+  (Add to Home Screen) that auto-connects to the brain WS, push-to-talk via the Web Speech API (text
+  box fallback), plays replies with `speechSynthesis`, and has an "AirPods on this phone" toggle that
+  sets `headphones_connected`. Served by the brain over HTTP at `http://<laptop-ip>:8766/iphone/`.
+- **AirPods Pro Max** — when connected to **either** the phone or the laptop, Jarvis **auto-routes
+  everything to the headphones** and turns **barge-in on** (private endpoint). Laptop detects them
+  via `audio_devices.prefer_private_output`; the phone declares `headphones_connected=true`.
+- **Mentra OS glasses** — `glasses/` MentraOS **TypeScript** bridge (the only non-Python component);
+  glasses are a mic/speaker/display, the brain thinks. Declares `device_id="mentra"` → private →
+  barge-in on. Brain link + routing implemented; the SDK transcription calls are scaffolded (TODOs).
+- **Protocol:** `shared/protocol.py` `Hello`(device_id, headphones_connected) + `Utterance`(device_id).
+- **Brain server (built):** `brain/server.py` — `python -m jarvis.brain.server` hosts ONE shared
+  `JarvisAgent` over the WebSocket so phone+glasses+laptop reach the **same brain + memory** (turns
+  serialised). Streams `lifecycle:thinking` → `tool` fillers → per-sentence `assistant` chunks
+  (`final` on last) → `lifecycle:cancelled` on barge/supersede; optional `JARVIS_API_AUTH_TOKEN`
+  bearer auth; bind `JARVIS_BRAIN_HOST=0.0.0.0` for the phone. Also serves `clients/` over HTTP.
+- **Scaling option:** **LiveKit** rooms if many devices must share one *live* session (still behind
+  `BrainBridge`).
+- **Verify:** `bench/test_phase6_multidevice.py` (22/22) — device routing, the AirPods auto-route rule
+  on laptop+phone, alias resolution, A2DP-over-HFP preference, protocol round-trips — plus
+  `bench/test_phase6_brain_server.py` (23/23, hermetic) — Hello handshake, streamed chunks, tool
+  fillers, barge cancel, shared-agent session, bearer auth, and a live-socket round-trip. Live
+  multi-device test needs the physical phone + glasses.
+
+### Phase 7 — Protocols (FRIDAY/JARVIS-style, password-gated) — ✅ built
+The "last phase": named, privileged routines Jarvis runs **only** with Vazghen's password — the
+identity gate. Each is a small standalone executable script, launched **detached** so it survives
+Jarvis being killed (needed for stop/restart).
+- **`goodnight`** → stops Jarvis (terminates the edge process).
+- **`phoenix`** → restarts Jarvis (kills the old process, launches a fresh one).
+- **`ragnarok`** → restarts the laptop (`shutdown /r` with a 15s grace; `shutdown /a` aborts).
+- **Mechanics:** `run_protocol(name, password)` tool → `brain/protocols.py` verifies the password
+  with `hmac.compare_digest` (constant-time) → launches `src/jarvis/protocols/<name>.py` detached.
+  Passwords come from `JARVIS_PROTOCOL_*_PASSWORD` (**change the defaults**). Jarvis is told (persona
+  + `memory/tools.md`) to **ask for the password first** and never run a protocol without it.
+- **Add a protocol:** drop a script in `src/jarvis/protocols/` and add an entry to the registry in
+  `brain/protocols.py` (name, script, password, spoken line, description).
+- **Verify:** `bench/test_phase4_system_protocols.py` — wrong/missing password refuses; correct
+  password launches the right script (the launch is stubbed in the test so nothing is killed).
+
+---
+
+### Phase 8 — Memory & automation infrastructure (Redis · Neo4j · n8n) — ⬜ planned
+**Origin:** three containers were found running in Docker Desktop (`jarvis-redis`, `jarvis-neo4j`,
+`jarvis-n8n`) — **leftovers from the abandoned `D:\JARVIS`** (their volumes mount `D:\JARVIS\...`).
+Their *data* is disposable (the 6 631 neo4j `JarvisMemory` nodes are legacy health-check/audit
+records — props `all_ok`/`failed_checks`/`path`, not semantic memory; redis holds 98
+`jarvis:memory:hot:*` cache keys; n8n holds legacy workflows). **None are required** for the
+current build to work — our memory is flat Markdown + APScheduler and that is intentional. But two
+of the three *patterns* are real upgrades worth adopting (pointed at `C:\Jarvis`, fresh data):
+
+- **8a · Redis hot-cache — adopt EARLY (best speed ROI, the #1 goal).** A lightweight in-memory
+  tier in front of the slow paths: cache freellmapi answers to repeated questions, YTMusic/Tavily
+  search results, vault-search hits, and rolling session context across edge restarts. Cuts TTFW on
+  cache hits from seconds to ~0 and survives a brain restart. Small, optional, degrades to "no cache"
+  if absent. *Deliverable:* `brain/cache.py` (redis-py, `JARVIS_REDIS_URL`, graceful no-op fallback)
+  wrapped around `LLMClient.complete` + the web/music tools.
+- **8b · Neo4j graph memory — LATER (quality, after flat memory proves limiting).** A knowledge
+  graph of entities/notes/decisions linked by typed relations gives **associative recall**
+  ("what's related to the rabbit farm?", "who did I discuss X with?") that substring search over
+  `.md` can't. Conceptually consistent with the OpenClaw fleet's existing graphify/graph-memory
+  direction. Heavier (2 GB heap) and a real architecture change, so it waits until the Markdown
+  memory is demonstrably the bottleneck. *Deliverable:* a memory-graph builder + a `graph_recall`
+  tool; the `.md` files stay the source of truth, the graph is a derived index.
+- **8c · n8n workflow automation — OPTIONAL / likely SKIP.** Visual no-code automation overlaps
+  what Phase 4 already does in code (APScheduler + tools + the proactive bridge). Only worth adopting
+  if Vazghen wants to wire external SaaS chains visually without touching Python. Otherwise retire the
+  container. *No deliverable unless requested.*
+
+**Cleanup either way:** the three legacy containers point at `D:\JARVIS` and should be stopped/removed
+(or re-pointed at `C:\Jarvis`) so they don't run against the abandoned project. **Verify:** `8a` — a
+repeated question returns from cache measurably faster (logged), and the brain still answers with redis
+stopped (graceful fallback).
+
+---
+
+## Expansion (Phases 9–12) — making him *great*, not just working
+
+Approved 2026-06-11. Full design + sequencing in **`docs/EXPANSION-PLAN.md`**. Order:
+**9 Memory → 10 Proactivity → 11 Email/Calendar/Smart-home → 12 Utilities.** Phase 8 (Redis/Neo4j)
+folds in as memory layers 9b/9c.
+
+### Phase 9 — Elite multi-layer memory — 🟡 L1+L2 built
+Six cooperating layers, fastest→deepest; the Markdown layers are the source of truth, the rest are
+accelerators. Each degrades gracefully.
+- **L0 Working** — current conversation (rolling 12 turns, RAM). *Exists.*
+- **L1 Learned/episodic** — one fact per note under `memory/learned/*.md` (frontmatter `created`/`tags`).
+  `remember`/`recall`/`forget` tools; keyword+recency scorer (tags ×5); dedup on normalised text. **Built.**
+- **L2 Journal** — per-day session summaries under `memory/journal/YYYY-MM-DD.md`; `JarvisAgent.end_session()`
+  writes a one-line summary on shutdown; `read_journal` tool for "what did we do yesterday". **Built.**
+- **L3 Vault** — the canonical Obsidian knowledge base (read-only, VPS-authoritative). Now **validated as
+  always-on** at warmup (`context.validate_vault`); `JARVIS_VAULT_PATH` marked **required**. *Exists, hardened.*
+- **L4 Hot-cache (was 8a) — next (9b):** `brain/cache.py` (redis-py, `JARVIS_REDIS_URL`, no-op fallback)
+  wrapping `LLMClient.complete` + web/music/vault search. Repeated question → near-zero TTFW; survives a
+  brain restart.
+- **L5 Semantic/graph (was 8b) — later (9c):** local embedder over L1+L3 for associative recall
+  ("what's related to X?"); Neo4j graph only once flat memory is demonstrably the bottleneck.
+- **Deliverables (built):** `brain/memory.py` (`MemoryStore`), `brain/tools/memory.py` (4 tools, in registry),
+  system-prompt digest injection, vault validation. **Verify:** `bench/test_phase9_memory.py` (17/17 —
+  remember/recall/recency/dedup/forget/journal/digest/vault-validate).
+
+### Phase 10 — Proactive engine — ⬜ planned
+A background **tick** that gathers signals → asks "is anything worth saying now, and how urgent?" →
+acts within an **interruption budget** (+ quiet hours) so he's helpful, not noisy. Each verb you named:
+- **remind** — existing scheduler + proactive surfacing.
+- **pause** — "hold that thought" / pause TTS / hold a task; `lockdown` protocol for full mute.
+- **ask for context** — agent **clarification loop**: ambiguous request → ask back *before* acting.
+- **re-ask / confirm** — **confirmation tier** before consequential/outward actions ("send this to X — yes?");
+  generalises the existing confirm-before-destructive rule.
+- **interrupt** — the tick pushes a TTS frame into the live pipeline mid-idle (the brain already pushes
+  spoken reminders this way).
+- **speak unprompted** — initiate when a signal's relevance clears a threshold and budget allows; else ntfy
+  if the edge is offline.
+- **Signals:** time-of-day + routine (L1/`proactive-companion.md`), calendar (P11), unread Telegram/email,
+  open L1/L2 threads, opt-in active-window (anti-distraction).
+- **Deliverables:** `brain/proactive.py` (tick + relevance scoring + budget + quiet-hours), a
+  `ProactiveEvent → speak/ntfy` bridge, agent `clarify()`/`confirm()` helpers, config
+  (`JARVIS_PROACTIVE_ENABLED`, interval, quiet hours, daily budget). **Verify:** budget/quiet-hours/
+  clarify-confirm logic (no live mic needed).
+
+### Phase 11 — Email · Calendar · Smart-home — ⬜ planned (needs one-time user credentials)
+- **Gmail via a Google OAuth app** — `brain/tools/gmail.py`: `read_email` (unread/search/read),
+  `draft_email`, `send_email` (**confirm-gated**, outward-facing). One-time OAuth → refresh token in `.env`,
+  same pattern as `bench/spotify_login.py`. A real Google Cloud "app", exactly as requested.
+- **Google Calendar** — `brain/tools/calendar.py`: `list_events`, `create_event`, `find_free` — the
+  backbone of the Phase 10 proactive engine. Same Google app as Gmail.
+- **Home Assistant smart-home** (local-first) — `brain/tools/smarthome.py`: `ha_call` (lights/heating/
+  locks/scenes), `ha_state` ("is the door locked?"). Local REST/WebSocket + long-lived token
+  (`JARVIS_HA_URL`/`JARVIS_HA_TOKEN`); confirm before locks/security. Each self-degrades until configured.
+
+### Phase 12 — Utilities belt — ⬜ planned
+One module, many cheap self-degrading tools, prefer **no-key/EU-friendly** providers (reuse fleet keys
+where they exist): **weather** (Open-Meteo) · **news** (Guardian/NewsAPI/HN) · **crypto** (CoinGecko) ·
+**stocks/ETFs** (Alpha Vantage/Polygon/yfinance) · **economy/FX** (ECB/exchangerate.host) · **translate**
+(EN/HY/RU/DE) · unit/currency **convert** · world **clock**/timezones · **dictionary**/synonyms ·
+**Wikipedia** lookup. **Deliverable:** `brain/tools/utility.py` (+ `prices.py` if it grows); all registered
+together since they degrade gracefully.
+
+### Phase X — Protocols expansion (cross-cutting, lands with P10) — ⬜ planned
+Cheap additions on the Phase-7 pattern (a script in `src/jarvis/protocols/` + a registry entry in
+`brain/protocols.py`): **`focus`/`deepwork`** (DND + block distracting sites + nudges) · **`briefing`/
+`morning`** (weather + calendar + overnight messages + top tasks + news) · **`lockdown`/`privacy`** (mute
+mic + pause memory writes) · **`guest`** (public capabilities only, no personal memory/system control) ·
+**`panic`/`safe`** (location + message to a trusted contact) · **`commute`** (switch to phone, brief en
+route) · **`backup`** (snapshot vault/memory/config). Plus cross-cutting **audit log** of tool actions and
+**self-health** (Jarvis notices his own brain/ticker/tunnel/vault down).
 
 ---
 
@@ -194,6 +423,14 @@ Each phase ships a runnable deliverable + a concrete verification. Phases are ~1
 | Speed benchmarks (TTFW, VAQI) | 5 |
 | Multi-device (Android/Termux, iPhone, glasses); Mentra OS; background on phone | 6 |
 | Local PC full suite | 0–5 (native) |
+| Password-gated protocols (goodnight/phoenix/ragnarok + focus/briefing/lockdown/guest/panic/commute/backup) | 7, X |
+| Persistent memory across sessions (learned facts, journal, recall) | 9 |
+| Fast/efficient memory layers (Redis hot-cache, vector/graph recall) | 9b, 9c |
+| Proactive companion (initiate, interrupt, pause, clarify, confirm) | 10 |
+| Email (Gmail via OAuth app), Calendar | 11 |
+| Smart-home (Home Assistant) | 11 |
+| Utilities (weather, news, crypto, stocks, FX, translate, convert, wiki) | 12 |
+| Audit log + self-health | X |
 
 ---
 

@@ -13,6 +13,19 @@ from pydantic import BaseModel
 
 
 # ---- edge -> brain --------------------------------------------------------------------
+class Hello(BaseModel):
+    """A client (laptop / iPhone / Mentra glasses) registering its session + device (Phase 6).
+
+    ``device_id`` is one of the supported devices (laptop|iphone|airpods|mentra, or an alias).
+    ``headphones_connected`` lets a phone/laptop say AirPods are connected, so the brain routes
+    everything to the headphones (private → barge-in on)."""
+
+    type: Literal["hello"] = "hello"
+    session_id: str
+    device_id: str = "laptop"
+    headphones_connected: bool = False
+
+
 class Utterance(BaseModel):
     """A finished, transcribed user turn sent from edge to brain."""
 
@@ -21,6 +34,7 @@ class Utterance(BaseModel):
     text: str
     speaker_verified: bool = False   # set by Phase-5 voice biometrics
     ts_user_stop_ms: int             # for TTFW measurement
+    device_id: str = "laptop"        # which of the four devices this turn came from (Phase 6)
 
 
 class Barge(BaseModel):
@@ -47,5 +61,5 @@ class StreamEvent(BaseModel):
     final: bool = False       # last chunk of this turn
 
 
-EdgeToBrain = Utterance | Barge
+EdgeToBrain = Hello | Utterance | Barge
 BrainToEdge = StreamEvent

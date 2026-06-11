@@ -1,0 +1,141 @@
+"""Memory tools — Jarvis remembers and recalls across sessions (Phase 9, L1/L2).
+
+`remember` writes a durable fact (he calls it when Vazghen says "remember that…", or on his own
+when something is clearly worth keeping). `recall` searches what he's learned. `forget` removes a
+fact. `read_journal` reads a day's continuity log. All back onto `brain/memory.py` (plain Markdown),
+so they work offline and never crash the brain.
+"""
+
+from __future__ import annotations
+
+from jarvis.brain.memory import STORE
+from jarvis.brain.tools.base import tool_error
+from jarvis.config import settings
+
+
+async def remember(args: dict) -> str:
+    if not settings.memory_enabled:
+        return "My long-term memory is switched off right now, sir."
+    text = (args.get("text") or "").strip()
+    if not text:
+        return "What would you like me to remember, sir?"
+    tags = args.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t for t in tags.replace(";", ",").split(",") if t.strip()]
+    try:
+        STORE.remember(text, tags=tags)
+        return "Noted, sir — I'll remember that."
+    except Exception as e:  # noqa: BLE001
+        return tool_error("remember", e)
+
+
+async def recall(args: dict) -> str:
+    if not settings.memory_enabled:
+        return "My long-term memory is switched off right now, sir."
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "What should I recall, sir?"
+    try:
+        hits = STORE.recall(query, limit=settings.memory_recall_limit)
+        if not hits:
+            return f"I don't have anything stored about '{query}', sir."
+        return "Here's what I remember: " + " ".join(h.rstrip(".") + "." for h in hits)
+    except Exception as e:  # noqa: BLE001
+        return tool_error("recall", e)
+
+
+async def forget(args: dict) -> str:
+    if not settings.memory_enabled:
+        return "My long-term memory is switched off right now, sir."
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "What should I forget, sir?"
+    try:
+        gone = STORE.forget(query)
+        return f"Forgotten, sir — I've dropped the note about '{query}'." if gone else (
+            f"I had nothing stored about '{query}', sir."
+        )
+    except Exception as e:  # noqa: BLE001
+        return tool_error("forget", e)
+
+
+async def read_journal(args: dict) -> str:
+    if not settings.memory_enabled:
+        return "My journal is switched off right now, sir."
+    try:
+        text = STORE.read_journal()
+        return text or "My journal is empty so far, sir."
+    except Exception as e:  # noqa: BLE001
+        return tool_error("read journal", e)
+
+
+SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": (
+                "Save a durable fact to long-term memory so you recall it in future sessions. "
+                "Use when Vazghen says 'remember that…/note that…/for future', or proactively when "
+                "you learn something clearly worth keeping (a preference, a person, a decision, an "
+                "ongoing thread). Keep each fact short and self-contained."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The fact to remember, one sentence."},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional topic tags (e.g. 'preference', 'rabbit-farm').",
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": (
+                "Search your long-term memory for what you've learned about a topic or person. "
+                "Use for 'what do you know about X / did I tell you about Y / what did I say'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Topic or person to recall."}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget",
+            "description": "Delete the best-matching fact from long-term memory ('forget that X').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Which fact to forget."}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_journal",
+            "description": (
+                "Read your most recent daily journal — a summary of recent sessions — for continuity "
+                "('what did we do yesterday / recently')."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
+
+HANDLERS = {"remember": remember, "recall": recall, "forget": forget, "read_journal": read_journal}

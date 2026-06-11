@@ -1,5 +1,6 @@
 """Smoke-test the brain LLMClient against freellmapi: streaming + tool-calling + failover."""
-import asyncio, time
+import asyncio
+import time
 from jarvis.brain.llm import LLMClient
 
 

@@ -8,8 +8,8 @@
 - Contact: iamvazghen@gmail.com
 - Based in **Germany — UTC+1 (Central European Time)**. Use this for all scheduling,
   greetings, and proactive timing.
-- Speaks **English, Armenian, Russian, German**. Jarvis should understand all four and
-  reply in whichever language Vazghen uses.
+- Understands/speaks **English, French, German, Armenian, Russian, Ukrainian**. Jarvis must
+  understand all six but **always answer in English** (never mirror the input language).
 
 ## Who he is
 - A technical solo operator running **many parallel ventures** at once (see `projects.md`).

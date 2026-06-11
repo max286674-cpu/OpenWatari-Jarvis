@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Jarvis</title>
+<style>
+  :root { --bg:#0b0f14; --fg:#e6edf3; --mut:#7d8590; --accent:#58a6ff; --you:#1f6feb22; --j:#23863633; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  body { display:flex; flex-direction:column; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  header { padding:12px 16px; display:flex; align-items:center; gap:10px; border-bottom:1px solid #21262d; }
+  header h1 { font-size:17px; margin:0; font-weight:600; letter-spacing:.3px; }
+  #dot { width:10px; height:10px; border-radius:50%; background:#f85149; transition:background .2s; }
+  #dot.on { background:#3fb950; } #dot.busy { background:#d29922; }
+  #status { margin-left:auto; color:var(--mut); font-size:12px; }
+  #log { flex:1; overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; gap:8px; }
+  .msg { padding:9px 12px; border-radius:14px; max-width:85%; white-space:pre-wrap; word-wrap:break-word; }
+  .you { align-self:flex-end; background:var(--you); border:1px solid #1f6feb55; }
+  .j   { align-self:flex-start; background:var(--j); border:1px solid #2386364d; }
+  .sys { align-self:center; color:var(--mut); font-size:12px; background:none; }
+  footer { padding:10px 12px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid #21262d; }
+  .row { display:flex; gap:8px; align-items:center; }
+  input[type=text] { flex:1; background:#0d1117; border:1px solid #30363d; color:var(--fg);
+    border-radius:10px; padding:11px 12px; font-size:16px; }
+  button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:10px;
+    padding:11px 14px; font-size:15px; font-weight:600; }
+  button:active { transform:scale(.97); }
+  #mic { background:var(--accent); color:#04101f; border:none; min-width:64px; }
+  #mic.rec { background:#f85149; color:#fff; }
+  .cfg { display:flex; gap:8px; align-items:center; padding:8px 16px; border-bottom:1px solid #21262d;
+    font-size:13px; color:var(--mut); flex-wrap:wrap; }
+  .cfg input[type=text] { flex:1; min-width:160px; padding:7px 9px; font-size:13px; }
+  .cfg label { display:flex; gap:5px; align-items:center; }
+  details { padding:0; } summary { list-style:none; cursor:pointer; }
+</style>
+</head>
+<body>
+  <header>
+    <span id="dot"></span>
+    <h1>Jarvis</h1>
+    <span id="status">disconnected</span>
+  </header>
+
+  <details>
+    <summary class="cfg"><span>⚙︎ connection</span></summary>
+    <div class="cfg">
+      <input id="url" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <label><input id="hp" type="checkbox" /> AirPods on this phone</label>
+      <button id="connect">Connect</button>
+    </div>
+  </details>
+
+  <div id="log"></div>
+
+  <footer>
+    <div class="row">
+      <input id="text" type="text" placeholder="Type, or hold the mic…" enterkeyhint="send" />
+      <button id="mic" title="Hold to talk">🎙</button>
+    </div>
+  </footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const log = $("log"), dot = $("dot"), statusEl = $("status");
+  const sid = "iphone-" + Math.random().toString(36).slice(2, 9);
+
+  // Default WS url = same host that served this page, brain port 8765, path /voice.
+  const defaultUrl = `ws://${location.hostname || "127.0.0.1"}:8765/voice`;
+  $("url").value = localStorage.getItem("jarvisUrl") || defaultUrl;
+  $("hp").checked = localStorage.getItem("jarvisHp") === "1";
+
+  let ws = null, speaking = false, jBuf = null;
+
+  function add(text, cls) {
+    const el = document.createElement("div");
+    el.className = "msg " + cls; el.textContent = text;
+    log.appendChild(el); log.scrollTop = log.scrollHeight;
+    return el;
+  }
+  function setState(s) {
+    statusEl.textContent = s;
+    dot.className = (s === "connected" || s === "ready") ? "on"
+      : (s === "thinking" || s === "speaking") ? "busy" : "";
+  }
+
+  // ---- text-to-speech (plays through whatever the phone outputs to — AirPods if connected) ----
+  function speak(text) {
+    if (!("speechSynthesis" in window) || !text.trim()) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.05; u.onstart = () => { speaking = true; };
+    u.onend = () => { speaking = false; };
+    speechSynthesis.speak(u);
+  }
+  function stopSpeaking() { if ("speechSynthesis" in window) speechSynthesis.cancel(); speaking = false; }
+
+  // ---- WebSocket to the brain ----
+  function connect() {
+    const url = $("url").value.trim();
+    localStorage.setItem("jarvisUrl", url);
+    localStorage.setItem("jarvisHp", $("hp").checked ? "1" : "0");
+    try { ws && ws.close(); } catch {}
+    setState("connecting…");
+    ws = new WebSocket(url);
+    ws.onopen = () => {
+      setState("connected");
+      send({ type:"hello", session_id:sid, device_id:"iphone",
+             headphones_connected: $("hp").checked });
+    };
+    ws.onclose = () => setState("disconnected");
+    ws.onerror = () => setState("error");
+    ws.onmessage = (e) => onEvent(JSON.parse(e.data));
+  }
+  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  function onEvent(ev) {
+    if (ev.type !== "stream") return;
+    if (ev.kind === "lifecycle") {
+      if (ev.delta === "ready") setState("ready");
+      else if (ev.delta === "thinking") { setState("thinking"); jBuf = null; }
+      else if (ev.delta === "cancelled") { stopSpeaking(); setState("ready"); }
+      else if (ev.delta === "error") { add("(error handling that)", "sys"); setState("ready"); }
+      return;
+    }
+    if (ev.kind === "tool") { add(ev.delta, "sys"); return; }   // spoken progress filler
+    if (ev.kind === "assistant") {
+      setState("speaking");
+      if (!jBuf) jBuf = add("", "j");
+      jBuf.textContent += ev.delta;
+      log.scrollTop = log.scrollHeight;
+      speak(ev.delta);
+      if (ev.final) { jBuf = null; setState("ready"); }
+    }
+  }
+
+  function sendUtterance(text) {
+    text = (text || "").trim(); if (!text) return;
+    if (speaking) { stopSpeaking(); send({ type:"barge", session_id:sid }); }
+    add(text, "you");
+    send({ type:"utterance", session_id:sid, text, device_id:"iphone",
+           speaker_verified:false, ts_user_stop_ms: Date.now() });
+  }
+
+  // ---- text input ----
+  $("text").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { sendUtterance($("text").value); $("text").value = ""; }
+  });
+  $("connect").addEventListener("click", connect);
+
+  // ---- push-to-talk via Web Speech API (graceful: falls back to typing if unsupported) ----
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = $("mic");
+  if (SR) {
+    const rec = new SR();
+    rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
+    let recording = false;
+    rec.onresult = (e) => sendUtterance(e.results[0][0].transcript);
+    rec.onend = () => { recording = false; mic.classList.remove("rec"); };
+    const start = (ev) => { ev.preventDefault();
+      if (speaking) { stopSpeaking(); send({ type:"barge", session_id:sid }); }
+      try { rec.start(); recording = true; mic.classList.add("rec"); } catch {} };
+    const stop = (ev) => { ev.preventDefault(); if (recording) try { rec.stop(); } catch {} };
+    mic.addEventListener("touchstart", start); mic.addEventListener("touchend", stop);
+    mic.addEventListener("mousedown", start);  mic.addEventListener("mouseup", stop);
+  } else {
+    mic.textContent = "⌨"; mic.title = "Voice not supported here — type instead";
+    mic.addEventListener("click", () => $("text").focus());
+  }
+
+  connect();  // auto-connect on load
+})();
+</script>
+</body>
+</html>

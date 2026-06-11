@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,7 +42,10 @@ class Settings(BaseSettings):
     )
 
     # --- Provider selection (the three knobs that define a deployment) -------------------
-    stt_provider: STTProvider = STTProvider.deepgram
+    # Whisper (local faster-whisper) by default: understands ALL six of Vazghen's languages
+    # (English/French/German/Armenian/Russian/Ukrainian) via auto-detect, free + offline. Deepgram
+    # is faster but can't do Armenian/Ukrainian — switch with JARVIS_STT_PROVIDER=deepgram.
+    stt_provider: STTProvider = STTProvider.whisper
     tts_provider: TTSProvider = TTSProvider.elevenlabs
     llm_backend: LLMBackend = LLMBackend.freellmapi   # Jarvis's OWN reasoning model
 
@@ -59,6 +61,28 @@ class Settings(BaseSettings):
     half_duplex: bool = True              # mute mic while Jarvis speaks (no self-hearing);
     #                                       set false only with AEC (Krisp) or headphones
 
+    # --- VAD & barge-in (Phase 1) -------------------------------------------------------
+    # Silero VAD (CPU, bundled) detects speech start/stop. Barge-in lets you interrupt
+    # Jarvis mid-sentence by speaking. Barge-in requires the mic NOT to hear Jarvis's own
+    # voice, so it only works on HEADPHONES (or with AEC) — never enable it with half_duplex
+    # on open speakers, or Jarvis's own playback interrupts himself. See README audio notes.
+    vad_enabled: bool = True
+    barge_in_enabled: bool = False        # interrupt Jarvis mid-speech on detected speech
+    # Smart barge-in: 'auto' detects the live output device and enables barge-in ONLY when
+    # you're on a private endpoint (headphones / AirPods / smart-glasses / phone-with-earbuds),
+    # where the mic can't re-hear Jarvis's TTS — and keeps it OFF on open speakers. 'on'/'off'
+    # force it. See edge/device_profile.py. (barge_in_enabled above is the legacy hard switch
+    # honoured when mode='auto' can't tell — e.g. a forced True still wins for AEC setups.)
+    barge_in_mode: str = "auto"           # auto | on | off
+    # For remote transports (Mentra glasses, iPhone client) the local audio device name says
+    # nothing about how YOU hear Jarvis, so the client declares it: 'glasses', 'phone-headphones',
+    # 'phone-speaker', 'headphones', 'speakers'. Blank = classify the local output device.
+    device_hint: str | None = None
+    vad_confidence: float = 0.6           # Silero speech-probability threshold (0..1)
+    vad_start_secs: float = 0.2           # speech must persist this long to count as "started"
+    vad_stop_secs: float = 0.6            # silence this long ends the turn
+    vad_min_volume: float = 0.5           # gate out very quiet room noise
+
     # --- ElevenLabs (the Jarvis voice) --------------------------------------------------
     elevenlabs_api_key: str | None = None
     elevenlabs_voice_id: str | None = None          # the specific voice you want Jarvis to have
@@ -68,7 +92,11 @@ class Settings(BaseSettings):
     # --- Deepgram (cloud STT for accurate, streaming recognition) -----------------------
     deepgram_api_key: str | None = None
     deepgram_model: str = "nova-3"
-    deepgram_language: str = "en"
+    # 'multi' = nova-3 multilingual code-switching: understands English, French, German, Russian
+    # (+ Spanish/Hindi/Portuguese/Italian/Dutch/Japanese). Deepgram does NOT support Armenian, and
+    # Ukrainian isn't in 'multi' — for those use the Whisper provider (stt_provider=whisper), which
+    # auto-detects and transcribes ALL of Vazghen's six languages. Jarvis always replies in English.
+    deepgram_language: str = "multi"
 
     # --- Audio routing (speakers <-> headphones / AirPods) ------------------------------
     # Output target: a name fragment or alias ("speakers", "headphones", "airpods") or a
@@ -77,6 +105,9 @@ class Settings(BaseSettings):
     # so Bluetooth stays in high-quality A2DP output mode (using AirPods as mic forces HFP).
     audio_output_device: str | None = None
     audio_input_device: str | None = None
+    # Auto-route to a connected private endpoint (AirPods Pro Max / headphones) when no explicit
+    # output is set: "if they're connected to the laptop, send everything to my headphones".
+    auto_route_headphones: bool = True
 
     # --- Local engine assets (used when provider == local) ------------------------------
     whisper_model: str = "base"           # faster-whisper size; "small" for more accuracy
@@ -85,13 +116,18 @@ class Settings(BaseSettings):
 
     # --- Brain / orchestrator -----------------------------------------------------------
     brain_ws_url: str = "ws://127.0.0.1:8765/voice"   # edge -> brain socket
-    brain_host: str = "127.0.0.1"
+    brain_host: str = "127.0.0.1"                     # set 0.0.0.0 to reach from phone/glasses
     brain_port: int = 8765
+    client_http_port: int = 8766                      # serves clients/iphone/ over HTTP
     api_auth_token: str | None = None                 # empty = loopback-only, no auth
 
     # OpenClaw Gateway (existing fleet) — an EXTERNAL team Jarvis can DELEGATE to, by
     # messaging ispir through the gateway. It is ONE of Jarvis's tools, not his brain.
     openclaw_delegation_enabled: bool = True
+    # Whether Jarvis may CONSULT the fleet (via ispir) without a per-session OK. Default OFF: the
+    # fleet touches shared VPS infra, so it stays a deliberate opt-in. Set JARVIS_FLEET_AUTHORIZED=
+    # true in .env to arm it for a 24/7 deployment. (Jarvis still always re-voices results as himself.)
+    fleet_authorized: bool = False
     openclaw_gateway_url: str = "http://100.107.141.83:3200"
     openclaw_token: str | None = None
     openclaw_remote_token: str | None = None
@@ -113,10 +149,157 @@ class Settings(BaseSettings):
     vault_path: str | None = None
     audit_log_dir: str | None = None
 
+    # --- Phase 3: knowledge & channel tools ---------------------------------------------
+    # Every Phase 3 tool degrades gracefully: when its credentials are absent it returns a
+    # short "not configured yet" note that Jarvis re-voices, so the brain never crashes on a
+    # missing integration. Flip a key in .env to light each one up.
+    http_timeout_seconds: int = 20
+
+    # Obsidian vault (read/search the LOCAL mirror). Writes stay VPS-authoritative and are
+    # intentionally NOT performed here (the vault is a one-way VPS->local sync — local edits
+    # get clobbered). vault_path is defined above.
+    vault_search_max_results: int = 6
+    vault_read_max_chars: int = 4000
+
+    # --- Phase 9: persistent memory (learned facts L1 + daily journal L2) ----------------
+    # Markdown-backed long-term memory under memory/learned and memory/journal. The vault
+    # (above) is L3 and should ALWAYS be configured so he can read it; it's validated at start.
+    memory_enabled: bool = True
+    memory_recall_limit: int = 5        # facts returned by the recall tool
+    memory_digest_max: int = 20         # recent learned facts injected into the system prompt
+    redis_url: str | None = None        # L4 hot-cache (Phase 9b); blank = no cache (graceful)
+    # L5 semantic recall (Phase 9c): rank learned facts by meaning, not just keywords. Only takes
+    # effect if a local embedder (`sentence-transformers`) is installed; otherwise recall stays
+    # keyword-only (graceful no-op). semantic_weight scales the cosine score blended into recall.
+    memory_semantic_enabled: bool = True
+    memory_semantic_model: str = "all-MiniLM-L6-v2"
+    memory_semantic_weight: float = 4.0
+
+    # Web search (Tavily) + page scrape (Firecrawl) + headless interactive browse (Browserbase).
+    tavily_api_key: str | None = None
+    firecrawl_api_key: str | None = None
+    firecrawl_base_url: str = "https://api.firecrawl.dev"
+    browserbase_api_key: str | None = None
+    browserbase_project_id: str | None = None
+
+    # Telegram: a Telethon USER client is required to READ unread DMs (the Bot API cannot);
+    # sending uses the simpler Bot API. telegram_bot_token is defined above.
+    telegram_api_id: int | None = None
+    telegram_api_hash: str | None = None
+    telegram_session: str = "jarvis"            # Telethon session name (one-time login)
+    telegram_default_chat: str | None = None    # default recipient/chat_id for "send a telegram"
+    telegram_phone: str | None = None           # your number, intl format (+...), for the one-time login
+    giphy_api_key: str | None = None             # for "@gif <query>" search; falls back to Giphy's public key
+    # Personal music: a Telegram chat/group where you keep audio tracks ("my playlist"). Jarvis
+    # finds a track there (by name, or random) and delivers it to telegram_music_target so it
+    # surfaces on your PHONE Telegram (one tap to play). id / @username / exact title all work.
+    telegram_playlist_chat: str | None = None
+    telegram_music_target: str = "me"            # where the chosen track is sent ('me' = Saved Messages → phone)
+    # "Jarvis Music Room" group: Jarvis streams tracks into its voice chat (via pytgcalls) so they
+    # play LIVE on your phone when you join that voice chat. Telethon marked id (-100…).
+    telegram_music_room_chat: str | None = None
+
+    # Spotify playback control via the Web API (needs a one-time user OAuth refresh token).
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
+    spotify_refresh_token: str | None = None
+    spotify_redirect_uri: str = "http://127.0.0.1:8888/callback"  # must match the Spotify app setting
+    # Default music backend for "play X". 'ytmusic' = YouTube Music (free, music-tuned search,
+    # no account) — the Spotify replacement. 'telegram' = your personal Telegram playlist.
+    # 'youtube' = plain YouTube. 'spotify' kept only for Premium accounts.
+    music_source: str = "ytmusic"
+
+    # --- Phase 11: Gmail + Calendar (one Google OAuth app) + Home Assistant -------------
+    # Vazghen runs the one-time consent (bench/google_login.py) -> a refresh token below. The same
+    # app/token serves Gmail (read/draft/send) and Calendar (list/create). All degrade to a spoken
+    # "not configured" note until set. send_email + create_event are confirm-gated (outward-facing).
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_refresh_token: str | None = None
+    google_oauth_redirect: str = "http://127.0.0.1:8585/oauth2callback"  # must match the Google app
+    gmail_address: str = "me"            # 'me' = the authorized account; or an explicit address
+    # Home Assistant — local-first smart home. A long-lived access token from your HA profile, and
+    # the base URL of your HA instance (e.g. http://homeassistant.local:8123). Locks/alarms confirm.
+    ha_url: str | None = None
+    ha_token: str | None = None
+
+    # --- System control (files / processes / PowerShell) --------------------------------
+    # Jarvis can manage the local machine: create/delete files & folders, list/kill/start
+    # processes, and run PowerShell (optionally elevated, which raises a Windows UAC prompt).
+    # These are powerful — the persona rule is to confirm anything destructive first.
+    system_tools_enabled: bool = True
+    # Paths under these roots are refused for deletion (defence against catastrophic rm).
+    system_protected_paths: str = "C:\\Windows,C:\\Program Files,C:\\Program Files (x86)"
+
+    # --- Phase 13: coding & self-improvement (Git + GitHub) -----------------------------
+    # Jarvis can read/write his own source, run the test suite, lint, and make REVERSIBLE git
+    # commits (never force-push / reset / rewrite history). Secrets (.env, sessions, voiceprint,
+    # audit/, backups/) are hard-blocked from read/write. Commits + pushes are confirm-gated.
+    coding_tools_enabled: bool = True
+    skills_enabled: bool = True
+    github_token: str | None = None              # a fine-grained PAT (Contents: read/write on the repo)
+    github_repo: str | None = None               # "owner/name" — used for push guidance + status
+    git_author_name: str = "Jarvis"              # the author on Jarvis's own commits
+    git_author_email: str = "jarvis@vazghen.local"
+
+    # --- Local interactive browser (visible window, persistent login) -------------------
+    # A real Chromium Jarvis drives with Playwright: open windows, click, type (incl.
+    # passwords/email when you ask him to log in), navigate. Visible by default so you can
+    # watch and complete anything he hands back. Persistent profile keeps you logged in.
+    browser_tools_enabled: bool = True
+    browser_headless: bool = False
+    browser_profile_dir: str | None = None       # default: <repo>/.jarvis-browser
+    browser_nav_timeout_ms: int = 30000
+
+    # --- Protocols (password-gated executable routines, FRIDAY/JARVIS-style) -------------
+    # Named programs Jarvis runs ONLY when given the matching password. CHANGE these defaults.
+    protocols_enabled: bool = True
+    protocol_goodnight_password: str = "morpheus"   # stops Jarvis
+    protocol_phoenix_password: str = "icarus"       # restarts Jarvis
+    protocol_ragnarok_password: str = "valhalla"    # restarts the laptop
+
+    # --- Phase 4: proactivity & notifications -------------------------------------------
+    scheduler_db_path: str | None = None          # default: <repo>/jarvis_jobs.sqlite
+    ntfy_topic: str | None = None                 # ntfy.sh topic for push when voice is unavailable
+    ntfy_server: str = "https://ntfy.sh"
+    # Phase 4b — always-on VPS ticker (deploy/vps/) that owns RECURRING (daily) reminders so they
+    # push even with the PC off. Optional: when set, set_reminder(daily=…) also registers there.
+    ticker_url: str | None = None                 # e.g. http://127.0.0.1:8770 (on the VPS host)
+    ticker_token: str | None = None               # optional bearer secret matching the ticker
+
+    # --- Phase 10: proactive engine (initiate, interrupt, clarify, confirm) -------------
+    # A background tick gathers signals (routine, calendar, unread, open threads, self-health)
+    # and decides whether to say something *unprompted* — helpful, never noisy. OFF by default
+    # because it speaks on its own; flip JARVIS_PROACTIVE_ENABLED=true to switch the companion on.
+    # ON by default for the 24/7 production companion (he initiates within budget + quiet hours).
+    # For a quiet testing session, set JARVIS_PROACTIVE_ENABLED=false.
+    proactive_enabled: bool = True
+    proactive_tick_seconds: int = 300            # how often the tick evaluates signals
+    proactive_quiet_hours: str = "23:00-07:00"   # no unprompted voice in this window (local time)
+    proactive_daily_budget: int = 6              # max unprompted interjections per day
+    proactive_relevance_threshold: float = 0.6   # only speak when a signal's urgency clears this
+    proactive_repeat_suppress_minutes: int = 120  # don't repeat the same interjection within this
+    # An exceptionally urgent signal (>= this) may still reach him in quiet hours — as a silent
+    # phone push, never spoken aloud. Everything below it waits until quiet hours end.
+    proactive_quiet_override_urgency: float = 0.95
+    # Where "what's the weather" and the morning briefing default to when no place is named.
+    home_location: str | None = None
+
+    # --- Phase 5: speaker biometrics (respond only to Vazghen's voice) ------------------
+    speaker_id_enabled: bool = False      # gate commands by speaker match (off until enrolled)
+    speaker_profile_path: str | None = None  # default: <repo>/voiceprint.json
+    speaker_threshold: float = 0.25       # ECAPA cosine-similarity accept threshold (~EER point)
+
     # --- Latency / behaviour ------------------------------------------------------------
     directed_only: bool = True            # ignore ambient speech & own playback
     aec_enabled: bool = True              # acoustic echo cancellation (don't hear self)
     ttfw_target_ms: int = 1200            # Time-To-First-Word goal, surfaced in the TUI
+
+    @property
+    def duplex_mode(self) -> str:
+        """'full' = mic open while Jarvis speaks (barge-in, needs headphones/AEC);
+        'half' = mic muted while Jarvis speaks (speakers-safe, no barge-in)."""
+        return "full" if self.barge_in_enabled else "half"
 
     @property
     def using_cloud_voice(self) -> bool:

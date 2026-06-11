@@ -1,0 +1,47 @@
+<#
+.SYNOPSIS
+  Register Jarvis's edge (voice) process to auto-start on logon - hidden, no console window,
+  auto-restart on crash. The last piece of Phase 4 ("true 24/7 on the desktop").
+
+.DESCRIPTION
+  Creates a Windows Scheduled Task that launches the edge assistant with the venv's pythonw.exe
+  (windowless) at logon. Wake-word gating means it sits idle - no STT/LLM/TTS cost - until you
+  say "Hey Jarvis". It will NOT start now; it starts at your next logon. Remove it any time with
+  scripts\uninstall_edge_service.ps1.
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File scripts\install_edge_service.ps1
+#>
+param(
+    [string]$TaskName = "JarvisEdge",
+    [string]$RepoRoot = "C:\Jarvis",
+    [switch]$StartNow
+)
+$ErrorActionPreference = "Stop"
+
+$pythonw = Join-Path $RepoRoot ".venv\Scripts\pythonw.exe"
+if (-not (Test-Path $pythonw)) {
+    throw "pythonw not found at $pythonw. Run 'uv sync' with the edge/cloud-voice/brain/local-voice extras first."
+}
+
+# pythonw.exe -m jarvis.edge.assistant, working dir = repo (so .env + the editable package load).
+$action  = New-ScheduledTaskAction -Execute $pythonw -Argument "-m jarvis.edge.assistant" -WorkingDirectory $RepoRoot
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+# Survive crashes (3 restarts, 1 min apart), no run-time limit, start if it was missed.
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+# Interactive principal: the task runs in YOUR session so it can reach the mic + speakers.
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+    -Principal $principal -Description "Jarvis voice assistant (edge) - auto-start on logon" -Force | Out-Null
+
+Write-Host "[OK] Registered scheduled task '$TaskName'."
+Write-Host "     Jarvis will start hidden at your next logon. Say 'Hey Jarvis' to wake him."
+Write-Host "     Disable any time: powershell -ExecutionPolicy Bypass -File scripts\uninstall_edge_service.ps1"
+
+if ($StartNow) {
+    Start-ScheduledTask -TaskName $TaskName
+    Write-Host "[OK] Started '$TaskName' now."
+}

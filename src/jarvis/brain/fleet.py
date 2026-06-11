@@ -16,8 +16,25 @@ reverse-engineered from the gateway control UI, is:
 SECURITY NOTE: connecting authenticates against SHARED production infrastructure. Jarvis
 requests only ``operator.read``/``operator.write`` (message + read), NOT the full admin
 scope set the human control UI uses. Live delegation is gated behind
-``settings.openclaw_delegation_enabled`` AND a one-time user authorization (the first live
-connect is surfaced for confirmation) so the brain never silently escalates onto the fleet.
+``settings.openclaw_delegation_enabled`` AND a one-time user authorization
+(``JarvisAgent.fleet_authorized``) so the brain never silently escalates onto the fleet.
+
+AUTH GATES discovered against the live gateway (all validated):
+  * frame envelope ``{"type":"req","id","method","params"}`` — correct.
+  * params must NOT carry the challenge ``nonce`` at root (token-only connect).
+  * ``client.id`` is an enum (openclaw-control-ui/tui/app/android/ios/macos/probe).
+  * ``openclaw-control-ui`` additionally requires an Origin allowlist + ECDSA device
+    identity (HTTPS/secure-context) — not available to a Python backend.
+  * a terminal-class client id avoids device identity, BUT presenting as a built-in
+    client to pass the allowlist is exactly what a SANCTIONED path should not have to do.
+
+THEREFORE the intended, non-spoofing transport is one the user explicitly enables:
+  (a) run the official ``openclaw agent --agent ispir -m ... --json`` CLI on the VPS
+      (needs an SSH permission rule), or
+  (b) the user allowlists a dedicated Jarvis client id / origin on their own gateway, or
+  (c) a tiny authorized REST shim on the VPS that itself shells out to the CLI.
+Until one of those is chosen, ``delegate_to_fleet`` stays disabled; the brain answers
+on its own and tells Vazghen it can consult the fleet once the bridge is enabled.
 """
 
 from __future__ import annotations
@@ -26,8 +43,6 @@ import asyncio
 import json
 import uuid
 from typing import Any
-
-from loguru import logger
 
 from jarvis.config import settings
 
@@ -43,19 +58,29 @@ def _ws_url() -> str:
     return f"{scheme}://{host}/ws?token={settings.openclaw_token}"
 
 
+def _origin() -> str:
+    # The control-UI client id is origin-checked; present the gateway's own host as Origin
+    # (equivalent to opening the Control UI from the gateway host).
+    return settings.openclaw_gateway_url.rstrip("/")
+
+
 def _req(method: str, params: dict[str, Any]) -> dict[str, Any]:
     return {"type": "req", "id": str(uuid.uuid4()), "method": method, "params": params}
 
 
-def _connect_params(nonce: str | None) -> dict[str, Any]:
+def _connect_params(nonce: str | None = None) -> dict[str, Any]:
+    # Token-only connect (no device-identity signature), so the challenge nonce is not
+    # echoed at params root — the server rejects an unexpected 'nonce' property there.
     return {
         "minProtocol": PROTOCOL,
         "maxProtocol": PROTOCOL,
+        # Connect as the terminal client (openclaw-tui): token auth, no device-identity
+        # attestation and no control-ui origin allowlist (unlike openclaw-control-ui).
         "client": {
-            "id": "openclaw-control-ui",
-            "version": "jarvis-brain",
+            "id": "openclaw-tui",
+            "version": "jarvis-brain-0.1",
             "platform": "python",
-            "mode": "backend",
+            "mode": "cli",
             "instanceId": str(uuid.uuid4()),
         },
         "role": "operator",
@@ -64,7 +89,6 @@ def _connect_params(nonce: str | None) -> dict[str, Any]:
         "auth": {"token": settings.openclaw_token},
         "userAgent": "jarvis-brain",
         "locale": "en",
-        "nonce": nonce,
     }
 
 
@@ -74,16 +98,19 @@ class FleetUnavailable(RuntimeError):
 
 async def delegate_to_fleet(
     task: str,
-    agent: str | None = None,
     timeout_s: int | None = None,
     on_progress=None,
 ) -> str:
-    """Send `task` to the fleet via `agent` (default: the router, ispir) and return the
-    final answer text. `on_progress(note)` is called with short status strings for spoken
-    progress. Raises FleetUnavailable if delegation is disabled or the gateway is unreachable.
+    """Hand `task` to the fleet's TEAM LEAD (ispir) and return the final answer text.
 
-    This performs a LIVE connect to shared infrastructure — only call it after the user has
-    authorized fleet delegation for this session.
+    Jarvis talks to **ispir only** — never a specialist directly. ispir is the team lead: he
+    re-reads the task, decides which specialist(s) to involve, briefs them in depth, and
+    returns the synthesized result. So the target agent is fixed to the router; there is no
+    per-call agent override by design (the previous `agent=` parameter was removed).
+
+    `on_progress(note)` is called with short status strings for spoken progress. Raises
+    FleetUnavailable if delegation is disabled or the gateway is unreachable. This performs a
+    LIVE connect to shared infrastructure — only call after the user has authorized delegation.
     """
     if not settings.openclaw_delegation_enabled:
         raise FleetUnavailable("fleet delegation is disabled (JARVIS_OPENCLAW_DELEGATION_ENABLED)")
@@ -95,7 +122,8 @@ async def delegate_to_fleet(
     except ImportError as e:  # pragma: no cover
         raise FleetUnavailable("websockets not installed (uv sync --extra brain)") from e
 
-    agent = agent or settings.openclaw_router_agent
+    # Always the team lead. Jarvis never addresses a specialist directly.
+    agent = settings.openclaw_router_agent
     timeout_s = timeout_s or settings.openclaw_request_timeout_seconds
     url = _ws_url()
 
@@ -103,6 +131,7 @@ async def delegate_to_fleet(
         async with websockets.connect(
             url,
             additional_headers={"Authorization": f"Bearer {settings.openclaw_token}"},
+            origin=_origin(),
             open_timeout=10,
             max_size=16 * 1024 * 1024,
         ) as ws:
@@ -159,28 +188,32 @@ async def _collect_session(ws, req_id: str, timeout_s: int, on_progress) -> str:
     return "\n".join(p for p in final_parts if p).strip() or "(the fleet returned no text)"
 
 
-# Tool schema Jarvis's LLM sees. Description makes the separation explicit.
+# Tool schema Jarvis's LLM sees. Description makes the separation AND the ispir-only rule explicit.
 FLEET_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "delegate_to_fleet",
         "description": (
-            "Consult the OpenClaw specialist fleet for deep domain work you can't answer "
-            "yourself: live research, finance/markets, real-estate (IS24), crypto security, "
-            "coding tasks, or vault/Notion actions. They are an external team you message via "
-            "the router 'ispir'. Use ONLY when your own knowledge is insufficient or live/tool "
-            "access is required. You remain Jarvis and will re-voice their answer yourself."
+            "Hand a task to the OpenClaw fleet's TEAM LEAD, 'ispir', for deep domain work you "
+            "can't do yourself: live multi-step research, finance/markets, real-estate (IS24), "
+            "crypto security, larger coding tasks, or vault/Notion writes. You contact ispir and "
+            "ONLY ispir — he is the one who decides which specialist handles it, briefs them in "
+            "depth, and returns the result. You never message a specialist directly. Use only "
+            "when your own knowledge or your own tools (web_search, scrape_url, vault) aren't "
+            "enough. Give ispir a clear, self-contained brief: the goal, any context, and what a "
+            "good answer looks like. You remain Jarvis and re-voice his answer in your own words."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "The self-contained task/question to hand to the fleet.",
-                },
-                "agent": {
-                    "type": "string",
-                    "description": "Optional specific agent; default routes through ispir.",
+                    "description": (
+                        "A clear, self-contained brief for the team lead (ispir): the goal, "
+                        "relevant context, and the desired form of the answer. ispir expands it "
+                        "into specialist instructions — so state intent fully, don't pre-assign "
+                        "an agent."
+                    ),
                 },
             },
             "required": ["task"],

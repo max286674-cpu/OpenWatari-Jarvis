@@ -20,6 +20,10 @@ from jarvis.config import settings
 _FAILOVER = (RateLimitError, APITimeoutError, APIError)
 
 
+class _EmptyResponse(Exception):
+    """A model returned 200 but with no usable choice (some proxies wrap errors in a 200)."""
+
+
 class LLMClient:
     """Thin wrapper over the freellmapi OpenAI-compatible endpoint with model failover."""
 
@@ -58,10 +62,13 @@ class LLMClient:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
                 resp = await self._client.chat.completions.create(**kwargs)
+                if not getattr(resp, "choices", None):
+                    # 200 with no choices = proxy/model error object — fail over, don't crash.
+                    raise _EmptyResponse(getattr(resp, "error", None) or "empty choices")
                 if model != self._chain[0]:
                     logger.warning(f"LLM primary unavailable; answered via fallback '{model}'")
                 return resp.choices[0].message
-            except _FAILOVER as e:
+            except (_FAILOVER, _EmptyResponse) as e:
                 last_err = e
                 logger.warning(f"LLM model '{model}' failed ({type(e).__name__}); trying next")
                 continue
@@ -84,12 +91,16 @@ class LLMClient:
                 )
                 if model != self._chain[0]:
                     logger.warning(f"LLM streaming via fallback '{model}'")
+                got_any = False
                 async for chunk in stream:
                     delta = chunk.choices[0].delta.content if chunk.choices else None
                     if delta:
+                        got_any = True
                         yield delta
+                if not got_any:
+                    raise _EmptyResponse("stream produced no content")
                 return
-            except _FAILOVER as e:
+            except (_FAILOVER, _EmptyResponse) as e:
                 last_err = e
                 logger.warning(f"LLM stream '{model}' failed ({type(e).__name__}); trying next")
                 continue

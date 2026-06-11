@@ -1,5 +1,6 @@
 """End-to-end test of JarvisAgent: warmup, direct Q, time tool, session memory, fleet gate."""
-import asyncio, time
+import asyncio
+import time
 from jarvis.brain.agent import JarvisAgent
 
 

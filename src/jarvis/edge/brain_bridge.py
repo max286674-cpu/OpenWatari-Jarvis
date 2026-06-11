@@ -14,7 +14,12 @@ from __future__ import annotations
 import asyncio
 
 from loguru import logger
-from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    Frame,
+    InterruptionFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from jarvis.brain.agent import JarvisAgent
@@ -25,17 +30,43 @@ class JarvisBrain(FrameProcessor):
         super().__init__()
         self._agent = agent or JarvisAgent()
         self._busy = False  # ignore overlapping transcripts while a turn is in flight
+        self._turn_task: asyncio.Task | None = None
 
     async def warmup(self) -> None:
         await self._agent.warmup()
+        self._start_scheduler()
+
+    def _start_scheduler(self) -> None:
+        """Start the proactive scheduler and teach it to SPEAK fired reminders through us."""
+        try:
+            from jarvis.brain.scheduler import SCHEDULER
+
+            loop = asyncio.get_running_loop()
+
+            def speak(message: str) -> None:
+                # Called from the scheduler (same loop); push a spoken reminder downstream.
+                loop.create_task(self.push_frame(TTSSpeakFrame(f"Reminder, sir: {message}")))
+
+            SCHEDULER.start(on_speak=speak)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"scheduler not started: {e}")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
+        # Barge-in: abort the in-flight turn so Jarvis stops talking and listens.
+        if isinstance(frame, InterruptionFrame):
+            if self._turn_task and not self._turn_task.done():
+                logger.info("brain: interrupted — cancelling current turn")
+                self._turn_task.cancel()
+            self._busy = False
+            await self.push_frame(frame, direction)
+            return
+
         if isinstance(frame, TranscriptionFrame):
             text = (getattr(frame, "text", "") or "").strip()
             if text and not self._busy:
-                asyncio.create_task(self._handle(text))
+                self._turn_task = asyncio.create_task(self._handle(text))
             return  # consume the transcription
 
         await self.push_frame(frame, direction)
@@ -53,7 +84,7 @@ class JarvisBrain(FrameProcessor):
             if reply:
                 logger.info(f"reply: {reply!r}")
                 await self.push_frame(TTSSpeakFrame(reply))
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("brain turn failed")
             await self.push_frame(TTSSpeakFrame("Sorry sir, I hit an error handling that."))
         finally:

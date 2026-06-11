@@ -1,5 +1,6 @@
 """Compare TTFT across candidate models to pick a fast conversational tier."""
-import asyncio, time
+import asyncio
+import time
 from openai import AsyncOpenAI
 from jarvis.config import settings
 

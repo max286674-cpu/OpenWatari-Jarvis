@@ -9,7 +9,7 @@ S = getattr(ElevenLabsTTSService, "Settings", None)
 if S is not None:
     try:
         print("Settings fields:", list(S.model_fields.keys()))
-    except Exception as e:
+    except Exception:
         print("sig:", inspect.signature(S))
 
 # WorkerRunner replacement

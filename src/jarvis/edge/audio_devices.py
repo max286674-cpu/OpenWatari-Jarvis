@@ -133,6 +133,28 @@ def find_output_device(query: str, devices: list[AudioDevice] | None = None) -> 
     return max(pool, key=lambda d: d.max_output_channels)
 
 
+# Substrings that mark an OUTPUT device as a PRIVATE/headphone endpoint (AirPods etc.). Used by
+# auto-routing: if such a device is connected to this laptop, prefer it over the open speakers.
+_PRIVATE_OUTPUT_CUES = ("airpod", "headphone", "headset", "buds", "earphone", "bluetooth", "bt audio")
+
+
+def prefer_private_output(devices: list[AudioDevice] | None = None) -> AudioDevice | None:
+    """Return a connected private/headphone OUTPUT device (e.g. AirPods Pro Max) if one exists.
+
+    This is the "auto-route to headphones" rule: when AirPods are connected to the laptop, Jarvis
+    should play through them automatically (and barge-in then auto-enables via device_profile).
+    Prefers a high-quality A2DP stereo endpoint over the telephone-grade Hands-Free one.
+    """
+    devs = devices if devices is not None else list_devices()
+    outputs = [d for d in devs if d.is_output]
+    matches = [d for d in outputs if any(c in d.name.lower() for c in _PRIVATE_OUTPUT_CUES)]
+    if not matches:
+        return None
+    non_hfp = [d for d in matches if "hands-free" not in d.name.lower() and "headset" not in d.name.lower()]
+    pool = non_hfp or matches
+    return max(pool, key=lambda d: d.max_output_channels)
+
+
 def find_input_device(query: str, devices: list[AudioDevice] | None = None) -> AudioDevice | None:
     devs = devices if devices is not None else list_devices()
     inputs = [d for d in devs if d.is_input]
@@ -158,13 +180,24 @@ def load_output_preference() -> str | None:
         return None
 
 
-def resolve_output_index(preferred: str | None) -> tuple[int | None, str]:
+def resolve_output_index(
+    preferred: str | None, auto_route_headphones: bool = True
+) -> tuple[int | None, str]:
     """Pick an output device index given an optional preference (config or saved pref).
 
     Returns (index_or_None, human_label). None index means "use the OS default".
+
+    With no explicit preference (or pref == 'auto') and ``auto_route_headphones`` on, Jarvis
+    auto-routes to a connected private endpoint (AirPods Pro Max / headphones) when one is
+    present — "if they're connected, send everything to my headphones" — otherwise the OS default.
+    An explicit preference ('speakers', a device name, an index) always wins over auto-routing.
     """
     pref = preferred or load_output_preference()
-    if not pref:
+    if not pref or pref.strip().lower() == "auto":
+        if auto_route_headphones:
+            priv = prefer_private_output()
+            if priv is not None:
+                return priv.index, f"{priv.name} (auto-routed to headphones)"
         idx = default_output_index()
         devs = list_devices()
         label = next((d.name for d in devs if d.index == idx), "system default")

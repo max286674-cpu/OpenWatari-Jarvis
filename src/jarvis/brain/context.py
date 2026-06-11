@@ -11,6 +11,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from jarvis.config import settings
+
 # repo root = .../src/jarvis/brain/context.py -> parents[3]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSONALITY_PATH = _REPO_ROOT / "personality" / "jarvis.md"
@@ -21,6 +23,7 @@ _MEMORY_ORDER = [
     "about-vazghen.md",
     "proactive-companion.md",
     "projects.md",
+    "tools.md",
     "openclaw-fleet.md",
     "environment.md",
 ]
@@ -50,6 +53,36 @@ def load_memory_files() -> list[tuple[str, str]]:
     return [(p.name, _read(p)) for p in files]
 
 
+def _learned_digest() -> str:
+    """Recent learned facts (L1) as a short bullet list for the system prompt."""
+    if not settings.memory_enabled:
+        return ""
+    try:
+        from jarvis.brain.memory import STORE
+
+        facts = STORE.recent_digest(settings.memory_digest_max)
+        return "\n".join(f"- {f}" for f in facts)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"learned-memory digest unavailable: {e}")
+        return ""
+
+
+def validate_vault() -> tuple[bool, str]:
+    """L3 must always be readable. Returns (ok, message) and logs loudly if not."""
+    if not settings.vault_path:
+        msg = "Obsidian vault (L3) is NOT configured — set JARVIS_VAULT_PATH to the local mirror."
+        logger.warning(msg)
+        return False, msg
+    p = Path(settings.vault_path)
+    if not p.is_dir():
+        msg = f"Obsidian vault path '{settings.vault_path}' is not a readable folder."
+        logger.warning(msg)
+        return False, msg
+    n = sum(1 for _ in p.rglob("*.md"))
+    logger.info(f"Obsidian vault (L3) ready: {n} notes at {p}")
+    return True, f"vault ready ({n} notes)"
+
+
 def build_system_prompt() -> str:
     """Assemble the full system prompt: persona + memory, with clear section headers."""
     persona = _read(PERSONALITY_PATH)
@@ -63,6 +96,22 @@ def build_system_prompt() -> str:
             "Use this to ground your answers. Don't recite it; draw on it naturally.\n\n"
             + "\n\n".join(mem_blocks)
         )
+    digest = _learned_digest()
+    if digest:
+        parts.append(
+            "# What you've learned about Vazghen (recent)\n\n"
+            "Things you saved in past conversations. Use the `recall` tool for anything older.\n\n"
+            + digest
+        )
+    parts.append(
+        "# Acting proactively, clarifying, and confirming\n"
+        "When a request is too thin to act on safely — a bare 'do it', an unclear target — ask one "
+        "short clarifying question before guessing. Before anything outward-facing or hard to undo "
+        "(sending an email or message, deleting files, killing processes, running PowerShell, "
+        "creating a calendar event, operating a lock or device, running a protocol), state what "
+        "you're about to do and get a yes first. Reads and lookups need no confirmation — just do "
+        "them. If you ever speak unprompted, lead with why in a few words, then stop."
+    )
     parts.append(
         "# Voice-output rules\n"
         "You are heard, not read. No markdown, no bullet points, no emoji, no code blocks. "
