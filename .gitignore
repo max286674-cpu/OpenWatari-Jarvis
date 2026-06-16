@@ -30,6 +30,15 @@ backups/
 memory/learned/
 memory/journal/
 
+# --- Internal working docs (kept local, not published) ---
+fine-tuning.md
+TODO-NOW.md
+
 # --- OS ---
 .DS_Store
 Thumbs.db
+
+# --- Local model caches + scratch (not source) ---
+.speechbrain-ecapa/
+pretrained_models/
+_suite_out.txt

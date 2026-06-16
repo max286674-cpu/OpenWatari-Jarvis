@@ -18,6 +18,7 @@ from loguru import logger
 
 from jarvis.brain.context import build_system_prompt
 from jarvis.brain.fleet import FLEET_TOOL_SCHEMA, FleetUnavailable, delegate_to_fleet
+from jarvis.config import settings
 from jarvis.brain.llm import LLMClient
 from jarvis.brain.tools import (
     core_tool_schemas,
@@ -26,29 +27,60 @@ from jarvis.brain.tools import (
     tool_handlers,
 )
 
-# Short spoken filler per tool so a longer turn is never dead air.
+# Short spoken filler per tool so a longer turn is never dead air. These are the BASE
+# acknowledgements; _ack_for() adds context from the arguments where it helps ("…for the rabbit
+# farm charter"). An unknown tool still gets a generic "On it, sir." so EVERY tool use is announced.
 _TOOL_PROGRESS = {
-    "delegate_to_fleet": "Let me put that to the team lead…",
-    "search_vault": "Checking your vault…",
-    "read_vault_note": "Reading that note…",
-    "web_search": "Looking that up…",
-    "scrape_url": "Opening the page…",
-    "browse_web": "Opening a browser…",
-    "check_telegram": "Checking your Telegram…",
-    "send_telegram": "Sending that…",
-    "telegram_music": "Pulling that from your playlist…",
-    "play_in_music_room": "Cueing it up in your music room…",
-    "stop_music_room": "Leaving the music room…",
-    "play_music": "Finding that song…",
-    "stop_music": "Stopping the music…",
-    "file_op": "Working on your files…",
-    "process_op": "On it…",
-    "run_powershell": "Running that…",
-    "browser": "In the browser…",
-    "run_protocol": "Authorizing the protocol…",
-    "set_reminder": "Setting that reminder…",
-    "send_push": "Pinging your phone…",
+    "delegate_to_fleet": "Right away, sir — putting that to the team lead",
+    "search_vault": "Checking your vault",
+    "read_vault_note": "Reading that note",
+    "write_vault": "Saving that to your vault",
+    "web_search": "Looking that up",
+    "scrape_url": "Opening the page",
+    "browse_web": "Opening a browser",
+    "check_telegram": "Checking your Telegram",
+    "read_chat": "Reading that chat",
+    "send_telegram": "Sending that",
+    "telegram_music": "Pulling that from your playlist",
+    "play_in_music_room": "Cueing it up in your music room",
+    "stop_music_room": "Leaving the music room",
+    "play_music": "Finding that song",
+    "stop_music": "Stopping the music",
+    "file_op": "Working on your files",
+    "process_op": "On it",
+    "run_powershell": "Running that",
+    "browser": "In the browser",
+    "run_protocol": "Authorizing the protocol",
+    "set_reminder": "Setting that reminder",
+    "send_push": "Pinging your phone",
+    "get_time": "Getting the time",
+    "weather": "Checking the weather",
+    "list_events": "Checking your calendar",
+    "create_event": "Adding that to your calendar",
+    "read_email": "Checking your email",
+    "send_email": "Sending that email",
+    "remember": "Noting that down",
+    "recall": "Let me recall",
+    "ha_state": "Checking that device",
+    "ha_call": "On it",
 }
+
+# Args whose value gives a natural tail for the acknowledgement ("Looking that up — <query>, sir.").
+_ACK_CONTEXT_KEYS = ("query", "task", "song", "title", "city", "location", "to", "name", "topic")
+
+
+def _ack_for(name: str, args: dict) -> str:
+    """A brief, natural, CONTEXTUAL acknowledgement spoken before a tool runs (Jarvis-style):
+    'Right away, sir — putting that to the team lead.', 'Looking that up — BTC price, sir.'"""
+    base = _TOOL_PROGRESS.get(name, "On it")
+    tail = ""
+    for k in _ACK_CONTEXT_KEYS:
+        v = args.get(k) if isinstance(args, dict) else None
+        if isinstance(v, str) and 0 < len(v) <= 60:
+            tail = f" — {v.strip()}"
+            break
+    line = f"{base}{tail}"
+    return line if line.rstrip().endswith(("sir", "sir.")) else f"{line}, sir."
 
 # Vazghen is in Germany (UTC+1). Used for time/greeting/scheduling.
 USER_TZ = ZoneInfo("Europe/Berlin")
@@ -310,6 +342,7 @@ class JarvisAgent:
     async def respond(self, user_text: str, on_progress: Callable | None = None) -> str:
         """Run one full turn (with tool calls) and return Jarvis's spoken reply text."""
         self._begin_turn(user_text)
+        self._immediate_ack(user_text, on_progress)
         self._history.append({"role": "user", "content": user_text})
         messages = [self._system, *self._history]
         turn_tools = self._tools_for_turn(user_text)
@@ -401,8 +434,11 @@ class JarvisAgent:
                 audit.record(name, args, "blocked: confirmation required", ok=False)
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": blocked})
                 continue
-            if on_progress and name in _TOOL_PROGRESS:
-                on_progress(_TOOL_PROGRESS[name])
+            # ACKNOWLEDGEMENT: announce what we're about to do BEFORE running the tool, always — so
+            # Watari is never silently "working" (the Jarvis "Right away, sir — getting the time"
+            # beat). Deterministic + instant (no LLM), and contextual from the args.
+            if on_progress:
+                on_progress(_ack_for(name, args))
             fn = self._registry.get(name)
             # A tool that raises must NOT crash the turn: turn it into a recoverable result the
             # model can apologise for and work around, and record the failure in the audit log.
@@ -410,7 +446,9 @@ class JarvisAgent:
                 result, ok = f"unknown tool {name}", False
             else:
                 try:
-                    result, ok = await fn(args), True
+                    # Run it under a watchdog: if it's slow, speak "still on it" so a long job
+                    # (e.g. a fleet delegation) never goes silent.
+                    result, ok = await self._await_with_progress(fn(args), on_progress), True
                 except Exception as e:  # noqa: BLE001 — degrade, don't die
                     logger.exception(f"tool {name} raised")
                     result = (f"That tool ({name}) hit an error: {type(e).__name__}. "
@@ -425,11 +463,43 @@ class JarvisAgent:
                 self._confirm_granted = False
                 self._pending_confirm = None
 
+    async def _await_with_progress(self, coro, on_progress: Callable | None):
+        """Await a tool coroutine but, if it runs long, speak periodic "still on it" updates so a
+        slow tool (or a 20-minute fleet delegation) never goes silent. The tool keeps running; we
+        only emit progress between checks. Re-raises the tool's exception unchanged."""
+        task = asyncio.ensure_future(coro)
+        interval = max(0.05, settings.tool_slow_warn_seconds)
+        every = max(0.05, settings.tool_long_update_seconds)
+        msgs = [
+            "This is taking a little longer than expected, sir — still on it.",
+            "Still working on it, sir.",
+            "Bear with me, sir, it's a big one — almost there.",
+        ]
+        i = 0
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=interval)
+            if task in done:
+                return task.result()          # re-raises any tool exception to the caller
+            if on_progress:
+                on_progress(msgs[min(i, len(msgs) - 1)])
+            i += 1
+            interval = every
+
+    def _immediate_ack(self, user_text: str, on_progress: Callable | None) -> None:
+        """Speak an instant acknowledgement the moment a work-like request arrives — BEFORE the LLM
+        even runs — so there's no dead air during the model's first-token latency. Only for requests
+        that clearly mean work (a command or a tool-group trigger), so plain chatter stays snappy."""
+        if not (on_progress and settings.ack_before_tools):
+            return
+        if _wants_forced_tool(user_text) or groups_for_text(user_text):
+            on_progress("Right away, sir.")
+
     async def respond_stream(self, user_text: str, on_progress: Callable | None = None):
         """Streaming twin of ``respond``: yields spoken sentences AS they generate, so TTS can
         start on sentence 1 while the model is still writing. Resolves tool calls between passes
         exactly like ``respond``. Yields ``str`` chunks; persists the full reply to history."""
         self._begin_turn(user_text)
+        self._immediate_ack(user_text, on_progress)
         self._history.append({"role": "user", "content": user_text})
         messages = [self._system, *self._history]
         turn_tools = self._tools_for_turn(user_text)

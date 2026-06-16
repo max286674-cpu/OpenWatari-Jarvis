@@ -188,6 +188,15 @@ class Settings(BaseSettings):
     # owns the vault) set JARVIS_VAULT_WRITABLE=true and the write_vault tool can save notes there.
     vault_writable: bool = False
 
+    # --- Acknowledgement + long-task progress ("Jarvis-like" feel) ------------------------------
+    # Watari speaks a brief acknowledgement BEFORE running a tool ("On it, sir — checking your
+    # calendar."), then runs it in the background, then answers. If a tool runs longer than
+    # tool_slow_warn_seconds he says it's taking longer than expected, and repeats every
+    # tool_long_update_seconds while it's still working (so a long fleet job never goes silent).
+    ack_before_tools: bool = True
+    tool_slow_warn_seconds: float = 8.0
+    tool_long_update_seconds: float = 120.0
+
     # --- Session hygiene: smart reset ----------------------------------------------------------
     # When the gap since the last turn exceeds this many minutes, the brain SOFT-RESETS working
     # memory: it journals the prior conversation (L2) and clears the rolling history, so a new

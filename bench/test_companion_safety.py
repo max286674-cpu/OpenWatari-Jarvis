@@ -146,13 +146,68 @@ async def test_vault_write() -> None:
             settings.vault_path, settings.vault_writable = old_path, old_w
 
 
+def test_ack_for() -> None:
+    from jarvis.brain.agent import _ack_for
+
+    check("ack is contextual (uses the query)", "BTC" in _ack_for("web_search", {"query": "BTC price"}))
+    check("ack for delegate mentions the team lead", "team lead" in _ack_for("delegate_to_fleet", {"task": "x"}))
+    check("ack ends politely ('…sir.')", _ack_for("get_time", {}).strip().endswith("sir."))
+    check("unknown tool still gets an acknowledgement", "On it" in _ack_for("mystery_tool", {}))
+
+
+def test_immediate_ack() -> None:
+    agent = JarvisAgent()
+    notes: list[str] = []
+    agent._immediate_ack("set a reminder for 5pm", notes.append)
+    check("immediate ack fires on a command", any("Right away" in n for n in notes))
+    chatter: list[str] = []
+    agent._immediate_ack("haha that's pretty funny", chatter.append)
+    check("no immediate ack on plain chatter", not chatter)
+
+
+async def test_progress_watchdog() -> None:
+    agent = JarvisAgent()
+    old_warn, old_every = settings.tool_slow_warn_seconds, settings.tool_long_update_seconds
+    settings.tool_slow_warn_seconds = 0.08
+    settings.tool_long_update_seconds = 0.08
+    try:
+        async def slow(_args: dict) -> str:
+            await asyncio.sleep(0.3)
+            return "done"
+
+        agent._registry["slowtool"] = slow
+        notes: list[str] = []
+        msgs: list[dict] = []
+        await agent._execute_calls(msgs, [{"id": "1", "name": "slowtool", "arguments": "{}"}],
+                                   on_progress=notes.append)
+        check("acknowledgement spoken before the tool", any("On it" in n for n in notes))
+        check("watchdog speaks 'still on it' for a slow tool",
+              any("still on it" in n.lower() for n in notes))
+        check("slow tool still returns its result",
+              any(m.get("role") == "tool" and "done" in m.get("content", "") for m in msgs))
+
+        async def boom(_args: dict) -> str:
+            raise RuntimeError("kaboom")
+
+        agent._registry["boomtool"] = boom
+        msgs2: list[dict] = []
+        await agent._execute_calls(msgs2, [{"id": "2", "name": "boomtool", "arguments": "{}"}])
+        check("watchdog re-raises -> recoverable error result",
+              any("hit an error" in m.get("content", "") for m in msgs2 if m.get("role") == "tool"))
+    finally:
+        settings.tool_slow_warn_seconds, settings.tool_long_update_seconds = old_warn, old_every
+
+
 def main() -> None:
     test_affirmation()
     test_begin_turn_supersede()
     test_smart_reset()
     test_proactive_durable()
+    test_ack_for()
+    test_immediate_ack()
     asyncio.run(test_confirm_gate())
     asyncio.run(test_vault_write())
+    asyncio.run(test_progress_watchdog())
     print(f"\n=== {PASS}/{PASS + FAIL} checks passed ===")
     raise SystemExit(0 if FAIL == 0 else 1)
 
