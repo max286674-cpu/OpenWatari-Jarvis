@@ -33,8 +33,10 @@ export default function Networking() {
         </thead>
         <tbody>
           <tr><td>VPS / brain host (Linux)</td><td><code>curl -fsSL https://tailscale.com/install.sh | sh</code> then <code>sudo tailscale up</code></td></tr>
-          <tr><td>Laptop (Windows/macOS/Linux)</td><td>install the Tailscale app, sign in</td></tr>
+          <tr><td>Laptop (Windows/Linux)</td><td>install the Tailscale app, sign in</td></tr>
+          <tr><td>Mac (macOS)</td><td>Tailscale from the Mac App Store (or <code>brew install --cask tailscale</code>), sign in</td></tr>
           <tr><td>iPhone</td><td>Tailscale from the App Store, sign in (keep it connected)</td></tr>
+          <tr><td>Android</td><td>Tailscale from Google Play, sign in (keep it connected)</td></tr>
           <tr><td>Mentra OS glasses</td><td>via their companion phone, which is on the tailnet</td></tr>
           <tr><td>Home Assistant</td><td>the brain reaches HA over the tailnet (or your LAN)</td></tr>
         </tbody>

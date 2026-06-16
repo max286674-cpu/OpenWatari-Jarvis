@@ -63,10 +63,10 @@ export default function Home() {
       <h2>One brain, every device</h2>
       <p>
         The brain runs 24/7 on an always-on host (a cheap VPS); the voice front-end runs wherever you
-        are. A laptop, an iPhone (Siri Shortcut, no app), and Mentra OS glasses all reach the same
-        brain and the same memory — connected privately over your{" "}
-        <Link href="/networking">Tailnet</Link>. See <Link href="/devices">Devices</Link> for all seven
-        supported setups.
+        are. A Windows/Linux laptop, a Mac, an iPhone or Android phone (no app), and Mentra OS glasses
+        all reach the same brain and the same memory — connected privately over your{" "}
+        <Link href="/networking">Tailnet</Link>. See <Link href="/devices">Devices</Link> for every
+        supported setup.
       </p>
 
       <h2>Start here</h2>

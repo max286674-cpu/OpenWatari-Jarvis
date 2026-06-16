@@ -32,8 +32,8 @@ def main() -> None:
         resolve_device_route,
     )
 
-    print("[1] the four devices are all enabled")
-    for dev in ("laptop", "iphone", "airpods", "mentra"):
+    print("[1] all supported devices are enabled (Windows/Linux laptop, Mac, iPhone, Android, AirPods, Mentra)")
+    for dev in ("laptop", "mac", "iphone", "android", "airpods", "mentra"):
         check(f"{dev} is registered", dev in SUPPORTED_DEVICES)
 
     print("\n[2] routing + barge-in per device")
@@ -41,9 +41,17 @@ def main() -> None:
     check("laptop -> speakers, local, barge-in OFF",
           laptop.kind == OutputKind.speakers and laptop.is_local and laptop.barge_in is False)
 
+    mac = resolve_device_route("mac")
+    check("Mac (macOS) -> speakers, local host, barge-in OFF",
+          mac.kind == OutputKind.speakers and mac.is_local and mac.barge_in is False)
+
     iphone = resolve_device_route("iphone")
     check("iPhone -> phone speaker, remote, barge-in OFF",
           iphone.kind == OutputKind.phone_speaker and not iphone.is_local and iphone.barge_in is False)
+
+    android = resolve_device_route("android")
+    check("Android -> phone speaker, remote, barge-in OFF",
+          android.kind == OutputKind.phone_speaker and not android.is_local and android.barge_in is False)
 
     airpods = resolve_device_route("airpods")
     check("AirPods -> headphones (private), barge-in ON",
@@ -53,17 +61,21 @@ def main() -> None:
     check("Mentra glasses -> glasses (private), barge-in ON",
           mentra.kind == OutputKind.glasses and mentra.barge_in is True)
 
-    print("\n[3] AirPods auto-route: connected to EITHER device -> headphones + barge-in ON")
+    print("\n[3] headphones auto-route: connected to ANY base device -> headphones + barge-in ON")
     lap_hp = resolve_device_route("laptop", headphones_connected=True)
-    check("laptop + AirPods -> headphones, barge-in ON",
+    check("laptop + headphones -> headphones, barge-in ON",
           lap_hp.kind == OutputKind.headphones and lap_hp.barge_in is True, str(lap_hp))
     iph_hp = resolve_device_route("iphone", headphones_connected=True)
-    check("iPhone + AirPods -> headphones, barge-in ON",
+    check("iPhone + headphones -> headphones, barge-in ON",
           iph_hp.kind == OutputKind.headphones and iph_hp.barge_in is True, str(iph_hp))
-    check("auto-route label mentions AirPods", "AirPods" in lap_hp.label, lap_hp.label)
+    and_hp = resolve_device_route("android", headphones_connected=True)
+    check("Android + headphones -> headphones, barge-in ON",
+          and_hp.kind == OutputKind.headphones and and_hp.barge_in is True, str(and_hp))
 
     print("\n[4] aliases resolve")
-    for alias, canon in (("glasses", "mentra"), ("phone", "iphone"),
+    for alias, canon in (("glasses", "mentra"), ("phone", "iphone"), ("ios", "iphone"),
+                         ("macbook", "mac"), ("darwin", "mac"), ("pixel", "android"),
+                         ("samsung", "android"), ("termux", "android"),
                          ("headphones", "airpods"), ("pc", "laptop"), ("airpods-pro-max", "airpods")):
         check(f"'{alias}' -> {canon}", resolve_device_route(alias).device_id == canon)
     check("unknown device falls back to laptop", resolve_device_route("toaster").device_id == "laptop")

@@ -11,7 +11,7 @@ proactive companion · phone / laptop / glasses · self-improving — local-firs
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Platform](https://img.shields.io/badge/edge-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)
 
-📖 **Documentation:** _deploy the site in [`website/`](website/) to Vercel_ → `https://openwatari.vercel.app`
+📖 **Documentation:** **[openwatari.vercel.app](https://openwatari.vercel.app)** — the full docs site (source in [`website/`](website/))
 
 </div>
 
@@ -48,8 +48,9 @@ configured yet" instead of crashing, so you light up integrations one at a time.
 - **Bring your own everything.** Cloud quality (ElevenLabs + Deepgram) or 100% local CPU
   (Piper/Kokoro + Whisper/Moonshine + openWakeWord) — a flag, not a rewrite. Same for the LLM
   (any OpenAI-compatible endpoint: a free proxy, OpenAI, or local Ollama).
-- **One brain, many devices.** The brain is a WebSocket server; a laptop edge, an iPhone (Siri
-  Shortcut, no app), and Mentra glasses all reach the same agent and memory — over your **Tailnet**.
+- **One brain, many devices.** The brain is a WebSocket server; a Windows/Linux laptop, a **Mac**, an
+  iPhone or **Android** phone (no app), and Mentra glasses all reach the same agent and memory — over
+  your **Tailnet**.
 - **Safe by construction.** Confirm-before-acting is **enforced in code** (not just prompted),
   reversible-only git, repo-scoped self-edits, password-gated privileged routines, a redacted audit
   log, deny-by-default fleet. See **[SECURITY.md](SECURITY.md)**.
@@ -212,17 +213,21 @@ One brain, reached many ways — all sharing memory, all over the tailnet:
 
 | Device setup | How it connects | Barge-in | Notes |
 |---|---|---|---|
-| **Laptop** (built-in mic/speakers) | `jarvis.edge.assistant` → brain WS | off (open speakers) | baseline local pipeline |
-| **Laptop + headphones** (AirPods → laptop) | same, auto-routes to headphones | **on** (private) | interrupt mid-sentence |
-| **Phone** (iPhone, no app) | "Hey Siri, Watari" → `POST /talk` | n/a | Siri dictation → spoken reply |
-| **Phone + headphones** (AirPods → phone) | same Siri Shortcut | n/a | reply plays in the AirPods |
+| **Laptop** (Windows/Linux, built-in mic/speakers) | `jarvis.edge.assistant` → brain WS | off (open speakers) | baseline local pipeline |
+| **Mac** (macOS, built-in or external) | `jarvis.edge.assistant` → brain WS | off (open speakers) | same Python/PyAudio edge, runs natively |
+| **Laptop/Mac + headphones** (AirPods/BT → host) | same, auto-routes to headphones | **on** (private) | interrupt mid-sentence |
+| **iPhone** (no app) | "Hey Siri, Watari" → `POST /talk` | n/a | Siri dictation → spoken reply |
+| **Android** (no app) | Assistant/Tasker → `POST /talk`, or Termux edge-lite | n/a | dictation → spoken reply; or full mic stream via Termux |
+| **Phone + headphones** (AirPods/BT → phone) | same shortcut (`android-headphones`/`phone-headphones` hint) | **on** (private) | reply plays in the earbuds |
 | **Mentra OS glasses** | TS bridge (`glasses/`) → brain WS | on | mic/speaker/display bridge |
 | **Home Assistant** | brain → HA REST (local) | n/a | states + control (locks confirm-gated) |
-| **Remote PC control** | laptop executor → brain `/control` | n/a | brain drives the laptop from anywhere |
+| **Remote PC control** | host executor → brain `/control` | n/a | brain drives a laptop from anywhere |
 
-Each setup has a step-by-step acceptance test (TTFW numbers, auto-route, barge-in, Siri voice, music
-room, proactive voice, shared memory) in **[`TODO-NOW.md`](TODO-NOW.md) §3** and the docs site's
-*Devices* page. **All seven are wired and tested.**
+Every setup is modelled in `src/jarvis/edge/device_profile.py` (`SUPPORTED_DEVICES`: laptop, **mac**,
+iphone, **android**, airpods, mentra) and verified in `bench/test_phase6_multidevice.py`. Each has a
+step-by-step acceptance test (TTFW numbers, auto-route, barge-in, Siri/Assistant voice, music room,
+proactive voice, shared memory) in **[`TODO-NOW.md`](TODO-NOW.md) §3** and the docs site's *Devices*
+page.
 
 ---
 
@@ -405,14 +410,28 @@ unmodified `pip` library is compatible with shipping your own MIT code, and you 
 > blueprint/inspiration and is not used as this project's brand. Before a public release, run
 > `uvx pip-licenses --format=markdown` over your locked environment as a final check.
 
+**Project & governance files** (all in the repo root):
+
+| File | What |
+|---|---|
+| [`LICENSE`](LICENSE) | MIT license (the code grant) |
+| [`NOTICE`](NOTICE) | attribution + naming notice |
+| [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | dependency licenses (incl. the one LGPL dep) + cloud ToS |
+| [`ACCEPTABLE_USE.md`](ACCEPTABLE_USE.md) | responsible-use policy for an autonomous, tool-using AI agent |
+| [`SECURITY.md`](SECURITY.md) | the enforced safety model + how to report a vulnerability |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | dev setup, the test gate, how to add a tool |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 |
+
 ---
 
 ## Contributing
 
-Issues and PRs welcome. Before opening a PR: run `uv run python bench/run_all_tests.py` (green) and
-`uv run ruff check src`. Keep new code in the style of its neighbours (terse comments that say *why*,
-not *what*), and add a hermetic `bench/test_*` check for any new capability. Security issues should be
-reported privately per [SECURITY.md](SECURITY.md) §10, not as public issues.
+Issues and PRs welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)** for dev setup, the test gate, and
+how to add a tool. By participating you agree to the **[Code of Conduct](CODE_OF_CONDUCT.md)** and the
+**[Acceptable Use policy](ACCEPTABLE_USE.md)**. Before opening a PR: run
+`uv run python bench/run_all_tests.py` (green) and `uv run ruff check src`; add a hermetic
+`bench/test_*` check for any new capability. Security issues should be reported privately per
+[SECURITY.md](SECURITY.md) §10, not as public issues.
 
 ---
 

@@ -14,25 +14,34 @@ export default function Devices() {
           <tr><th>Setup</th><th>Connects via</th><th>Barge-in</th><th>Notes</th></tr>
         </thead>
         <tbody>
-          <tr><td>Laptop</td><td><code>jarvis.edge.assistant</code> → brain WS</td><td>off</td><td>baseline; open speakers run half-duplex</td></tr>
-          <tr><td>Laptop + headphones</td><td>same, auto-routes to headphones</td><td><strong>on</strong></td><td>private endpoint; interrupt mid-sentence</td></tr>
-          <tr><td>Phone (iPhone, no app)</td><td>“Hey Siri, Watari” → <code>/talk</code></td><td>n/a</td><td>Siri dictation → spoken reply</td></tr>
-          <tr><td>Phone + headphones</td><td>same Siri Shortcut</td><td>n/a</td><td>reply plays in the AirPods</td></tr>
+          <tr><td>Laptop (Windows/Linux)</td><td><code>jarvis.edge.assistant</code> → brain WS</td><td>off</td><td>baseline; open speakers run half-duplex</td></tr>
+          <tr><td>Mac (macOS)</td><td><code>jarvis.edge.assistant</code> → brain WS</td><td>off</td><td>same Python/PyAudio edge, runs natively</td></tr>
+          <tr><td>Laptop/Mac + headphones</td><td>same, auto-routes to headphones</td><td><strong>on</strong></td><td>private endpoint; interrupt mid-sentence</td></tr>
+          <tr><td>iPhone (no app)</td><td>“Hey Siri, Watari” → <code>/talk</code></td><td>n/a</td><td>Siri dictation → spoken reply</td></tr>
+          <tr><td>Android (no app)</td><td>Assistant/Tasker → <code>/talk</code>, or Termux edge-lite</td><td>n/a</td><td>dictation → spoken reply; or full mic stream</td></tr>
+          <tr><td>Phone + headphones</td><td>same shortcut, <code>android-headphones</code>/<code>phone-headphones</code> hint</td><td><strong>on</strong></td><td>reply plays in the earbuds</td></tr>
           <tr><td>Mentra OS glasses</td><td>TS bridge → brain WS</td><td>on</td><td>mic/speaker/display bridge</td></tr>
           <tr><td>Home Assistant</td><td>brain → HA REST (local)</td><td>n/a</td><td>states + control; locks confirm-gated</td></tr>
-          <tr><td>Remote PC control</td><td>laptop executor → brain <code>/control</code></td><td>n/a</td><td>brain drives the laptop from anywhere</td></tr>
+          <tr><td>Remote PC control</td><td>host executor → brain <code>/control</code></td><td>n/a</td><td>brain drives a laptop from anywhere</td></tr>
         </tbody>
       </table>
+      <p>
+        Every setup is modelled in <code>src/jarvis/edge/device_profile.py</code>
+        (<code>SUPPORTED_DEVICES</code>: laptop, mac, iphone, android, airpods, mentra) and verified in
+        <code>bench/test_phase6_multidevice.py</code>.
+      </p>
 
-      <h2>Laptop &amp; laptop + headphones</h2>
+      <h2>Laptop / Mac &amp; headphones</h2>
       <pre>
         <code>{`uv run python -m jarvis.edge.assistant`}</code>
       </pre>
       <p>
-        With headphones/AirPods connected to the laptop, output auto-routes to them and barge-in turns
-        on (a private endpoint), so you can talk over Watari mid-sentence. On open speakers it runs
-        half-duplex so it never transcribes its own voice. Each turn logs a TTFW latency number; aim for
-        ~10 turns to get a stable mean.
+        The voice edge is pure Python + PyAudio, so it runs <strong>natively on Windows, macOS, and
+        Linux</strong> — the same command on a MacBook gives you a local Watari (on macOS, grant
+        microphone permission to your terminal the first time). With headphones/AirPods connected to the
+        host, output auto-routes to them and barge-in turns on (a private endpoint), so you can talk
+        over Watari mid-sentence. On open speakers it runs half-duplex so it never transcribes its own
+        voice. Each turn logs a TTFW latency number; aim for ~10 turns to get a stable mean.
       </p>
 
       <h2>Phone &amp; phone + headphones (iPhone, no app, no page)</h2>
@@ -57,6 +66,30 @@ JARVIS_BRAIN_HOST=0.0.0.0  uv run python -m jarvis.brain.server`}</code>
         With AirPods connected to the phone, the same shortcut plays the reply in the AirPods — nothing
         extra to configure. iOS bans background mic for web pages, so a Siri Shortcut is the no-app,
         no-page path; Telegram voice notes are the backup.
+      </p>
+
+      <h2>Android (no app, no page)</h2>
+      <p>
+        Two ways, both over the tailnet:
+      </p>
+      <ul>
+        <li>
+          <strong>No-app voice (simplest):</strong> use Google Assistant routines or
+          <a href="https://tasker.joaoapps.com/" target="_blank" rel="noreferrer"> Tasker</a> /
+          HTTP Shortcuts to POST your dictated text to
+          <code>http://&lt;brain-tailnet-ip&gt;:8766/talk?token=…</code> and play the audio reply —
+          the exact mirror of the iPhone Siri Shortcut. Declare the listening endpoint with the
+          <code>android</code> or <code>android-headphones</code> device hint.
+        </li>
+        <li>
+          <strong>Full mic stream (Termux edge-lite):</strong> install Termux + Termux:Boot, run the
+          Python edge there, and it streams mic → brain and plays TTS like the laptop — wake word and
+          barge-in included. Disable battery optimisation so it stays alive.
+        </li>
+      </ul>
+      <p>
+        With earbuds on the phone, the <code>android-headphones</code> hint makes the session private
+        (barge-in on) and the reply plays in the earbuds.
       </p>
 
       <h2>Mentra OS glasses</h2>

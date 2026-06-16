@@ -74,9 +74,10 @@ class Settings(BaseSettings):
     # force it. See edge/device_profile.py. (barge_in_enabled above is the legacy hard switch
     # honoured when mode='auto' can't tell — e.g. a forced True still wins for AEC setups.)
     barge_in_mode: str = "auto"           # auto | on | off
-    # For remote transports (Mentra glasses, iPhone client) the local audio device name says
-    # nothing about how YOU hear Jarvis, so the client declares it: 'glasses', 'phone-headphones',
-    # 'phone-speaker', 'headphones', 'speakers'. Blank = classify the local output device.
+    # For remote transports (Mentra glasses, iPhone/Android client) the local audio device name says
+    # nothing about how YOU hear Watari, so the client declares it: 'glasses', 'phone-headphones',
+    # 'android-headphones', 'phone-speaker', 'android', 'headphones', 'speakers'. A local Mac/laptop
+    # leaves this blank and the output device is name-classified. Blank = classify the local output.
     device_hint: str | None = None
     vad_confidence: float = 0.6           # Silero speech-probability threshold (0..1)
     vad_start_secs: float = 0.2           # speech must persist this long to count as "started"

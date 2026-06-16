@@ -189,9 +189,20 @@ issue. Include reproduction steps and the affected file/function.
   your behalf. Anyone with shell on that host can read `.env`.
 - **Arm the fleet deliberately** (`JARVIS_FLEET_AUTHORIZED`) — it reaches shared infrastructure.
 
-## 12. Licensing & attribution
+## 12. Licensing, conduct & attribution
 
-This project is MIT-licensed (see [`LICENSE`](LICENSE)); third-party components and their obligations
-— including the single LGPL-3.0 optional dependency and the cloud-service Terms you accept by using
-your own keys — are catalogued in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). MIT covers
-copyright, not trademark: see that file's note on the name "Jarvis" before distributing a fork widely.
+This project is **OpenWatari** (assistant persona **Watari**); *Jarvis* is referenced only as the
+blueprint/inspiration, never as this project's brand. Governance and licensing live in these
+root files:
+
+- [`LICENSE`](LICENSE) — MIT (the code grant). Copyright "Vazghen and the OpenWatari contributors".
+- [`NOTICE`](NOTICE) — attribution + the naming notice.
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — dependency licenses (incl. the single LGPL-3.0
+  optional dependency, `py-tgcalls`) and the cloud-service Terms you accept by using your own keys.
+- [`ACCEPTABLE_USE.md`](ACCEPTABLE_USE.md) — responsible-use expectations for an autonomous,
+  tool-using AI agent (operator duties, prohibited uses, high-risk integrations).
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, the test gate, how to add a tool safely.
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — Contributor Covenant v2.1.
+
+MIT covers copyright, not trademark — see the naming note in `THIRD_PARTY_NOTICES.md` before
+distributing a fork widely. Full docs: **https://openwatari.vercel.app**.
