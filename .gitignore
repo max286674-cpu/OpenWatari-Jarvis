@@ -5,6 +5,7 @@
 *.session
 *.session-journal
 voiceprint.json
+runtime_prefs.json
 
 # --- Python / tooling ---
 .venv/

@@ -39,6 +39,13 @@ def main() -> None:
     from jarvis.brain.google import access_token, configured
     from jarvis.brain.proactive import confirm_required
     from jarvis.brain.tools import tool_names
+    from jarvis.config import settings
+
+    # Force the UNCONFIGURED state so the degradation contract is verified regardless of whether a
+    # real .env has these set (this is a hermetic test of graceful-degradation, not of live creds —
+    # those are checked by bench/test_live_integrations.py).
+    for _k in ("google_client_id", "google_client_secret", "google_refresh_token", "ha_url", "ha_token"):
+        setattr(settings, _k, None)
 
     print("[1] Google OAuth helper reports unconfigured, returns no token")
     check("configured() is False with no creds", configured() is False)

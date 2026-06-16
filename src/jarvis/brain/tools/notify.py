@@ -32,7 +32,7 @@ def ntfy_can_schedule(epoch_s: float) -> bool:
     return NTFY_MIN_DELAY_S <= delta <= NTFY_MAX_DELAY_S
 
 
-async def push(message: str, title: str = "Jarvis", at: float | None = None) -> bool:
+async def push(message: str, title: str = "Watari", at: float | None = None) -> bool:
     """Send a push; returns True on success. Safe to call from the scheduler.
 
     If ``at`` (a Unix epoch in seconds) is given and inside ntfy's window, ntfy holds the
@@ -56,7 +56,7 @@ async def push(message: str, title: str = "Jarvis", at: float | None = None) -> 
 
 async def send_push(args: dict) -> str:
     message = (args.get("message") or "").strip()
-    title = (args.get("title") or "Jarvis").strip()
+    title = (args.get("title") or "Watari").strip()
     if not message:
         return "What should I push, sir?"
     if not settings.ntfy_topic:

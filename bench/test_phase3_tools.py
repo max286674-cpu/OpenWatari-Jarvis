@@ -44,7 +44,7 @@ async def main() -> None:
 
     print("[1] registry & schemas")
     expected = {"search_vault", "read_vault_note", "web_search", "scrape_url",
-                "browse_web", "check_telegram", "send_telegram", "spotify"}
+                "browse_web", "check_telegram", "send_telegram"}
     check("all Phase 3 tools registered", expected <= set(names), f"missing {expected - set(names)}")
     check("no duplicate tool names", len(names) == len(set(names)))
     check("every schema is a well-formed function", all(
@@ -63,24 +63,21 @@ async def main() -> None:
     print("\n[3] graceful degradation when unconfigured")
     # Force a clean slate so each 'not configured' path is exercised deterministically.
     saved = {k: getattr(settings, k) for k in (
-        "tavily_api_key", "firecrawl_api_key", "browserbase_api_key", "browserbase_project_id",
+        "tavily_api_key", "browserbase_api_key", "browserbase_project_id",
         "telegram_api_id", "telegram_api_hash", "telegram_bot_token", "telegram_default_chat",
-        "spotify_client_id", "spotify_client_secret", "spotify_refresh_token", "vault_path")}
+        "vault_path")}
     for k in saved:
         setattr(settings, k, None)
     try:
         r = await handlers["web_search"]({"query": "test"})
         check("web_search w/o key -> friendly note", "isn't configured" in r and "Tavily" in r, r)
-        r = await handlers["scrape_url"]({"url": "example.com"})
-        check("scrape_url w/o key -> friendly note", "isn't configured" in r, r)
+        # scrape_url uses Jina Reader (keyless) so it has no 'not configured' state — not exercised here.
         r = await handlers["browse_web"]({"url": "example.com"})
         check("browse_web w/o key -> friendly note", "isn't configured" in r, r)
         r = await handlers["check_telegram"]({})
         check("check_telegram w/o creds -> friendly note", "isn't configured" in r, r)
         r = await handlers["send_telegram"]({"message": "hi", "to": "123"})
         check("send_telegram w/o token -> friendly note", "isn't configured" in r, r)
-        r = await handlers["spotify"]({"action": "now_playing"})
-        check("spotify w/o creds -> friendly note", "isn't configured" in r, r)
         r = await handlers["search_vault"]({"query": "x"})
         check("search_vault w/o vault path -> friendly note", "isn't configured" in r, r)
         # No handler raised — all returned speakable strings.
@@ -108,7 +105,7 @@ async def main() -> None:
     from jarvis.brain.agent import JarvisAgent
     a = JarvisAgent()
     registered = {s["function"]["name"] for s in a._tools}
-    check("agent exposes vault+web+telegram+spotify+fleet", expected <= registered)
+    check("agent exposes vault+web+telegram+fleet", expected <= registered)
     check("agent still has get_time + delegate_to_fleet",
           {"get_time", "delegate_to_fleet"} <= registered)
 

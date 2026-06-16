@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>Jarvis</title>
+<title>Watari</title>
 <style>
   :root { --bg:#0b0f14; --fg:#e6edf3; --mut:#7d8590; --accent:#58a6ff; --you:#1f6feb22; --j:#23863633; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -41,7 +41,7 @@
 <body>
   <header>
     <span id="dot"></span>
-    <h1>Jarvis</h1>
+    <h1>Watari</h1>
     <span id="status">disconnected</span>
   </header>
 
@@ -49,8 +49,11 @@
     <summary class="cfg"><span>⚙︎ connection</span></summary>
     <div class="cfg">
       <input id="url" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <input id="token" type="text" placeholder="auth token (auto-filled)" autocapitalize="off" autocorrect="off" spellcheck="false" />
       <label><input id="hp" type="checkbox" /> AirPods on this phone</label>
+      <label><input id="wake" type="checkbox" checked /> require "Watari"</label>
       <button id="connect">Connect</button>
+      <button id="disconnect">Disconnect</button>
     </div>
   </details>
 
@@ -58,8 +61,8 @@
 
   <footer>
     <div class="row">
-      <input id="text" type="text" placeholder="Type, or hold the mic…" enterkeyhint="send" />
-      <button id="mic" title="Hold to talk">🎙</button>
+      <input id="text" type="text" placeholder="Type a message…" enterkeyhint="send" />
+      <button id="mic" title="Tap to mute / unmute the mic">🎙</button>
     </div>
   </footer>
 
@@ -73,8 +76,21 @@
   const defaultUrl = `ws://${location.hostname || "127.0.0.1"}:8765/voice`;
   $("url").value = localStorage.getItem("jarvisUrl") || defaultUrl;
   $("hp").checked = localStorage.getItem("jarvisHp") === "1";
+  // Auth token: injected by the brain when it serves this page (window.JARVIS_TOKEN), else a saved
+  // one. Browsers can't set a WS Authorization header, so we pass it as ?token= on the URL instead.
+  const token = (window.JARVIS_TOKEN || localStorage.getItem("jarvisToken") || "").trim();
+  if ($("token")) $("token").value = token;
+
+  // Wake words that "address" Watari when the mic is always-on (mirrors the laptop's wake gate).
+  // Browser speech-recognition transcribes the spoken name, so his real name works here even
+  // though the laptop's openWakeWord trigger is still acoustically "hey jarvis".
+  const WAKE = ["watari", "hey watari", "hey jarvis", "jarvis"];
 
   let ws = null, speaking = false, jBuf = null;
+  let wantListen = false;      // user intends the mic to stay open (continuous listening)
+  let pendingSpeak = 0;        // outstanding TTS utterances — we pause the mic while speaking
+  let turnVoice = false;       // was THIS turn spoken? voice in -> voice out; text in -> text out
+  let wakeLock = null;
 
   function add(text, cls) {
     const el = document.createElement("div");
@@ -84,91 +100,155 @@
   }
   function setState(s) {
     statusEl.textContent = s;
-    dot.className = (s === "connected" || s === "ready") ? "on"
+    dot.className = (s === "connected" || s === "ready" || s === "listening") ? "on"
       : (s === "thinking" || s === "speaking") ? "busy" : "";
   }
+  const restState = () => setState(wantListen && ws && ws.readyState === 1 ? "listening" : "ready");
+
+  // ---- keep the screen awake so the mic keeps listening while the app is open ----
+  async function keepAwake() {
+    try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch {}
+  }
+  function dropAwake() { try { wakeLock && wakeLock.release(); } catch {} wakeLock = null; }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && wantListen) { keepAwake(); startRec(); }
+  });
 
   // ---- text-to-speech (plays through whatever the phone outputs to — AirPods if connected) ----
   function speak(text) {
     if (!("speechSynthesis" in window) || !text.trim()) return;
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.05; u.onstart = () => { speaking = true; };
-    u.onend = () => { speaking = false; };
+    u.rate = 1.05;
+    u.onstart = () => { speaking = true; pendingSpeak++; stopRec(); };  // mute mic while he talks
+    u.onend = () => { pendingSpeak = Math.max(0, pendingSpeak - 1);
+      if (pendingSpeak === 0) { speaking = false; if (wantListen) startRec(); } };
     speechSynthesis.speak(u);
   }
-  function stopSpeaking() { if ("speechSynthesis" in window) speechSynthesis.cancel(); speaking = false; }
+  function stopSpeaking() {
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    speaking = false; pendingSpeak = 0;
+  }
 
   // ---- WebSocket to the brain ----
   function connect() {
     const url = $("url").value.trim();
+    const tok = ($("token") ? $("token").value.trim() : token);
     localStorage.setItem("jarvisUrl", url);
+    localStorage.setItem("jarvisToken", tok);
     localStorage.setItem("jarvisHp", $("hp").checked ? "1" : "0");
+    // Browsers can't send an Authorization header on a WS, so pass the token as a query param.
+    const wsUrl = tok ? url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok) : url;
     try { ws && ws.close(); } catch {}
     setState("connecting…");
-    ws = new WebSocket(url);
+    ws = new WebSocket(wsUrl);
     ws.onopen = () => {
       setState("connected");
       send({ type:"hello", session_id:sid, device_id:"iphone",
              headphones_connected: $("hp").checked });
+      // iOS only lets the mic start from a real tap, so we DON'T auto-start. Prompt for one tap;
+      // after that the mic stays on continuously (re-armed on every onend).
+      if (SR) { micUi(); add("Connected. Tap the 🎙 button to start listening.", "sys"); }
     };
-    ws.onclose = () => setState("disconnected");
+    ws.onclose = () => { setState("disconnected"); };
     ws.onerror = () => setState("error");
     ws.onmessage = (e) => onEvent(JSON.parse(e.data));
+  }
+  function disconnect() {
+    wantListen = false; stopRec(); stopSpeaking(); dropAwake(); micUi();
+    try { ws && ws.close(); } catch {}
+    setState("disconnected");
+    add("Disconnected. Tap Connect to resume.", "sys");
   }
   function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
   function onEvent(ev) {
     if (ev.type !== "stream") return;
     if (ev.kind === "lifecycle") {
-      if (ev.delta === "ready") setState("ready");
+      if (ev.delta === "ready") restState();
       else if (ev.delta === "thinking") { setState("thinking"); jBuf = null; }
-      else if (ev.delta === "cancelled") { stopSpeaking(); setState("ready"); }
-      else if (ev.delta === "error") { add("(error handling that)", "sys"); setState("ready"); }
+      else if (ev.delta === "cancelled") { stopSpeaking(); restState(); }
+      else if (ev.delta === "error") { add("(error handling that)", "sys"); restState(); }
       return;
     }
     if (ev.kind === "tool") { add(ev.delta, "sys"); return; }   // spoken progress filler
     if (ev.kind === "assistant") {
-      setState("speaking");
       if (!jBuf) jBuf = add("", "j");
       jBuf.textContent += ev.delta;
       log.scrollTop = log.scrollHeight;
-      speak(ev.delta);
-      if (ev.final) { jBuf = null; setState("ready"); }
+      if (turnVoice) { setState("speaking"); speak(ev.delta); }  // voice in -> voice out; else text only
+      if (ev.final) { jBuf = null; if (!turnVoice) restState(); }
     }
   }
 
-  function sendUtterance(text) {
+  // voice=true means this turn came from the mic, so the reply should be spoken back.
+  function sendUtterance(text, voice) {
     text = (text || "").trim(); if (!text) return;
+    turnVoice = !!voice;
     if (speaking) { stopSpeaking(); send({ type:"barge", session_id:sid }); }
     add(text, "you");
     send({ type:"utterance", session_id:sid, text, device_id:"iphone",
            speaker_verified:false, ts_user_stop_ms: Date.now() });
   }
 
-  // ---- text input ----
+  // Strip a leading wake word; return the command, or null if none present (ambient -> ignore).
+  function gateWake(raw) {
+    if (!$("wake").checked) return raw;            // open-mic mode: send everything
+    const t = raw.trim().toLowerCase();
+    for (const w of WAKE) {
+      const i = t.indexOf(w);
+      if (i !== -1) {
+        const rest = raw.trim().slice(i + w.length).replace(/^[\s,.:!?]+/, "");
+        return rest || "(no command)";             // said just "Watari" -> let the brain prompt back
+      }
+    }
+    return null;
+  }
+
+  // ---- text input (typed -> typed reply) ----
   $("text").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { sendUtterance($("text").value); $("text").value = ""; }
+    if (e.key === "Enter") { sendUtterance($("text").value, false); $("text").value = ""; }
   });
   $("connect").addEventListener("click", connect);
+  $("disconnect").addEventListener("click", disconnect);
 
-  // ---- push-to-talk via Web Speech API (graceful: falls back to typing if unsupported) ----
+  // ---- continuous always-on mic via Web Speech API (foreground only on iOS) ----
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const mic = $("mic");
+  let rec = null, recActive = false;
+  function micUi() {
+    if (!SR) return;
+    mic.classList.toggle("rec", wantListen);
+    mic.title = wantListen ? "Listening — tap to mute" : "Muted — tap to listen";
+  }
+  function startRec() {
+    if (!SR || !wantListen || recActive || speaking) return;
+    try { rec.start(); recActive = true; } catch {}
+  }
+  function stopRec() { if (rec && recActive) { try { rec.stop(); } catch {} recActive = false; } }
+
   if (SR) {
-    const rec = new SR();
-    rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
-    let recording = false;
-    rec.onresult = (e) => sendUtterance(e.results[0][0].transcript);
-    rec.onend = () => { recording = false; mic.classList.remove("rec"); };
-    const start = (ev) => { ev.preventDefault();
-      if (speaking) { stopSpeaking(); send({ type:"barge", session_id:sid }); }
-      try { rec.start(); recording = true; mic.classList.add("rec"); } catch {} };
-    const stop = (ev) => { ev.preventDefault(); if (recording) try { rec.stop(); } catch {} };
-    mic.addEventListener("touchstart", start); mic.addEventListener("touchend", stop);
-    mic.addEventListener("mousedown", start);  mic.addEventListener("mouseup", stop);
+    rec = new SR();
+    rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1; rec.continuous = true;
+    rec.onresult = (e) => {
+      const said = e.results[e.results.length - 1][0].transcript;
+      const cmd = gateWake(said);
+      if (cmd !== null) sendUtterance(cmd, true);   // directed speech -> voice reply
+    };
+    // iOS ends recognition often; re-arm it so the mic stays effectively always-on.
+    rec.onend = () => { recActive = false; if (wantListen && !speaking) setTimeout(startRec, 250); };
+    rec.onerror = (e) => { recActive = false;
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        wantListen = false; micUi(); add("Mic permission denied — enable it in Safari settings.", "sys");
+      } };
+    mic.addEventListener("click", () => {     // toggle listening on/off
+      wantListen = !wantListen; micUi();
+      if (wantListen) { keepAwake(); startRec(); } else { stopRec(); }
+    });
   } else {
-    mic.textContent = "⌨"; mic.title = "Voice not supported here — type instead";
-    mic.addEventListener("click", () => $("text").focus());
+    // No voice support in this browser (e.g. an in-app browser, or not Safari on iOS): hide the
+    // button entirely — the user just taps the text field to type.
+    mic.style.display = "none";
+    add("Voice isn't available in this browser — open this page in Safari to use the mic.", "sys");
   }
 
   connect();  // auto-connect on load

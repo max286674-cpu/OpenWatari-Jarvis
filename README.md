@@ -1,56 +1,106 @@
-# Jarvis — a 24/7, voice-first, local-first living assistant
+<div align="center">
 
-Jarvis is a personal AI companion you **talk to**. He listens for a wake word, answers in a natural
-streaming voice, remembers across sessions, acts on your machine and your accounts, reaches you
-proactively when it matters, and can even **improve his own code** — safely and reversibly.
+# OpenWatari
 
-He is built from scratch in Python, runs on a no-GPU Windows laptop, and is designed to be *on all
-the time*: his brain can run as a service on an always-on host while the voice front-end runs
-wherever you are (laptop, phone, smart-glasses).
+**An open-source framework for building your own 24/7, voice-first, multi-device AI companion — "Watari".**
 
-> **Jarvis is his own agent.** He has his own reasoning model, his own memory, and his own
-> personality. The separate OpenClaw fleet is an *external team of specialists* he can **consult**
-> as one tool among many — he never becomes it. Pipecat is the voice shell; **Jarvis is the mind.**
+Wake-word listening · streaming natural voice · its own reasoning LLM + tools · six-layer memory ·
+proactive companion · phone / laptop / glasses · self-improving — local-first, self-hosted, yours.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
+![Platform](https://img.shields.io/badge/edge-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)
+
+📖 **Documentation:** _deploy the site in [`website/`](website/) to Vercel_ → `https://openwatari.vercel.app`
+
+</div>
+
+---
+
+> **Naming.** The project is **OpenWatari**; the assistant you build and talk to is **Watari**.
+> *Jarvis* — the fictional assistant — is only the **blueprint/inspiration** for what a personal AI
+> companion should be; this is an independent, from-scratch implementation. The Python package and
+> CLI keep the short internal name `jarvis` (import paths, `jarvis-setup`, `python -m jarvis.…`) for
+> stability; everything user-facing is Watari / OpenWatari.
+
+## What this is
+
+**OpenWatari is a framework, not a product.** Clone it, run the [setup wizard](#-quick-start-5-minutes),
+point it at the voice/LLM providers you like, and you have a personal assistant you **talk to**: it
+listens for a wake word, answers in a natural streaming voice, remembers across sessions, acts on
+your machine and your accounts, reaches you proactively when it matters, and can even **improve its
+own code** — safely and reversibly.
+
+It is built from scratch in Python, runs on a no-GPU laptop, and is designed to be *on all the time*:
+its **brain** runs as a service on an always-on host (a cheap VPS), while the **voice front-end** runs
+wherever you are — laptop, phone, smart-glasses — all sharing one brain and one memory.
+
+Everything **degrades gracefully**: a capability with no credentials simply says "that isn't
+configured yet" instead of crashing, so you light up integrations one at a time.
+
+> **Watari is its own agent.** It has its own reasoning model, its own memory, and its own
+> personality (`personality/jarvis.md`). Pipecat is the voice shell; the LLM + tool loop is the mind.
+> An *optional* external multi-agent fleet can be **consulted** as one tool among many — it never
+> becomes the assistant.
+
+### Why a framework
+
+- **Bring your own everything.** Cloud quality (ElevenLabs + Deepgram) or 100% local CPU
+  (Piper/Kokoro + Whisper/Moonshine + openWakeWord) — a flag, not a rewrite. Same for the LLM
+  (any OpenAI-compatible endpoint: a free proxy, OpenAI, or local Ollama).
+- **One brain, many devices.** The brain is a WebSocket server; a laptop edge, an iPhone (Siri
+  Shortcut, no app), and Mentra glasses all reach the same agent and memory — over your **Tailnet**.
+- **Safe by construction.** Confirm-before-acting is **enforced in code** (not just prompted),
+  reversible-only git, repo-scoped self-edits, password-gated privileged routines, a redacted audit
+  log, deny-by-default fleet. See **[SECURITY.md](SECURITY.md)**.
+- **Personal but forkable.** The character, knowledge, and skills are plain Markdown files you edit;
+  no code change needed to make it *yours*.
 
 ---
 
 ## Table of contents
-- [What he can do](#what-he-can-do)
+- [Feature tour](#feature-tour)
 - [Architecture](#architecture)
-- [The build, phase by phase](#the-build-phase-by-phase)
+- [Quick start](#-quick-start-5-minutes)
+- [The setup wizard](#the-setup-wizard)
+- [Networking: the Tailnet requirement](#networking-the-tailnet-requirement)
+- [Devices](#devices)
+- [Configuration](#configuration)
 - [Memory — six layers](#memory--six-layers)
 - [The tool belt](#the-tool-belt)
 - [Proactive companion](#proactive-companion)
-- [Self-improvement](#self-improvement-phase-13)
-- [Quick start](#quick-start)
-- [Configuration](#configuration)
+- [Self-improvement](#self-improvement)
 - [Testing & benchmarks](#testing--benchmarks)
+- [Documentation site](#documentation-site)
 - [Deployment](#deployment)
 - [Security](#security)
 - [Project layout](#project-layout)
+- [License](#license)
+- [Contributing](#contributing)
 
 ---
 
-## What he can do
+## Feature tour
 
-- **Natural voice.** Wake on "Jarvis" (and a configurable set), understand you across English /
-  French / German / Russian / Armenian / Ukrainian, and reply in a streaming ElevenLabs voice with
-  barge-in (you can talk over him on headphones).
-- **Think for himself.** His own LLM (via a free OpenAI-compatible proxy) with a model fallback
-  chain, his own personality, and a tool-calling loop — answering directly and fast.
-- **Remember.** A six-layer memory: the live conversation, durable learned facts, a daily journal,
-  your Obsidian vault, a hot-cache, and optional semantic recall.
-- **Act.** Files, processes, PowerShell, a real visible browser, music, reminders & phone push,
-  Telegram (read *and* send), Gmail, Google Calendar, Notion, Home Assistant smart-home.
-- **Look things up.** Weather, crypto, stocks, FX, news, Wikipedia, dictionary, unit/currency
+- **Natural voice.** Wake on a phrase, understand you across multiple languages (English / French /
+  German / Russian / Armenian / Ukrainian via Whisper), and reply in a streaming voice with **barge-in**
+  (talk over it on headphones).
+- **Thinks for itself.** Its own LLM (any OpenAI-compatible endpoint) with a model fallback chain,
+  its own personality, and a tool-calling loop — answering directly and fast.
+- **Remembers.** A six-layer memory: the live conversation, durable learned facts, a daily journal,
+  your Obsidian vault (read **and** write on the authoritative host), a hot-cache, and optional
+  semantic recall.
+- **Acts.** Files, processes, PowerShell (incl. elevated), a real visible browser, music, reminders
+  & phone push, Telegram (read *and* send), Gmail, Google Calendar, Notion, Home Assistant.
+- **Looks things up.** Weather, crypto, stocks, FX, news, Wikipedia, dictionary, unit/currency
   conversion — mostly key-free.
-- **Reach you first.** A proactive engine that surfaces reminders, calendar events, and alerts
-  within an interruption budget and quiet hours — speaking if you're listening, pushing if you're not.
-- **Improve himself.** Read and edit his own source, run his own test suite, and make **reversible**
-  git commits — with hard guardrails so nothing destructive is possible.
-
-Everything **degrades gracefully**: a capability with no credentials simply says "that isn't
-configured yet" instead of crashing, so you can light up integrations one at a time.
+- **Reaches you first.** A proactive engine that surfaces reminders, calendar events, and alerts
+  within an interruption budget and quiet hours — speaking if you're listening, pushing if you're not
+  — and **remembers what it said**, so you can answer "yes, do that" a minute or ten days later.
+- **Improves itself.** Reads and edits its own source, runs its own test suite, and makes
+  **reversible** git commits — with hard guardrails so nothing destructive is possible.
+- **Controls a PC remotely.** An optional edge executor lets the always-on brain drive a laptop
+  end-to-end (open apps, manage processes, run scripts) from your phone, over your Tailnet.
 
 ---
 
@@ -59,50 +109,136 @@ configured yet" instead of crashing, so you can light up integrations one at a t
 Two cooperating processes over one streaming WebSocket protocol:
 
 ```
-┌──────────────── LOCAL PC / phone / glasses (the "edge") ───────────────┐
-│  Mic → wake word (openWakeWord) → VAD (Silero) → STT (Deepgram/Whisper) │
-│      → [BrainBridge] ──WebSocket──┐                                     │
-│  Speaker ← TTS (ElevenLabs/Piper) ←┘  (barge-in, smart turn-taking)     │
-└────────────────────────────────────────────┬───────────────────────────┘
-                          streaming StreamEvents │
-┌─────────────────────── always-on host (the "brain") ───────▼───────────┐
-│  JarvisAgent: own LLM (+fallback chain) · tool-calling loop · memory     │
-│  Tools: vault · web · telegram · gmail · calendar · notion · smart-home  │
-│         · utilities · system · browser · reminders · coding/git · …      │
-│  Memory L0–L5 · proactive tick · audit log · self-health · protocols     │
-│  Optionally consults the external OpenClaw fleet (via ispir) as a tool   │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────── EDGE — laptop / phone / glasses (where you are) ────────────┐
+│  Mic → wake word (openWakeWord) → VAD (Silero) → STT (Deepgram/Whisper)     │
+│      → [BrainBridge] ──WebSocket──┐                                          │
+│  Speaker ← TTS (ElevenLabs/Piper) ←┘   (barge-in, smart turn-taking, AEC)    │
+└────────────────────────────────────────────┬────────────────────────────────┘
+                          streaming StreamEvents │   (Tailnet + Bearer-token auth)
+┌──────────────── BRAIN — always-on host / VPS (24/7) ───────────▼─────────────┐
+│  Agent loop: own LLM (+fallback chain) · tool-calling · session + memory      │
+│  Confirmation tier ENFORCED in code · smart idle session reset                 │
+│  Tools: vault(r/w) · web · telegram · gmail · calendar · notion · smart-home   │
+│         · utilities · system/PC-control · browser · reminders · coding/git · …  │
+│  Memory L0–L5 · proactive tick (durably logged) · scheduler · audit · health    │
+│  HTTP sidecar: /talk (iPhone Siri voice) · /control (remote PC executor)        │
+│  Optionally consults an external multi-agent fleet as ONE tool                 │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Edge** (`src/jarvis/edge/`) keeps audio + STT/TTS **local** (privacy, low mic latency).
 - **Brain** (`src/jarvis/brain/`) holds the 24/7 obligations (reasoning, memory, scheduler,
-  channels) and can run in-process or as a shared WebSocket server (`brain/server.py`) so a laptop,
-  the iPhone web client (`clients/iphone/`), and the Mentra glasses all share **one** brain + memory.
+  channels) and can run in-process **or** as a shared WebSocket server (`brain/server.py`) so a
+  laptop, an iPhone, and glasses all share **one** brain + memory.
+- The Pipecat "LLM stage" is replaced by a thin **`BrainBridge`** processor, so swapping reasoning
+  backends or adopting a different transport never touches the audio pipeline.
 
 ---
 
-## The build, phase by phase
+## 🚀 Quick start (5 minutes)
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Scaffolding & hello-voice (mic→STT→TTS) | ✅ |
-| 1 | Local always-listening loop: wake word, VAD, barge-in | ✅ |
-| 2 | Jarvis's own brain (LLM + personality + memory + tools) | ✅ |
-| 3 | Knowledge & channels: vault, web, Telegram, browser | ✅ |
-| 4 | Proactivity & true 24/7: scheduler, ntfy push, VPS ticker | ✅ |
-| 5 | Speaker biometrics + TTFW/VAQI benchmarks | ✅ |
-| 6 | Multi-device: brain WS server + iPhone client + glasses bridge | ✅ |
-| 7 | Password-gated protocols (goodnight/phoenix/ragnarok) | ✅ |
-| 9 | **Elite memory** — L1 learned facts, L2 journal, L3 vault, L4 cache, L5 semantic | ✅ |
-| 10 | **Proactive engine** — budget, quiet hours, clarify/confirm, modes | ✅ |
-| 11 | **Email · Calendar · Notion · Smart-home** | ✅ |
-| 12 | **Utilities belt** — weather, crypto, stocks, FX, news, wiki, convert | ✅ |
-| X | Audit log · self-health · routines/modes (focus/lockdown/briefing/…) | ✅ |
-| 13 | **Coding & self-improvement** — repo-scoped edits + reversible git + skills | ✅ |
+Requires **Python 3.11+** and [`uv`](https://github.com/astral-sh/uv).
 
-The full plan and per-phase detail live in [`docs/ROADMAP.md`](docs/ROADMAP.md);
-the expansion design in [`docs/EXPANSION-PLAN.md`](docs/EXPANSION-PLAN.md);
-efficiency measurements + fine-tune targets in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+```bash
+git clone https://github.com/iamvazghen/OpenWatari openwatari && cd openwatari
+
+# 1. Install the base + the stack you want (this also makes `jarvis-setup` available):
+uv sync --extra edge --extra cloud-voice --extra brain --extra channels --extra identity --extra dev
+#   ↳ for a 100% local/offline voice stack, drop `cloud-voice` and add `local-voice`.
+
+# 2. Configure interactively — writes your .env:
+uv run jarvis-setup
+
+# 3. Verify everything (offline, no keys needed to pass):
+uv run python bench/run_all_tests.py        # → all green
+
+# 4. Talk to it:
+uv run python -m jarvis.edge.assistant      # local voice loop on this machine
+#   …or run the shared brain for phone/glasses:
+uv run python -m jarvis.brain.server
+```
+
+`uv sync` **prunes** extras you don't list — install the full set you intend to use **in one go**.
+The optional extras are: `edge` `cloud-voice` `local-voice` `brain` `channels` `browse` `identity`
+`dev` (see [pyproject.toml](pyproject.toml) for what each pulls).
+
+After the wizard, **[`TODO-NOW.md`](TODO-NOW.md)** is the step-by-step deployment checklist: every
+one-time login/credential, voice enrollment, and the full real-device test plan.
+
+---
+
+## The setup wizard
+
+`uv run jarvis-setup` (a Rich terminal UI; falls back to plain text on a bare install) walks a forker
+through the decisions that matter and writes a ready `.env`:
+
+1. **Identity** — display name + wake phrase (from the pre-trained set; custom phrases use Porcupine).
+2. **Voice** — cloud (ElevenLabs + Deepgram, asks for keys) or local (Piper/Kokoro + Whisper/Moonshine).
+3. **Brain** — LLM backend: a free OpenAI-compatible proxy, OpenAI, or local Ollama.
+4. **Knowledge** — the path to your Obsidian/Markdown notes (long-term L3 memory).
+5. **Deployment** — *single* machine (loopback) or *VPS* (binds `0.0.0.0`, auto-generates an auth token).
+6. **Security** — auto-generates strong passwords for all eight privileged protocols.
+7. **Integrations** — optionally wire Telegram, Tavily, Google, Notion, ntfy now (or later).
+8. **Behaviour** — proactivity on/off; fleet consult stays off by default.
+
+It **never prints a secret back**, backs up any existing `.env`, and preserves every inline comment
+in `.env.example` for the knobs you didn't touch. Re-run it any time to reconfigure.
+
+---
+
+## Networking: the Tailnet requirement
+
+OpenWatari is multi-device, and the secure way to connect a phone, a laptop, and glasses to the same
+24/7 brain on a VPS is a **private mesh VPN** — a **Tailnet** ([Tailscale](https://tailscale.com),
+WireGuard under the hood). **Install Tailscale and sign in on _every_ device** — the VPS/brain host,
+your laptop, your iPhone, and (via its companion phone) the glasses. Then:
+
+- Every device gets a stable `100.x.y.z` address reachable only inside *your* tailnet.
+- The brain binds `0.0.0.0` but is only routable to your own devices — **never the public internet** —
+  and is still guarded by the `JARVIS_API_AUTH_TOKEN` bearer the wizard generates.
+- The edge connects to `ws://<brain-tailnet-ip>:8765/voice`; the iPhone Siri Shortcut posts to
+  `http://<brain-tailnet-ip>:8766/talk`; the PC-control executor dials the brain's `/control` — all
+  over the tailnet, no port-forwarding, no public exposure.
+
+**Rule of thumb:** if a device should talk to Watari, it must be **on the tailnet and logged in**.
+Off the tailnet, only the public fallbacks work (Telegram bot messages, ntfy push). See the docs
+site's *Networking* page for the exact Tailscale steps.
+
+---
+
+## Devices
+
+One brain, reached many ways — all sharing memory, all over the tailnet:
+
+| Device setup | How it connects | Barge-in | Notes |
+|---|---|---|---|
+| **Laptop** (built-in mic/speakers) | `jarvis.edge.assistant` → brain WS | off (open speakers) | baseline local pipeline |
+| **Laptop + headphones** (AirPods → laptop) | same, auto-routes to headphones | **on** (private) | interrupt mid-sentence |
+| **Phone** (iPhone, no app) | "Hey Siri, Watari" → `POST /talk` | n/a | Siri dictation → spoken reply |
+| **Phone + headphones** (AirPods → phone) | same Siri Shortcut | n/a | reply plays in the AirPods |
+| **Mentra OS glasses** | TS bridge (`glasses/`) → brain WS | on | mic/speaker/display bridge |
+| **Home Assistant** | brain → HA REST (local) | n/a | states + control (locks confirm-gated) |
+| **Remote PC control** | laptop executor → brain `/control` | n/a | brain drives the laptop from anywhere |
+
+Each setup has a step-by-step acceptance test (TTFW numbers, auto-route, barge-in, Siri voice, music
+room, proactive voice, shared memory) in **[`TODO-NOW.md`](TODO-NOW.md) §3** and the docs site's
+*Devices* page. **All seven are wired and tested.**
+
+---
+
+## Configuration
+
+Everything is driven by environment variables (prefix `JARVIS_`) read from `.env`. See
+**[`.env.example`](.env.example)** — every knob is documented inline. Nothing is hard-coded; the same
+codebase runs CPU-local-only or cloud-quality just by flipping provider flags. **Never commit `.env`**
+(it's gitignored). The assistant's *character* is `personality/jarvis.md`; its *knowledge* is the
+Markdown under `memory/`; its *skills* are `skills/*.md` — all editable without touching code.
+
+Notable knobs added for safety/memory:
+- `JARVIS_VAULT_WRITABLE` — `true` only on the host that *owns* the vault; lets Watari save notes
+  into it (`write_vault`). Off on the laptop (its mirror gets clobbered by the one-way sync).
+- `JARVIS_SESSION_IDLE_RESET_MINUTES` — after this idle gap the brain journals the prior conversation
+  and clears working memory, so stale context can't bleed into a fresh conversation hours later.
 
 ---
 
@@ -110,11 +246,11 @@ efficiency measurements + fine-tune targets in [`docs/BENCHMARKS.md`](docs/BENCH
 
 | Layer | What | Where |
 |---|---|---|
-| **L0 Working** | the live conversation (rolling turns) | RAM |
-| **L1 Learned** | durable facts he saves (`remember`/`recall`/`forget`) | `memory/learned/*.md` |
-| **L2 Journal** | a one-line daily summary for continuity | `memory/journal/*.md` |
-| **L3 Vault** | your Obsidian knowledge base (read-only, validated always-on) | `JARVIS_VAULT_PATH` |
-| **L4 Hot-cache** | front the slow paths (search, utilities) | in-process TTL + optional Redis |
+| **L0 Working** | the live conversation (rolling turns; smart-reset on long idle) | RAM |
+| **L1 Learned** | durable facts it saves (`remember`/`recall`/`forget`) | `memory/learned/*.md` |
+| **L2 Journal** | daily summaries + a durable log of proactive nudges | `memory/journal/*.md` |
+| **L3 Vault** | your Obsidian knowledge base (read always; **write** on the authoritative host) | `JARVIS_VAULT_PATH` |
+| **L4 Hot-cache** | fronts the slow paths (search, utilities) | in-process TTL + optional Redis |
 | **L5 Semantic** | recall by *meaning*, not just keywords | optional local embedder |
 
 L4/L5 are graceful accelerators: no Redis → in-process cache; no embedder → keyword recall. The
@@ -126,26 +262,26 @@ Markdown layers are always the source of truth.
 
 All tools live in `src/jarvis/brain/tools/` and self-degrade when unconfigured. Highlights:
 
-- **Knowledge** — `search_vault`, `read_vault_note`, `web_search` (Tavily), `scrape_url`
-  (Firecrawl), `browse_web` (Browserbase).
+- **Knowledge** — `search_vault`, `read_vault_note`, **`write_vault`** (save a note on the
+  authoritative host), `web_search` (Tavily), `scrape_url` (Jina Reader — free, keyless),
+  `browse_web` (Browserbase).
 - **Memory** — `remember`, `recall`, `forget`, `read_journal`.
-- **Channels** — `check_telegram`, **`read_chat`** (read the last messages of any chat *without*
-  marking them seen), **`mark_telegram`**, `send_telegram` (text/GIF/file), `read_email` /
+- **Channels** — `check_telegram`, `read_chat`, `mark_telegram`, `send_telegram`, `read_email` /
   `draft_email` / `send_email` (Gmail), `notion_search` / `read` / `append` / `comment` / `create`.
-- **Calendar & home** — `list_events`, `create_event`, `ha_state`, `ha_call` (Home Assistant).
+- **Calendar & home** — `list_events`, `create_event`, `set_home_location`; Home Assistant tools.
 - **Utilities** — `weather`, `crypto_price`, `stock_price`, `fx_rate`, `news_brief`, `wiki_lookup`,
   `define_word`, `convert`.
-- **Media** — `play_music` (YouTube Music, free), `telegram_music`, `spotify`, `stop_music`.
-- **The machine** — `file_op`, `process_op`, `run_powershell`, `browser` (a real visible Chromium).
+- **Media** — `play_music` (YouTube Music, free; or stream into a Telegram voice chat), `stop_music`.
+- **The machine** — `file_op`, `process_op`, `run_powershell` (incl. elevated), `browser`.
 - **Proactive** — `set_reminder`, `list_reminders`, `cancel_reminder`, `send_push`.
-- **Routines & health** — `routine` (briefing/focus/lockdown/guest/commute/panic/backup),
-  `self_health`.
+- **Routines & health** — `routine` (briefing/focus/lockdown/guest/commute/panic/backup), `self_health`.
 - **Self-improvement** — `read_source`, `write_source`, `run_tests`, `lint`, `git_status/diff/log`,
   `git_new_branch/commit/push/revert`, `list_skills`, `read_skill`.
-- **The team** — `delegate_to_fleet` (ispir-only; gated by default).
+- **The team** — `delegate_to_fleet` (gated off by default).
 
-A spoken filler is shown for slow tools so a turn is never dead air, and **every tool call is
-written to a redacted audit log** (`audit/*.jsonl`).
+Outward-facing / destructive tools are in a **confirmation tier that is enforced in code**: the agent
+holds the call, reads the action back, and runs it only after you say yes. Every tool call is written
+to a redacted audit log (`audit/*.jsonl`).
 
 ---
 
@@ -153,120 +289,134 @@ written to a redacted audit log** (`audit/*.jsonl`).
 
 A background tick weighs signals (routine, calendar, unread, open threads, self-health) and decides
 whether to say something **unprompted** — within an **interruption budget** and **quiet hours**, so
-he's helpful, never noisy. He can:
-
-- **remind**, **pause** (hold a thought / lockdown), **ask for context** (clarify before guessing),
-  **re-ask / confirm** (before anything outward-facing), **interrupt**, and **speak on his own**.
-- Speak to a listening device, or fall back to an ntfy phone push when you're away.
-- Be muted on demand: *"focus mode for an hour"*, *"lockdown"*, *"normal"*, *"give me my briefing"*.
-
-It's **on by default** for a 24/7 deployment (toggle `JARVIS_PROACTIVE_ENABLED`).
+it's helpful, never noisy. It speaks to a listening device or falls back to a Telegram voice note /
+ntfy push when you're away. Crucially, **every proactive line is recorded** — into working memory
+(so you can answer "yes, do it" right away) and into the L2 journal (so you can refer back days
+later: "that thing you suggested last week"). Mute it on demand by voice: *"focus mode for an hour"*,
+*"lockdown"*, *"normal"*, *"give me my briefing"*. Toggle with `JARVIS_PROACTIVE_ENABLED`.
 
 ---
 
-## Self-improvement (Phase 13)
+## Self-improvement
 
-Jarvis can improve his own codebase, with a hard safety rail: **every change is reversible and
-verified.**
-
-- **Repo-scoped, secret-blocked file I/O** — he can read/edit project files but never `.env`,
-  session files, `voiceprint.json`, the audit log, or anything outside the repo.
-- **Verify before trusting** — `run_tests` runs the full suite; he's told to only commit green code.
-- **Reversible-only git** — there is *no* reset, force-push, rebase, or branch-delete tool. A revert
-  is always a new commit, so history can't be rewritten or lost.
-- **Confirm-gated** — writes, commits, and pushes are read back to you for a yes first.
-- **Skill playbooks** (`skills/*.md`) — self-improvement loop, a map of his own architecture, Python
-  conventions, how to add a tool, git discipline, debugging — read on demand, not bloating the prompt.
-
-Ask: *"read your self-improvement skill, then make recall faster."* He branches, edits, tests, reads
-the change back, waits for your yes, commits — and reverts cleanly if anything regresses.
-
----
-
-## Quick start
-
-Requires **Python 3.11** and [`uv`](https://github.com/astral-sh/uv).
-
-```bash
-cp .env.example .env        # then fill in at least ElevenLabs + Deepgram + JARVIS_VAULT_PATH
-# uv sync PRUNES extras you don't list — install the FULL set you intend to use in one go:
-uv sync --extra edge --extra cloud-voice --extra local-voice --extra brain --extra channels --extra browse --extra identity --extra dev
-
-# verify everything (one command):
-uv run python bench/run_all_tests.py        # → 18 passed, 0 failed, 1 gated-skip
-
-# talk to him:
-uv run python -m jarvis.edge.assistant      # local voice loop
-# or run the shared brain (for phone/glasses):
-uv run python -m jarvis.brain.server
-```
-
-`TODO-NOW.md` is the **deployment checklist**: every one-time login/credential, in depth, in order.
-Complete it + a green test run = ready to deploy.
-
----
-
-## Configuration
-
-Everything is driven by environment variables (prefix `JARVIS_`) read from `.env`. See
-[`.env.example`](.env.example) — every knob is documented inline. Nothing is hard-coded; the same
-codebase runs CPU-local-only or cloud-quality just by flipping provider flags. **Never commit
-`.env`** (it's gitignored).
+Watari can improve its own codebase, with a hard safety rail: **every change is reversible and
+verified.** Repo-scoped, secret-blocked file I/O; `run_tests`/`lint` before trusting a change;
+**reversible-only git** (no reset/force-push/rebase/branch-delete — a revert is a new commit);
+writes/commits/pushes are confirm-gated. A background "review" pass also distils durable facts from
+conversations into L1 memory every few turns. Ask: *"read your self-improvement skill, then make
+recall faster."* It branches, edits, tests, reads the change back, waits for your yes, commits — and
+reverts cleanly if anything regresses.
 
 ---
 
 ## Testing & benchmarks
 
 - **`uv run python bench/run_all_tests.py`** — the single gate. Each phase has a hermetic
-  `bench/test_phase*.py` (offline, no real network/keys) that prints `=== N/N checks passed ===`.
-  Network/fleet tests report SKIP (not FAIL) when their backend is unreachable, so an offline run
-  still passes.
-- **`uv run python bench/efficiency_report.py`** — measures the hot paths (memory recall, cache,
-  brain TTFT, full-turn latency, prompt size) against efficient-operation targets and flags what to
-  fine-tune. See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+  `bench/test_*.py` (offline, no real network/keys). Network/fleet tests report **SKIP** (not FAIL)
+  when their backend is unreachable, so an offline run still passes.
+- **`uv run python bench/efficiency_report.py`** — measures the hot paths (memory recall, cache, brain
+  TTFT, full-turn latency, prompt size) against efficiency targets. See
+  [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) and the audit at [`docs/AUDIT.md`](docs/AUDIT.md).
+
+**Publish gate:** this repo stays **private** until the suite is green *and* the efficiency report
+meets its targets. (Current state: suite green; one marginal item — streaming TTFT — tracked in the
+audit.)
+
+---
+
+## Documentation site
+
+A Next.js documentation site lives in **[`website/`](website/)** and is built to deploy on **Vercel**:
+
+```bash
+cd website
+npm install
+npm run dev      # local preview at http://localhost:3000
+# Deploy: import the repo in Vercel, set Root Directory = "website" (framework preset: Next.js).
+#   or:  npm i -g vercel && vercel --cwd website
+```
+
+It documents everything end-to-end: architecture, the setup wizard, the **Tailnet** requirement, all
+device setups (Mentra OS, Home Assistant, laptop, laptop+headphones, phone, phone+headphones),
+configuration, memory, security, and licensing.
 
 ---
 
 ## Deployment
 
-1. Work through `TODO-NOW.md` (voice enrollment, VPS ticker, Google/Notion/Home-Assistant logins,
-   GitHub repo, optional Redis/embedder, proactive switch-on).
-2. `uv run python bench/run_all_tests.py` → all green.
-3. Run the brain as a service on an always-on host and the edge on your laptop (helper scripts in
-   `scripts/`). The VPS ticker (`deploy/vps/`) delivers recurring reminders even with the PC off.
+1. Run `uv run jarvis-setup`, then work through **[`TODO-NOW.md`](TODO-NOW.md)** (Tailscale on every
+   device, voice enrollment, VPS ticker, Google/Notion/Telegram logins, GitHub repo, optional
+   Redis/embedder, proactive switch-on, and the real-device test plan).
+2. `uv run python bench/run_all_tests.py` → all green; `efficiency_report.py` → targets met.
+3. Run the **brain** as a service on an always-on host and the **edge** on your laptop (helper scripts
+   in `scripts/`; a systemd unit pattern in `deploy/vps/`). The VPS ticker delivers recurring
+   reminders even with the PC off.
 
 ---
 
 ## Security
 
-Jarvis is powerful — he runs PowerShell, drives a browser, sends messages, and edits his own code.
-The safety model (secret handling, confirm tiers, protocol passwords, self-improvement guardrails,
-fleet gating, audit log, what's kept out of git) is documented in **[`SECURITY.md`](SECURITY.md)**.
-Read it before deploying.
+Watari is powerful — it runs shell commands, drives a browser, sends messages, and edits its own
+code. The full safety model (secret handling, **enforced** confirmation tier, protocol passwords,
+self-improvement guardrails, fleet gating, speaker biometrics, audit log, the Tailnet posture, what's
+kept out of git) is in **[SECURITY.md](SECURITY.md)**. **Read it before deploying**, and keep your
+fork **private** if it carries personal `memory/` or persona content.
 
 ---
 
 ## Project layout
 
 ```
-src/jarvis/
-  edge/        # voice pipeline: wake word, VAD, STT/TTS, device routing, barge-in
-  brain/       # the agent: LLM, memory, cache, semantic, proactive, audit, health, protocols
-    tools/     # the tool belt (one module per capability; SCHEMAS + HANDLERS)
-  shared/      # the edge↔brain WebSocket protocol
-  protocols/   # password-gated routine scripts
-personality/   # jarvis.md — who he is (system-prompt persona)
-memory/        # what he knows (Markdown): about-vazghen, projects, tools, learned/, journal/
-skills/        # on-demand playbooks (self-improvement, architecture, python, …)
-clients/iphone # the phone web client
-glasses/       # Mentra OS bridge (TypeScript)
-deploy/vps/    # the always-on recurring-reminder ticker
-bench/         # the test suite + benchmarks + one-time login helpers
-docs/          # ROADMAP, EXPANSION-PLAN, BENCHMARKS, multi-device
-TODO-NOW.md    # the deployment checklist (everything only you can do)
+src/jarvis/        # package keeps the short internal name `jarvis`
+  edge/            # voice pipeline: wake word, VAD, STT/TTS, device routing, barge-in, PC executor
+  brain/           # the agent: LLM, memory, cache, semantic, proactive, audit, health, protocols
+    tools/         # the tool belt (one module per capability; SCHEMAS + HANDLERS)
+  shared/          # the edge↔brain WebSocket protocol
+  setup_wizard.py  # `jarvis-setup` — interactive .env generator
+personality/       # jarvis.md — who Watari is (system-prompt persona; edit to make it yours)
+memory/            # what it knows (Markdown): about, projects, tools, learned/, journal/
+skills/            # on-demand playbooks (self-improvement, architecture, python, pc-control, …)
+clients/iphone/    # the phone client assets
+glasses/           # Mentra OS bridge (TypeScript)
+website/           # the Next.js documentation site (deploy to Vercel)
+deploy/vps/        # the always-on recurring-reminder ticker
+scripts/           # edge service install/uninstall helpers
+bench/             # the test suite + benchmarks + one-time login helpers
+docs/              # ROADMAP, EXPANSION-PLAN, BENCHMARKS, AUDIT, multi-device, TESTING
+LICENSE · THIRD_PARTY_NOTICES.md · SECURITY.md · TODO-NOW.md · .env.example
 ```
 
 ---
 
-*Built for Vazghen. Jarvis thinks and speaks as himself; the OpenClaw fleet is a resource he
-consults, never his mind.*
+## License
+
+OpenWatari is released under the **[MIT License](LICENSE)** — free to use, modify, and redistribute,
+including commercially. You don't "acquire" or pay for MIT; you just keep the `LICENSE` file (with its
+copyright line) in copies of the code.
+
+**Dependencies keep their own licenses.** Almost all are permissive (MIT / BSD / Apache-2.0 /
+Unlicense). The **one** copyleft dependency is `py-tgcalls`/`ntgcalls` (**LGPL-3.0**), pulled in only
+by the optional `channels` extra for streaming music into a Telegram voice chat — using it as an
+unmodified `pip` library is compatible with shipping your own MIT code, and you can omit it for a
+100%-permissive stack. The full breakdown plus cloud-service Terms is in
+**[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**.
+
+> The name **OpenWatari / Watari** is the project's own. *Jarvis* is referenced only as the
+> blueprint/inspiration and is not used as this project's brand. Before a public release, run
+> `uvx pip-licenses --format=markdown` over your locked environment as a final check.
+
+---
+
+## Contributing
+
+Issues and PRs welcome. Before opening a PR: run `uv run python bench/run_all_tests.py` (green) and
+`uv run ruff check src`. Keep new code in the style of its neighbours (terse comments that say *why*,
+not *what*), and add a hermetic `bench/test_*` check for any new capability. Security issues should be
+reported privately per [SECURITY.md](SECURITY.md) §10, not as public issues.
+
+---
+
+<div align="center">
+<sub><b>OpenWatari</b> — build your own Watari. A from-scratch, local-first companion framework;
+Jarvis was the inspiration, not the implementation.</sub>
+</div>

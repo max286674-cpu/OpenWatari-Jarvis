@@ -122,6 +122,20 @@ def main() -> None:
     MODES.clear()
     unknown = asyncio.run(routines.routine({"name": "flibbertigibbet"}))
     check("unknown routine is rejected cleanly", "don't have" in unknown.lower(), unknown)
+    check("home-location tool is registered", "set_home_location" in routines.HANDLERS)
+    from jarvis.brain import prefs
+
+    original_home = routines.settings.home_location
+    original_home_pref = prefs.get("home_location")
+    routines.settings.home_location = "Cologne, Germany"
+    try:
+        out = asyncio.run(routines.set_home_location({"location": "Yerevan, Armenia"}))
+        check("home location can be changed at runtime", "Yerevan, Armenia" in out, out)
+        out = asyncio.run(routines.set_home_location({}))
+        check("home location reports runtime override", "Yerevan, Armenia" in out, out)
+    finally:
+        routines.settings.home_location = original_home
+        prefs.set("home_location", original_home_pref)
 
     print("\n[7] backup routine archives memory")
     out = asyncio.run(routines.routine({"name": "backup"}))

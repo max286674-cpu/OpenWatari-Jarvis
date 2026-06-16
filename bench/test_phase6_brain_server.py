@@ -73,6 +73,18 @@ class StubAgent:
             await asyncio.sleep(self.delay)
         return self.reply
 
+    async def respond_stream(self, text: str, on_progress=None):
+        # Streaming twin used by the server now: record, fire a filler, yield sentence chunks.
+        import re as _re
+        self.seen.append(text)
+        if on_progress:
+            on_progress("Working on it…")
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        for part in _re.split(r"(?<=[.!?])\s+", self.reply):
+            if part.strip():
+                yield part.strip()
+
 
 async def run() -> None:
     from jarvis.brain.server import BrainServer, chunk_for_tts, parse_client_message

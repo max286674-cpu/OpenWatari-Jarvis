@@ -50,6 +50,36 @@ def _registry() -> dict[str, dict]:
             "spoken": "Restarting the machine, sir. Save your work.",
             "description": "restarts the laptop",
         },
+        "backup": {
+            "script": "backup.py",
+            "password": settings.protocol_backup_password,
+            "spoken": "Memory backup started, sir.",
+            "description": "backs up Jarvis memory",
+        },
+        "ping": {
+            "script": "ping.py",
+            "password": settings.protocol_ping_password,
+            "spoken": "Pinging your phone, sir.",
+            "description": "sends a phone push test",
+        },
+        "diagnostics": {
+            "script": "diagnostics.py",
+            "password": settings.protocol_diagnostics_password,
+            "spoken": "Diagnostics started, sir.",
+            "description": "writes a local diagnostics report",
+        },
+        "auditpack": {
+            "script": "auditpack.py",
+            "password": settings.protocol_auditpack_password,
+            "spoken": "Audit archive started, sir.",
+            "description": "archives audit logs",
+        },
+        "checkpoint": {
+            "script": "checkpoint.py",
+            "password": settings.protocol_checkpoint_password,
+            "spoken": "Checkpoint started, sir.",
+            "description": "archives key non-secret Jarvis context",
+        },
     }
 
 

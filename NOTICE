@@ -1,0 +1,18 @@
+OpenWatari
+Copyright (c) 2026 Vazghen and the OpenWatari contributors
+
+This product is licensed under the MIT License (see LICENSE).
+
+"OpenWatari" is the project; "Watari" is the assistant persona. "Jarvis" — the fictional
+assistant — is referenced only as the blueprint/inspiration and is NOT a brand of this project.
+The internal Python package keeps the short name "jarvis" as a code identifier (import paths and
+the `jarvis-setup` CLI), not as a public trademark.
+
+This software incorporates third-party open-source components, each under its own license. A
+summary of those licenses and obligations — including the single weak-copyleft dependency
+(py-tgcalls / ntgcalls, LGPL-3.0, used only by the optional `channels` extra) and the cloud-service
+Terms of Service you accept by supplying your own API keys — is in THIRD_PARTY_NOTICES.md. The
+authoritative license text for each dependency ships inside its package's dist-info directory.
+
+Use of this software is also subject to ACCEPTABLE_USE.md (responsible-use expectations for an
+autonomous, tool-using AI agent).

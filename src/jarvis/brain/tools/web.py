@@ -4,8 +4,8 @@ Three complementary capabilities, each behind its own key (all degrade gracefull
 
 * ``web_search``  — Tavily API: fast LLM-grade web search with answer + sources. Best for
   "look up / what's the latest on X". (Other search scrapers can be slotted in the same way.)
-* ``scrape_url``  — Firecrawl: fetch a single URL as clean Markdown (JS-rendered). Best for
-  "open this page and tell me what it says" / "read me the headline".
+* ``scrape_url``  — Jina Reader (r.jina.ai): fetch a single URL as clean Markdown (JS-rendered),
+  **free and keyless**. Best for "open this page and tell me what it says" / "read me the headline".
 * ``browse_web``  — Browserbase: a real headless Chrome for tasks that need interaction
   (click, fill, multi-step). Connects Playwright over CDP to a Browserbase session.
 
@@ -16,7 +16,7 @@ These are Jarvis's OWN web reach. Heavy multi-step domain research still goes to
 from __future__ import annotations
 
 from jarvis.brain.cache import CACHE
-from jarvis.brain.tools.base import clip, http_post, not_configured, tool_error
+from jarvis.brain.tools.base import clip, http_get, http_post, not_configured, tool_error
 from jarvis.config import settings
 
 
@@ -55,25 +55,27 @@ async def web_search(args: dict) -> str:
         return tool_error("web search", e)
 
 
+async def _do_scrape(url: str) -> str:
+    # Jina Reader (r.jina.ai): prepend the reader origin and GET — it fetches, renders JS, and
+    # returns clean LLM-ready Markdown. Free and keyless; an optional JARVIS_JINA_API_KEY only
+    # raises rate limits. 'X-Return-Format: markdown' asks for Markdown explicitly.
+    headers = {"X-Return-Format": "markdown"}
+    if settings.jina_api_key:
+        headers["Authorization"] = f"Bearer {settings.jina_api_key}"
+    r = await http_get("https://r.jina.ai/" + url, headers=headers)
+    return (r.text or "").strip()
+
+
 async def scrape_url(args: dict) -> str:
     url = (args.get("url") or "").strip()
     if not url:
         return "Which page should I open, sir?"
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    if not settings.firecrawl_api_key:
-        return not_configured("page scraping", "a Firecrawl API key (JARVIS_FIRECRAWL_API_KEY)")
     try:
-        r = await http_post(
-            f"{settings.firecrawl_base_url.rstrip('/')}/v1/scrape",
-            headers={"Authorization": f"Bearer {settings.firecrawl_api_key}"},
-            json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
-        )
-        data = r.json().get("data", {})
-        md = data.get("markdown") or data.get("content") or ""
-        title = (data.get("metadata") or {}).get("title", "")
-        head = f"{title}\n" if title else ""
-        return head + clip(md, 3500) if md else f"I opened {url} but found no readable text, sir."
+        # Cache briefly so "read me that page" repeated in one session is instant.
+        md = await CACHE.cached("scrape", key=url, ttl=300, factory=lambda: _do_scrape(url))
+        return clip(md, 3500) if md else f"I opened {url} but found no readable text, sir."
     except Exception as e:  # noqa: BLE001
         return tool_error("page scrape", e)
 

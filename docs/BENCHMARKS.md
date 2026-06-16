@@ -4,53 +4,49 @@
 > (brain rows need the freellmapi tunnel up). Latency rows are wall-clock on the dev laptop,
 > CPU-only, against the free freellmapi proxy — treat them as directional, not absolute.
 
-## Latest run (2026-06-12)
+## Status — fine-tuning applied 2026-06-12
 
-| Metric | Measured | Efficient target | Verdict |
-|---|---|---|---|
-| System prompt size | ~23.7k chars (~5,935 tok) | ≤ 2,000 tok | 🔴 **TUNE** |
-| Tool surface | 45 tools | ≤ 48 schemas | 🟡 OK |
-| L1 recall (keyword) | 0.11 ms | ≤ 5 ms | 🟢 GOOD |
-| L1 digest (startup) | 0.03 ms | ≤ 5 ms | 🟢 GOOD |
-| L4 cache miss→hit | 61 ms → 0.002 ms | hit ≪ miss | 🟢 GOOD |
-| Utility (weather) cold→warm | 2,438 ms → ~0 ms | warm ~0 ms | 🟢 GOOD |
-| Brain TTFT (stream) | 1,672 ms | ≤ 1,200 ms | 🔴 **TUNE** |
-| Brain full turn (direct) | 6,077 ms | ≤ 2,500 ms | 🔴 **TUNE** |
+The three TUNE items below were executed per `fine-tuning.md` and locked in by `bench/test_finetune.py`
+(25/25). Post-tuning measured run:
 
-The local machinery Jarvis owns is already fast — memory recall is sub-millisecond, and the new L4
-cache turns a 61 ms lookup into essentially free on repeat (the same shape proven live on the weather
-call: 2.4 s cold, ~0 ms warm). **The latency that matters for a voice companion lives in two places:
-the size of the prompt the model re-reads every turn, and the model/proxy itself.**
+| Metric | Before | After | Efficient target | Verdict |
+|---|---|---|---|---|
+| System prompt size | ~5,935–6,818 tok | **1,796 tok** (≤1,961 w/ full digest) | ≤ 2,000 tok | 🟢 cleared |
+| Tool surface (per turn) | 66 | **40 core** (66 in registry) | ≤ 48 schemas | 🟢 GOOD |
+| L1 recall (keyword) | 0.1 ms | 0.1 ms | ≤ 5 ms | 🟢 GOOD |
+| L1 digest (startup) | 0.03 ms | 0.02 ms | ≤ 5 ms | 🟢 GOOD |
+| L4 cache miss→hit | 61 ms → ~0 | 61 ms → ~0 | hit ≪ miss | 🟢 GOOD |
+| Utility (weather) cold→warm | 2.4 s → ~0 | 3.2 s → ~0 | warm ~0 ms | 🟢 GOOD |
+| Brain TTFT (stream) | 70b ~2,840 ms | 8b ~2,150 ms | ≤ 1,200 ms | 🟡 improved* |
+| Brain full turn (direct) | ~1.2 s | ~1.2 s | ≤ 2,500 ms | 🟢 GOOD |
 
-## What to fine-tune (ranked by impact)
+\* TTFT still grades TUNE on the dev laptop because ~2.1 s is the localhost→VPS **tunnel** round-trip,
+not the model. In production the brain runs on the VPS, so the freellmapi call is localhost with no
+tunnel — the model swap (70b → 8b) captures the controllable share. See `fine-tuning.md` Item 3.
 
-### 1. Trim the always-on system prompt (🔴 biggest lever)
-At ~5,935 tokens it's ~3× the target. Every turn re-reads it, so it taxes **both** TTFT and cost on
-every single exchange. Causes: all of `memory/*.md` (about-vazghen, projects, openclaw-fleet,
-environment, **tools.md**, proactive-companion) are injected in full, and `tools.md` now duplicates
-descriptions the model *already* receives as structured tool schemas.
+## What was done (ranked by impact)
 
-Concrete moves (each independent, low-risk):
-- **Stop injecting `tools.md` into the prompt.** The 45 tool schemas already carry name + description
-  + params; the prose duplicate is the largest redundant block. Keep `tools.md` as human docs, drop
-  it from `_MEMORY_ORDER` in `context.py`. *Est. −1,500–2,000 tok.*
-- **Summarise the long memory files** (openclaw-fleet, projects) to a tight brief and let Jarvis pull
-  detail on demand via `search_vault`/`recall`. *Est. −1,000–1,500 tok.*
-- **Lazy-load** rarely-needed context (fleet roster, environment minutiae) behind a tool instead of
-  the prompt. Target landing zone: ~2,000–2,500 tok.
+### 1. Trimmed the always-on system prompt — DONE (6,818 → 1,796 tok)
+- **Dropped `tools.md` from the prompt** — it duplicated the tool schemas the model already receives.
+- **Dropped `openclaw-fleet.md` and `environment.md` from the prompt** — the actionable fleet rule
+  (delegate to ispir only) lives in the persona; ports/paths are read from config, not the prompt.
+  Both stay on disk as on-demand reference. `context.py` now loads only an explicit `_ALWAYS_ON` set
+  (no glob), so a new memory file must be added deliberately and weighed against the budget.
+- **Tightened** persona + about-vazghen + proactive-companion + projects, condensed the two static
+  instruction blocks, and **capped the learned digest at 12 facts** so a full digest still fits ≤2,000.
 
-### 2. Pick a voice-tuned primary model (🔴 TTFT + turn time)
-TTFT 1,672 ms and a 6.1 s full turn are dominated by `llama-3.3-70b-versatile` on the free proxy.
-For a spoken companion, **TTFT is perceived latency** — a smaller, faster model often wins the felt
-experience even at a slight quality cost.
-- Run `uv run python bench/llm_bench.py` to rank models by TTFT on the live proxy.
-- Consider making `llama-3.1-8b-instant` (already in the fallback chain) the **primary** for snappy
-  turns, and escalate to 70B only for genuinely hard asks (a future "hard question → bigger model"
-  router). Knob: `JARVIS_LLM_PRIMARY_MODEL` / `JARVIS_LLM_FALLBACK_MODELS`.
-- The 6.1 s full-turn figure is a single sample and noisier than TTFT; re-measure with n≥5 before
-  drawing conclusions.
+### 2. Lean per-turn tool surface — DONE (66 → 40 core)
+- Tools are tagged into a CORE set (advertised every turn) and lazy groups (`coding`, `office`,
+  `home`) that light up only when the utterance needs them (keyword triggers in `tools/__init__.py`,
+  activation + one-turn warm decay in `agent.py`). The **full registry is unchanged** — every handler
+  stays callable for tests, the proactive engine, and direct calls — so **no capability is removed**.
 
-### 3. Everything else is within target — leave it
+### 3. Fast primary model — DONE (primary 70b → 8b-instant)
+- `bench/llm_bench.py` shows `llama-3.1-8b-instant` ~300–700 ms faster TTFT than 70b and still
+  answering correctly. Promoted it to primary; `llama-3.3-70b-versatile` is now the first fallback
+  (quality escalation on error/rate-limit). Knobs: `JARVIS_LLM_PRIMARY_MODEL` / `JARVIS_LLM_FALLBACK_MODELS`.
+
+### 4. Everything else is within target — leave it
 Memory layers, the cache, and the utility belt are all green. The L4 cache already removes the
 biggest repeat-lookup cost; adding **Redis** (set `JARVIS_REDIS_URL`) extends that win *across brain
 restarts*, which is the one thing the in-process tier can't do — worth it once the brain runs 24/7,

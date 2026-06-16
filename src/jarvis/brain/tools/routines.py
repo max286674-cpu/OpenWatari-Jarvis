@@ -37,11 +37,14 @@ async def _daily_briefing() -> str:
     from jarvis.brain.tools.calendar import list_events
     from jarvis.brain.tools.utility import news_brief, weather
 
+    from jarvis.brain import prefs
+
     now = datetime.now(USER_TZ)
     parts = [f"Good {('morning' if now.hour < 12 else 'afternoon' if now.hour < 18 else 'evening')}, "
              f"sir. It's {now:%A %H:%M}."]
-    if settings.home_location:
-        w = await weather({"location": settings.home_location})
+    home = prefs.home_location()
+    if home:
+        w = await weather({"location": home})
         if not _degraded(w):
             parts.append(w)
     events = await list_events({"days": 1})
@@ -92,7 +95,7 @@ async def routine(args: dict) -> str:
             MODES.lockdown = True
             from jarvis.brain.tools.notify import push
 
-            await push("Panic routine triggered.", title="Jarvis")
+            await push("Panic routine triggered.", title="Watari")
             return "Panic routine, sir — I've gone quiet and pinged your phone."
         if name == "backup":
             return await _backup_memory()
@@ -103,6 +106,19 @@ async def routine(args: dict) -> str:
                 "commute, panic, backup, or normal.")
     except Exception as e:  # noqa: BLE001
         return tool_error("routine", e)
+
+
+async def set_home_location(args: dict) -> str:
+    """Change (or report) Vazghen's current home location — a runtime variable, not a constant."""
+    from jarvis.brain import prefs
+
+    loc = (args.get("location") or "").strip()
+    if not loc:
+        cur = prefs.home_location()
+        return (f"Home is currently set to {cur}, sir." if cur
+                else "No home location is set yet, sir — where are you based?")
+    prefs.set("home_location", loc)
+    return f"Done, sir — home is now {loc}. I'll use it for weather and your daily briefing."
 
 
 async def self_health(args: dict) -> str:
@@ -142,6 +158,25 @@ SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "set_home_location",
+            "description": (
+                "Set or report Vazghen's CURRENT home location (a changeable variable — e.g. Cologne "
+                "normally, but Armenia or France for a summer). With no location, reports the current "
+                "one. This is what 'what's the weather' and the daily briefing default to. Use when he "
+                "says 'I'm in X now' / 'set home to X' / 'I'm spending the summer in X'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City/place, e.g. 'Yerevan, Armenia'. Omit to report current."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "self_health",
             "description": (
                 "Report on your own health — vault readability, cache backend, reminder host — and "
@@ -152,4 +187,4 @@ SCHEMAS = [
     },
 ]
 
-HANDLERS = {"routine": routine, "self_health": self_health}
+HANDLERS = {"routine": routine, "set_home_location": set_home_location, "self_health": self_health}

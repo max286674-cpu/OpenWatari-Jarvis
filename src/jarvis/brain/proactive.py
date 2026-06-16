@@ -92,7 +92,7 @@ def in_quiet_hours(now: datetime, spec: str | None = None) -> bool:
 CONFIRM_TIER = {
     "send_telegram", "send_email", "send_push",
     "file_op", "process_op", "run_powershell", "browser",
-    "spotify", "run_protocol", "ha_call",
+    "run_protocol", "ha_call",
     "create_event",
     # Phase 13 — self-improvement writes are reversible via git, but still consequential.
     "write_source", "git_commit", "git_push", "git_revert",
@@ -259,7 +259,7 @@ class ProactiveEngine:
         """No-voice fallback emitter: push to the phone via ntfy (used when no server is wired)."""
         from jarvis.brain.tools.notify import push
 
-        ok = await push(message, title="Jarvis")
+        ok = await push(message, title="Watari")
         return "push" if ok else "suppressed"
 
     # ---- background loop --------------------------------------------------------------

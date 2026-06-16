@@ -115,11 +115,30 @@ class Settings(BaseSettings):
     kokoro_voice: str = "am_adam"
 
     # --- Brain / orchestrator -----------------------------------------------------------
+    # brain_mode: "local" = run the agent in-process on the edge (fastest, no network dep);
+    # "remote" = the edge is a thin client to the 24/7 VPS brain over brain_ws_url (ONE shared
+    # Watari + memory across all devices); "auto" = try remote, fall back to local if unreachable.
+    brain_mode: str = "local"
     brain_ws_url: str = "ws://127.0.0.1:8765/voice"   # edge -> brain socket
     brain_host: str = "127.0.0.1"                     # set 0.0.0.0 to reach from phone/glasses
     brain_port: int = 8765
     client_http_port: int = 8766                      # serves clients/iphone/ over HTTP
     api_auth_token: str | None = None                 # empty = loopback-only, no auth
+
+    # Self-improvement loop (Hermes-style background_review): after every N turns a background pass
+    # extracts durable facts about Vazghen into L1 learned memory. Off the hot path; never slows a turn.
+    self_improve_enabled: bool = True
+    self_improve_every_turns: int = 6
+
+    # DEDICATED inbound bot for the 24/7 Telegram bridge (DM Watari from any device). MUST be a
+    # SEPARATE bot from telegram_bot_token — that one is OpenClaw's, and two pollers fighting over
+    # getUpdates steal each other's messages. The bridge only runs if this is set.
+    telegram_bridge_bot_token: str | None = None
+
+    # PC-control executor: the laptop runs edge/pc_agent.py, which connects to this control URL so
+    # the (VPS) brain can run files/processes/PowerShell/open-app on the laptop. Defaults to the
+    # brain_ws_url host with the /control path. Set to the VPS for laptop->VPS control.
+    pc_control_url: str | None = None
 
     # OpenClaw Gateway (existing fleet) — an EXTERNAL team Jarvis can DELEGATE to, by
     # messaging ispir through the gateway. It is ONE of Jarvis's tools, not his brain.
@@ -134,13 +153,18 @@ class Settings(BaseSettings):
     openclaw_gateway_password: str | None = None
     openclaw_router_agent: str = "ispir"
     openclaw_request_timeout_seconds: int = 30
+    openclaw_cli_path: str = "/home/openclaw/.npm-global/bin/openclaw"
+    openclaw_cli_ssh_target: str | None = "openclaw@100.107.141.83"
 
     # freellmapi proxy — Jarvis's OWN reasoning LLM (runs on the VPS, tunneled to localhost).
     freellmapi_base_url: str = "http://localhost:3001/v1"
     freellmapi_api_key: str | None = None
     # Primary + ordered fallbacks (rate-limit/error -> next model). See bench/llm_bench.py.
-    llm_primary_model: str = "llama-3.3-70b-versatile"
-    llm_fallback_models: str = "llama-3.1-8b-instant,groq/compound,mistral-small-latest,openai/gpt-oss-20b:free"
+    # Primary is the FASTEST quality-correct model (TTFT is what a voice turn feels like —
+    # fine-tuning.md Item 3): 8b-instant benched ~300-700ms faster than 70b and still correct.
+    # 70b-versatile is the first fallback for quality escalation when 8b errors/rate-limits.
+    llm_primary_model: str = "llama-3.1-8b-instant"
+    llm_fallback_models: str = "llama-3.3-70b-versatile,groq/compound,mistral-small-latest,openai/gpt-oss-20b:free"
     llm_request_timeout_seconds: int = 60
 
     # --- Channels & knowledge -----------------------------------------------------------
@@ -155,18 +179,28 @@ class Settings(BaseSettings):
     # missing integration. Flip a key in .env to light each one up.
     http_timeout_seconds: int = 20
 
-    # Obsidian vault (read/search the LOCAL mirror). Writes stay VPS-authoritative and are
-    # intentionally NOT performed here (the vault is a one-way VPS->local sync — local edits
-    # get clobbered). vault_path is defined above.
+    # Obsidian vault (read/search the LOCAL mirror). vault_path is defined above.
     vault_search_max_results: int = 6
     vault_read_max_chars: int = 4000
+    # Writing into the vault is OFF by default because on the laptop the vault is a one-way
+    # VPS->local sync target (local edits get clobbered). On the AUTHORITATIVE host (the VPS that
+    # owns the vault) set JARVIS_VAULT_WRITABLE=true and the write_vault tool can save notes there.
+    vault_writable: bool = False
+
+    # --- Session hygiene: smart reset ----------------------------------------------------------
+    # When the gap since the last turn exceeds this many minutes, the brain SOFT-RESETS working
+    # memory: it journals the prior conversation (L2) and clears the rolling history, so a new
+    # conversation hours later doesn't drag stale context/anaphora ("set it back" pointing at a
+    # 'it' from this morning). Durable memory (L1/L2/L3) is untouched. 0 disables.
+    session_idle_reset_minutes: int = 180
 
     # --- Phase 9: persistent memory (learned facts L1 + daily journal L2) ----------------
     # Markdown-backed long-term memory under memory/learned and memory/journal. The vault
     # (above) is L3 and should ALWAYS be configured so he can read it; it's validated at start.
     memory_enabled: bool = True
     memory_recall_limit: int = 5        # facts returned by the recall tool
-    memory_digest_max: int = 20         # recent learned facts injected into the system prompt
+    memory_digest_max: int = 12         # recent learned facts injected into the system prompt
+    #                                     (capped so a full digest keeps the prompt <=2000 tok)
     redis_url: str | None = None        # L4 hot-cache (Phase 9b); blank = no cache (graceful)
     # L5 semantic recall (Phase 9c): rank learned facts by meaning, not just keywords. Only takes
     # effect if a local embedder (`sentence-transformers`) is installed; otherwise recall stays
@@ -175,10 +209,11 @@ class Settings(BaseSettings):
     memory_semantic_model: str = "all-MiniLM-L6-v2"
     memory_semantic_weight: float = 4.0
 
-    # Web search (Tavily) + page scrape (Firecrawl) + headless interactive browse (Browserbase).
+    # Web search (Tavily) + page scrape (Jina Reader) + headless interactive browse (Browserbase).
     tavily_api_key: str | None = None
-    firecrawl_api_key: str | None = None
-    firecrawl_base_url: str = "https://api.firecrawl.dev"
+    # Page scraping uses Jina Reader (https://r.jina.ai) — free and KEYLESS. This optional key only
+    # raises rate limits; leave blank and scraping still works.
+    jina_api_key: str | None = None
     browserbase_api_key: str | None = None
     browserbase_project_id: str | None = None
 
@@ -199,14 +234,8 @@ class Settings(BaseSettings):
     # play LIVE on your phone when you join that voice chat. Telethon marked id (-100…).
     telegram_music_room_chat: str | None = None
 
-    # Spotify playback control via the Web API (needs a one-time user OAuth refresh token).
-    spotify_client_id: str | None = None
-    spotify_client_secret: str | None = None
-    spotify_refresh_token: str | None = None
-    spotify_redirect_uri: str = "http://127.0.0.1:8888/callback"  # must match the Spotify app setting
     # Default music backend for "play X". 'ytmusic' = YouTube Music (free, music-tuned search,
-    # no account) — the Spotify replacement. 'telegram' = your personal Telegram playlist.
-    # 'youtube' = plain YouTube. 'spotify' kept only for Premium accounts.
+    # no account). 'telegram' = your personal Telegram playlist. 'youtube' = plain YouTube.
     music_source: str = "ytmusic"
 
     # --- Phase 11: Gmail + Calendar (one Google OAuth app) + Home Assistant -------------
@@ -245,8 +274,8 @@ class Settings(BaseSettings):
     skills_enabled: bool = True
     github_token: str | None = None              # a fine-grained PAT (Contents: read/write on the repo)
     github_repo: str | None = None               # "owner/name" — used for push guidance + status
-    git_author_name: str = "Jarvis"              # the author on Jarvis's own commits
-    git_author_email: str = "jarvis@vazghen.local"
+    git_author_name: str = "Watari"              # the author on Watari's own (self-improvement) commits
+    git_author_email: str = "watari@vazghen.local"
 
     # --- Local interactive browser (visible window, persistent login) -------------------
     # A real Chromium Jarvis drives with Playwright: open windows, click, type (incl.
@@ -263,6 +292,11 @@ class Settings(BaseSettings):
     protocol_goodnight_password: str = "morpheus"   # stops Jarvis
     protocol_phoenix_password: str = "icarus"       # restarts Jarvis
     protocol_ragnarok_password: str = "valhalla"    # restarts the laptop
+    protocol_backup_password: str = "atlas"         # backs up Jarvis memory
+    protocol_ping_password: str = "hermes"          # sends a phone push test
+    protocol_diagnostics_password: str = "ani"      # writes a local diagnostics report
+    protocol_auditpack_password: str = "artashat"   # archives audit logs
+    protocol_checkpoint_password: str = "vagharshapat"  # archives key non-secret context
 
     # --- Phase 4: proactivity & notifications -------------------------------------------
     scheduler_db_path: str | None = None          # default: <repo>/jarvis_jobs.sqlite

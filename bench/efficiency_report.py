@@ -42,7 +42,7 @@ async def main() -> None:
     from jarvis.brain.cache import Cache
     from jarvis.brain.context import build_system_prompt
     from jarvis.brain.memory import STORE
-    from jarvis.brain.tools import tool_names
+    from jarvis.brain.tools import core_tool_schemas, tool_names
     from jarvis.config import settings
 
     print("Measuring… (the brain-latency rows need the freellmapi tunnel up)\n")
@@ -52,8 +52,12 @@ async def main() -> None:
     approx_tokens = len(sp) // 4
     add("System prompt size", f"{len(sp)} chars (~{approx_tokens} tok)", "<= 2000 tok",
         grade(approx_tokens, 1500, 2000))
-    n_tools = len(tool_names()) + 2  # + get_time, delegate_to_fleet
-    add("Tool surface", f"{n_tools} tools", "<= 48 (schema bloat)", grade(n_tools, 40, 48))
+    # What the model actually sees on a typical turn = core schemas + get_time + delegate_to_fleet.
+    # Lazy groups (coding/office/home) add their tools only on turns that need them (see agent.py).
+    n_core = len(core_tool_schemas()) + 2
+    n_full = len(tool_names()) + 2
+    add("Tool surface (per turn)", f"{n_core} core ({n_full} in registry)", "<= 48 (schema bloat)",
+        grade(n_core, 40, 48))
 
     # --- 2. L1 memory recall + digest --------------------------------------------------
     t0 = time.perf_counter()

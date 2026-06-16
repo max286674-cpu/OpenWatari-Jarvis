@@ -82,20 +82,39 @@ he ignores the TV, a guest, anyone who isn't you.
 If you ever rebuild the env, restore it with `uv sync --extra identity`.
 
 **Steps**
+
+**Step 1 — make sure the speaker-ID backend is installed** (one time; safe to re-run):
 ```powershell
-# 1. Be somewhere quiet, with the mic you normally use (laptop mic is fine).
+uv sync --extra identity
+```
+
+**Step 2 — record your voiceprint.** Two options; **use the scripted one** — it gives a much stronger
+print (~3 min of varied speech vs 12 s):
+
+*Recommended — the 3-minute read-aloud script:*
+```powershell
+# Be somewhere quiet, with the mic you normally use (laptop mic is fine).
+# Open to-read-script.md and read each block aloud when it says "● recording".
+uv run python bench/enroll_voice.py --script "to-read-script.md"
+```
+It walks you through **5 segments** (wake words → phonetics → numbers/names → conversation →
+intonation), printing a 3-2-1 countdown then `● recording Ns — speak now` for each. Read at a natural
+pace; the file (`to-read-script.md`) has the exact words.
+
+*Quick alternative — 12 seconds, 3 short clips:*
+```powershell
 uv run python bench/enroll_voice.py
 ```
-What happens: it records **3 clips of 4 seconds** each, with a 3-2-1 countdown before each one.
-It prints a prompt per clip:
+Records **3 clips of 4 s** each with a countdown; clip 1 it prompts "Hey Jarvis, this is Vazghen,"
+clips 2-3 just talk normally.
+
+Either way you'll see, at the end:
 ```
-# → [1/3] Say: 'Hey Jarvis, this is Vazghen.'
-# →   ● recording 4s — speak now
-# →   captured ✓
-# → ... (clips 2 and 3: just talk normally, a sentence each)
-# → Voiceprint saved to C:\Jarvis\voiceprint.json (192-dim, 3 clips).
+# → captured ✓
+# → Voiceprint saved to C:\Jarvis\voiceprint.json (192-dim, N clips).
+# → Now set JARVIS_SPEAKER_ID_ENABLED=true in .env to gate commands to your voice.
 ```
-Speak in your **normal** voice and volume — how you'll actually talk to him. It averages the 3 clips
+Speak in your **normal** voice and volume — how you'll actually talk to him. It averages the clips
 into one 192-dimension fingerprint and writes `voiceprint.json`.
 
 **Then turn it on** — edit `.env` (create it from `.env.example` if you haven't):
@@ -188,67 +207,139 @@ laptop *off* before 9am — the push should still land on your phone.
 
 ---
 
-## 3. Live device test — AirPods routing + real TTFW/VAQI numbers (~15 min)
+## 3. Real-device production-readiness test plan — the full walkthrough (~45 min)
 
-**Why:** the routing logic, the brain server, and the phone client are all built and unit-tested, but
-the *real* latency numbers and the auto-route behaviour can only be measured through a real mic with
-the real devices. This is the acceptance test for Phases 1/5/6 together.
+**Why:** every capability is built and unit-tested (suite green), but the *real* numbers and behaviours
+— mic latency, headphone auto-route, barge-in, speaker-ID, the phone voice path, VPS→laptop control,
+and Music-Room streaming — can only be proven on the actual devices. This is the single acceptance
+test for the whole system. Do the four device setups (3a–3d) in order, then the cross-cutting
+capability checks (3e–3h). Tick each ✅ as you go.
 
-**Prerequisite:** make sure the full provider set is installed (one time):
+**One-time prerequisites**
 ```powershell
+# Full provider set (safe to re-run):
 uv sync --extra edge --extra cloud-voice --extra local-voice --extra brain --extra channels --extra browse --extra identity --extra dev
 ```
-And that `.env` has your `JARVIS_DEEPGRAM_API_KEY` + `JARVIS_ELEVENLABS_API_KEY` set (cloud STT/TTS
-are the default quality path).
+- `.env` already has `JARVIS_DEEPGRAM_API_KEY` (STT) + `JARVIS_ELEVENLABS_API_KEY` (TTS), wake word
+  `JARVIS_WAKE_WORDS=hey jarvis` (threshold 0.6), and `JARVIS_API_AUTH_TOKEN` set.
+- Wake phrase is **"Hey Jarvis"** (the name is Watari, the wake word stays "hey jarvis" by your choice).
+- **Reading the latency line:** every turn logs `TTFW NNN ms (mean MMM, n=K)` = user-stop → first
+  spoken word. Target **< ~1.2 s** on this CPU. Aim for ~10 turns per setup to get a stable mean
+  (that 10-utterance battery is the VAQI basis). Jot the mean for each setup — that's your benchmark.
 
-### 3a. Laptop + AirPods auto-route
+---
+
+### 3a. Laptop only — built-in mic + built-in speakers (baseline)
 ```powershell
-# Connect the AirPods Pro Max to the laptop via Windows Bluetooth FIRST, then:
 uv run python -m jarvis.edge.assistant
 ```
-- On startup it auto-picks the AirPods as output and logs something like
-  `output: ... (auto-routed to headphones)`, and barge-in flips **on** (private endpoint).
-- Say **"Hey Jarvis, what time is it?"** → it wakes, transcribes, answers in his voice.
-- **Barge-in check:** start talking while he's mid-sentence — he should stop and listen.
-- **TTFW reading:** each turn logs the latency, e.g.
-  `TTFW 940 ms (mean 1010, n=3)`. That's user-stop → first spoken word. Target is **< ~1.2s** on this
-  CPU. Do ~10 turns to get a stable mean (that 10-utterance battery is the VAQI basis).
-- **Speaker-ID check** (if you did item 1): have someone else say "Hey Jarvis…" → ignored; you →
-  served.
-- Disconnect the AirPods mid-session and Jarvis should fall back to laptop speakers (barge-in off).
+- Startup logs the input/output device and `barge-in: off` (open speakers → half-duplex, so Watari
+  never transcribes his own voice).
+- ✅ Say **"Hey Jarvis, what time is it?"** → wakes, transcribes, answers in his voice.
+- ✅ Ask ~10 varied things; watch the `TTFW` mean settle. **Record it: 3a TTFW mean = ____ ms.**
+- ✅ **Ambient-rejection:** with the TV/another voice talking, confirm he does *not* fire on it.
+- ✅ **Speaker-ID** (only if you did item 1 + set `JARVIS_SPEAKER_ID_ENABLED=true`): have someone
+  else say "Hey Jarvis…" → ignored (logged, not acted on); you → served.
 
-### 3b. iPhone client → same brain
+### 3b. Laptop + headphones (AirPods Pro Max → laptop)
 ```powershell
-# In one terminal, run the brain server bound so the phone can reach it:
-$env:JARVIS_BRAIN_HOST="0.0.0.0"; uv run python -m jarvis.brain.server
-# → jarvis-brain listening on ws://0.0.0.0:8765/voice
-# → phone client served at http://0.0.0.0:8766/iphone/
+# Connect the AirPods to the LAPTOP over Windows Bluetooth FIRST, then:
+uv run python -m jarvis.edge.assistant
 ```
-- Find the laptop's LAN IP: `ipconfig` → the IPv4 of your Wi-Fi adapter (e.g. `192.168.1.42`).
-- On the **iPhone** (same Wi-Fi), open Safari → `http://192.168.1.42:8766/iphone/` → **Share → Add to
-  Home Screen** for a full-screen app.
-- It auto-connects (top dot turns green, "ready"). **Hold the mic** button and speak, or type in the
-  box. His reply streams in and is spoken via the phone.
-- **AirPods-on-phone test:** connect the AirPods to the *iPhone*, tick **"AirPods on this phone"** in
-  the client's ⚙︎ panel, reconnect — the brain now treats the session as private headphones
-  (barge-in on). This is the "route everything to my headphones when on either device" rule.
-- **Same-brain proof:** ask something on the laptop ("remember the number 7"), then ask the phone
-  ("what number did I say?") — same shared memory answers. (Both must point at the one brain; on the
-  laptop that means running 3b's server and connecting the laptop edge to it too, or just compare
-  within the phone session.)
+- ✅ Startup logs `output: … (auto-routed to headphones)` and **`barge-in: on`** (private endpoint).
+- ✅ **Barge-in:** start talking while he's mid-sentence → he stops and listens immediately.
+- ✅ Re-run the ~10-turn battery. **Record it: 3b TTFW mean = ____ ms** (usually a touch lower than 3a).
+- ✅ **Fallback:** disconnect the AirPods mid-session → he should fall back to laptop speakers and
+  barge-in flips back off, with no crash.
 
-**What "done" looks like:** TTFW consistently under ~1.2s, barge-in interrupts cleanly, AirPods
-auto-route on both laptop and phone, a non-you voice is ignored (if enrolled), and the same question
-works from phone and laptop. Jot the TTFW mean somewhere — that's your real Phase 5 benchmark number.
+### 3c. iPhone only — Siri voice, no app, no page (the always-on path)
+This is the no-website path: **"Hey Siri, Watari"** → you speak → Watari answers in his voice. It hits
+the brain's `POST /talk` endpoint. First, run the brain reachable from the phone (over Tailscale is
+best; same-Wi-Fi LAN IP also works):
+```powershell
+$env:JARVIS_BRAIN_HOST="0.0.0.0"; uv run python -m jarvis.brain.server
+# → brain listening on ws://0.0.0.0:8765/voice  +  HTTP sidecar on http://0.0.0.0:8766
+```
+**Build the Shortcut once** (iPhone → Shortcuts app → **+**):
+1. **Dictate Text** (language: your choice).
+2. **Get Contents of URL** →
+   - URL: `http://<laptop-tailscale-or-LAN-ip>:8766/talk?token=<JARVIS_API_AUTH_TOKEN>`
+     (e.g. `http://100.x.x.x:8766/talk?token=ZLRC…Vl0Syuj` — Tailscale IP recommended so it works off
+     your home Wi-Fi).
+   - Method **POST**, Request Body **JSON**, one field `text` = the **Dictated Text** variable.
+3. **Play Sound** / **Play** the URL response (it returns Watari's voice as `audio/mpeg`).
+4. Name the shortcut exactly **"Watari"** → now **"Hey Siri, Watari"** triggers it.
+   *(Simpler all-iOS variant: add `&format=text` to the URL and use **Speak Text** on the JSON
+   `reply` instead of playing audio — uses the Siri voice, works on any iOS, no audio decode.)*
+- ✅ "Hey Siri, Watari" → speak a question → hear Watari's spoken reply. No browser, no page.
+- ✅ **Chat fallback:** the same thing works as text via Telegram to **@watari_iamvazghen_bot** if Siri
+  dictation is ever flaky.
+
+### 3d. iPhone + headphones (AirPods → iPhone)
+- ✅ Connect the AirPods to the **iPhone**, then run the **same "Watari" Siri shortcut** from 3c — the
+  reply now plays **in the AirPods**. This is the "route to my headphones on either device" rule,
+  satisfied for free because iOS routes the shortcut's audio to the active output.
+- ✅ Confirm the dictation picks up cleanly through the AirPods mic in a noisy room.
+
+---
+
+### 3e. VPS → laptop full PC control (already verified; re-confirm live)
+The elevated `WatariPcAgent` task connects the laptop OUT to the VPS brain's `/control` socket, so the
+24/7 brain can drive this PC. With the brain running and the task active, from your **phone** (3c) say:
+- ✅ "Watari, what's running on my laptop?" → he lists real laptop processes (task-manager).
+- ✅ "Open YouTube on my laptop" → Brave/Edge opens it on the laptop.
+- ✅ "Make a note file on my desktop saying hello" → file appears on the laptop.
+- ✅ **Elevated proof:** "kill <some process>" works even on an elevated process (the executor runs at
+  RunLevel=Highest). If the executor isn't running, re-install/start it (elevated, one UAC):
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File C:\Jarvis\deploy\windows\install_pc_agent_task.ps1
+  ```
+  It auto-starts at every logon thereafter; the brain logs `pc-control: laptop '<host>' ready`.
+
+### 3f. Music Room — live videochat streaming (not a file)
+- ✅ With the brain running, from the phone say **"Watari, play <song> in the music room."** He joins
+  the Telegram **Music Room** voice chat (id `-1003980551124`) and streams the track *into the call*.
+- ✅ **Open that group's voice chat on your phone and join it** — you should *hear the music live in the
+  call*, not receive a file. (Only the Telethon user account streams; the bot can't join a voice chat.)
+- ✅ "Stop the music" → he leaves/stops the stream. The stream persists 24/7 because it runs in the
+  long-lived brain process.
+
+### 3g. Proactive voice to your phone (Watari starts the conversation)
+- ✅ With `JARVIS_PROACTIVE_ENABLED=true` (default) and no live voice device connected, when a real
+  signal fires (e.g. an imminent calendar event after item 4, or a test reminder ~2 min out), Watari
+  sends a **voice note** to **@watari_iamvazghen_bot** — not just text. Quick trigger: "remind me in 2
+  minutes to stretch," lock the laptop, watch the voice note arrive on the phone.
+
+### 3h. Same-brain memory across devices
+- ✅ On the **laptop** (3a/3b): "remember the number 7." Then on the **phone** (3c): "what number did I
+  say?" → same answer. Both talk to the one VPS brain, so memory/session is shared.
+
+---
+
+**What "done / production-ready" looks like**
+- TTFW means recorded for 3a + 3b, both ≲1.2 s; barge-in interrupts cleanly on headphones.
+- Headphones auto-route on the laptop; iPhone plays Watari in the AirPods.
+- "Hey Siri, Watari" answers in his voice with no page open.
+- VPS→laptop control runs real ops (list/kill/open/file), incl. elevated kill.
+- You **hear** music live inside the Music Room voice chat.
+- A proactive voice note reaches the phone unprompted.
+- A non-you voice is ignored once enrolled; same question works from phone and laptop.
 
 **Troubleshooting**
-- Phone can't load the page → the laptop firewall is blocking 8766/8765. Allow Python through
-  Windows Firewall (Private network), or run `New-NetFirewallRule -DisplayName "Jarvis" -Direction
-  Inbound -Action Allow -Protocol TCP -LocalPort 8765,8766` in an elevated PowerShell.
-- Phone connects but no voice → iOS Safari needs a tap before `speechSynthesis`/mic; press the mic
-  once. If dictation is flaky on your iOS version, use the text box (always works).
-- Wrong audio device on the laptop → set `JARVIS_AUDIO_OUTPUT_DEVICE=auto` (always prefer headphones)
-  or a device-name fragment in `.env`.
+- **Phone can't reach `/talk`** → prefer the **Tailscale** IP (works anywhere); for LAN, allow Python
+  through Windows Firewall: `New-NetFirewallRule -DisplayName "Watari" -Direction Inbound -Action Allow
+  -Protocol TCP -LocalPort 8765,8766` (elevated). 401 → the `?token=` doesn't match
+  `JARVIS_API_AUTH_TOKEN`.
+- **"I didn't catch anything"** on a file-path request → use **forward slashes** in paths
+  (`C:/tmp/note.txt`); backslashes break the JSON body.
+- **PC op ran but nothing happened on the laptop** → the executor was disconnected, so it ran on the
+  VPS. Check the brain log for `pc-control: laptop … ready`; re-start the `WatariPcAgent` task.
+- **No music in the call** → confirm you actually *joined* the group's voice chat; the Telethon user
+  session must be logged in (`jarvis.session`); the bot alone cannot stream.
+- **Wrong laptop audio device** → set `JARVIS_AUDIO_OUTPUT_DEVICE=auto` (always prefer headphones) or a
+  device-name fragment in `.env`.
+- **He ignores *you*** after enrolling → lower `JARVIS_SPEAKER_THRESHOLD` (e.g. 0.15), or set
+  `JARVIS_SPEAKER_ID_ENABLED=false` / delete `voiceprint.json` to disable instantly, then re-enroll.
 
 ---
 
@@ -278,11 +369,12 @@ seen), mark chats read/unread, and send messages/GIFs/files. Reading needs a Tel
 "mark that chat as read." Honest limit he'll tell you: once a sender has seen a read receipt,
 Telegram can't reverse it — `seen`→`delivered` on their side is impossible.
 
-## B. Web search & scrape (~5 min) — Tavily + Firecrawl
+## B. Web search & scrape (~2 min) — Tavily only
 
 **Why:** `web_search` (fast answer + sources) and `scrape_url` (read one page) for anything live.
 - **Tavily** — https://tavily.com → API key → `JARVIS_TAVILY_API_KEY=...`
-- **Firecrawl** — https://firecrawl.dev → API key → `JARVIS_FIRECRAWL_API_KEY=...`
+- **Page scraping needs NO key** — `scrape_url` uses Jina Reader (free + keyless). Optional
+  `JARVIS_JINA_API_KEY` (free at jina.ai) only raises rate limits.
 
 **Verify:** "what's the latest on <topic>" (web_search); "open <url> and read me the headline" (scrape).
 *(The utilities belt — weather, crypto, stocks, FX, news, wiki, dictionary — needs **no keys** and
@@ -303,18 +395,28 @@ already works.)*
 
 **Why:** the privileged routines ship with placeholder passwords. Set real ones before deployment:
 ```
-JARVIS_PROTOCOL_GOODNIGHT_PASSWORD=...     # stop Jarvis
-JARVIS_PROTOCOL_PHOENIX_PASSWORD=...       # restart Jarvis
-JARVIS_PROTOCOL_RAGNAROK_PASSWORD=...       # restart the laptop
+JARVIS_PROTOCOL_GOODNIGHT_PASSWORD=Yerevan  # stop Jarvis
+JARVIS_PROTOCOL_PHOENIX_PASSWORD=Gavar      # restart Jarvis
+JARVIS_PROTOCOL_RAGNAROK_PASSWORD=Armavir   # restart the laptop
+JARVIS_PROTOCOL_BACKUP_PASSWORD=Syunik      # archive Jarvis memory
+JARVIS_PROTOCOL_PING_PASSWORD=Dvin          # send a phone push test
+JARVIS_PROTOCOL_DIAGNOSTICS_PASSWORD=Ani    # write a local health report
+JARVIS_PROTOCOL_AUDITPACK_PASSWORD=Artashat # archive audit logs
+JARVIS_PROTOCOL_CHECKPOINT_PASSWORD=Vagharshapat # archive non-secret context
 ```
 He never speaks or logs these; a wrong password runs nothing.
+
+**Status:** applied in the local `.env`. Jarvis now exposes eight password-gated runnable protocols:
+`goodnight`, `phoenix`, `ragnarok`, `backup`, `ping`, `diagnostics`, `auditpack`, and `checkpoint`.
 
 ## E. ntfy phone push (~3 min)
 
 **Why:** how reminders/alerts reach your phone when you're away from the mic (also used by the VPS
 ticker in item 2).
-1. Pick one unguessable topic string. In `.env`: `JARVIS_NTFY_TOPIC=jarvis-<something-unique>`
+1. Pick one unguessable topic string. In `.env`: `JARVIS_NTFY_TOPIC=jarvis-vaz-619-7f3k9q2`
 2. Install the **ntfy** app on your phone and subscribe to that exact topic.
+
+**Status:** `.env` is configured and you verified the ntfy phone subscription.
 
 **Verify:** "ping my phone with a test" (`send_push`) → it arrives.
 
@@ -325,12 +427,9 @@ ticker in item 2).
 - **Browserbase** (cloud headless browser for `browse_web`): `JARVIS_BROWSERBASE_API_KEY` +
   `JARVIS_BROWSERBASE_PROJECT_ID`, then `uv sync --extra browse`. (The local visible `browser` tool
   already works without this.)
-- **Spotify** playback control (Premium): make an app at developer.spotify.com, set
-  `JARVIS_SPOTIFY_CLIENT_ID/_SECRET`, run `uv run python bench/spotify_login.py`. (Everyday music
-  uses free YouTube Music — no setup.)
-- **Extra wake words** beyond "jarvis" (alfred/robbin/assist/…): needs a Picovoice **Porcupine**
-  AccessKey + `.ppn` files; set `JARVIS_WAKE_WORD_ENGINE=porcupine` + `JARVIS_PORCUPINE_ACCESS_KEY`.
-  See `README.md` wake-word notes.
+- **Extra wake words** are already enabled via openWakeWord (free): "hey jarvis", "alexa",
+  "hey mycroft", "hey rhasspy". Custom phrases (alfred/robbin/…) would need a Picovoice **Porcupine**
+  AccessKey + `.ppn` files (`JARVIS_WAKE_WORD_ENGINE=porcupine`) — optional.
 
 ---
 
@@ -394,6 +493,10 @@ yes before sending.
 **Why:** Phase 11 lets Jarvis read device states and control lights/scenes/climate/locks. Local-first
 and private — he talks straight to your HA box, nothing via the cloud.
 
+**Status:** parked as a final hardware phase. You do not currently have a Home Assistant device, so
+leave `JARVIS_HA_URL` and `JARVIS_HA_TOKEN` blank for now. When you buy/setup the hardware, return to
+these steps.
+
 **Steps**
 1. In Home Assistant: click your **profile** (bottom-left) → **Security** → **Long-lived access
    tokens** → **Create token** → copy it (you only see it once).
@@ -444,12 +547,16 @@ by default** because it speaks unprompted.
 JARVIS_PROACTIVE_ENABLED=true
 JARVIS_PROACTIVE_QUIET_HOURS=23:00-07:00     # tune to your sleep
 JARVIS_PROACTIVE_DAILY_BUDGET=6              # how many unprompted nudges/day, max
-JARVIS_HOME_LOCATION=Yerevan                 # for weather + the morning briefing
+JARVIS_HOME_LOCATION=                        # fallback only; current home lives in runtime_prefs.json
 ```
 It gets much more useful **after** step 4 (calendar = the richest signal). Control it live by voice:
 "focus mode for an hour" (holds nudges), "lockdown" (go quiet), "normal" (resume), or ask "give me my
 briefing" any time. **Verify:** with it on, leave the brain running — within a tick (5 min) of a
 real signal (e.g. an imminent calendar event) he'll speak up, or push to your phone if you're away.
+
+Jarvis can change this at runtime with the `set_home_location` tool, so Cologne is only the current
+runtime value, not a constant. If you spend a summer in Armenia or France, say "set my home location
+to Yerevan, Armenia" or "I'm spending the summer in Lyon, France."
 
 ## 9. Phase 13 — GitHub repo (ALREADY DONE) + self-improvement loop
 
@@ -485,8 +592,9 @@ he can only add to history (no destructive git), and writes/commits/pushes are a
 When you move from testing to 24/7, **all capabilities are wired and enabled** except two that
 genuinely need *you*:
 - **Proactive companion** — now **ON by default** (`JARVIS_PROACTIVE_ENABLED=true`), respecting the
-  daily budget + quiet hours. Set it `false` for a quiet test session. Set `JARVIS_HOME_LOCATION`
-  for weather/briefings. It gets much smarter after the Google login (item 4 — calendar signals).
+  daily budget + quiet hours. Set it `false` for a quiet test session. Current home is runtime state
+  (`set_home_location` / `runtime_prefs.json`) for weather/briefings, not a fixed `.env` constant. It
+  gets much smarter after the Google login (item 4 — calendar signals).
 - **Speaker biometrics** — wired but inert until you **enroll your voice** (item 1). Until then he
   answers anyone; that's deliberate so he never locks *you* out.
 - **Fleet consult** — left **off** on purpose (`JARVIS_FLEET_AUTHORIZED=false`): it reaches shared
@@ -494,8 +602,9 @@ genuinely need *you*:
   team 24/7 without asking each time.
 
 Nothing else is "configured but unwired" — every tool in `memory/tools.md` is registered and live;
-the credential-gated ones (Gmail, Home Assistant, Spotify, Telegram, Tavily/Firecrawl, GitHub push)
-simply say "not configured yet" until you complete their one-time setup above.
+the credential-gated ones (Gmail, Home Assistant, Telegram, Tavily, GitHub push) simply say
+"not configured yet" until you complete their one-time setup above. (Page scraping uses free,
+keyless Jina Reader; music uses free YouTube Music — neither needs setup.)
 
 ---
 
@@ -514,9 +623,9 @@ Every capability, what it needs, and where its setup lives. Complete the **Requi
 | Recurring reminders, PC off | VPS ticker deploy | Recommended | §2 |
 | Real latency / device test | AirPods + phone, live run | Recommended | §3 |
 | Read/send Telegram DMs | Telethon login (+ bot token) | Recommended | §A |
-| Web search & scrape | Tavily + Firecrawl keys | Recommended | §B |
+| Web search | Tavily key (scrape = free Jina, no key) | Recommended | §B |
 | Notion read/write/comment | Notion integration + shared pages | Recommended | §C |
-| Protocol passwords | set 3 passwords | Recommended (security) | §D |
+| Protocol passwords | set Armenian-city passwords | Recommended (security) | §D |
 | Phone push (ntfy) | ntfy topic + app subscribe | Recommended | §E |
 | Gmail + Calendar | Google OAuth app + login | Recommended | §4 |
 | Home Assistant | HA URL + long-lived token | Optional (if you run HA) | §5 |
@@ -526,8 +635,7 @@ Every capability, what it needs, and where its setup lives. Complete the **Requi
 | Self-improvement (local commits) | **nothing — works now** | — | §9 |
 | Self-improvement push to GitHub | **done — repo + remote set** (optional PAT for off-host) | Done | §9 |
 | Cloud browser | Browserbase keys | Optional | §Optional |
-| Spotify control | Spotify OAuth (Premium) | Optional | §Optional |
-| Extra wake words | Porcupine access key + .ppn | Optional | §Optional |
+| Custom wake words | Porcupine key (4 free ones already on) | Optional | §Optional |
 | Utilities (weather/crypto/news/…) | **nothing — works now** | — | — |
 | Local music (YouTube Music) | **nothing — works now** | — | — |
 | Fleet consult | `JARVIS_FLEET_AUTHORIZED=true` | Optional | §10 |
@@ -539,8 +647,10 @@ as a service (and the edge on your laptop) per [README → Deployment](README.md
 ---
 
 ### Still parked (correctly, not actionable yet)
-- **Mentra OS glasses** — not purchased. When you have them: `cd glasses && npm install`, register
+- **Final hardware phase: Mentra OS glasses** — not purchased. When you have them: `cd glasses && npm install`, register
   the app in the MentraOS console, and wire the SDK's transcription stream to `sendUtterance()`. The
   brain link + device routing are already done; only those SDK calls are stubbed.
-- **Key hygiene (optional):** the Tavily/Firecrawl/Browserbase keys came through chat in plaintext —
+- **Final hardware phase: Home Assistant** — not purchased/setup. Keep `JARVIS_HA_URL` and
+  `JARVIS_HA_TOKEN` empty until there is hardware to control; then integrate it using section 5.
+- **Key hygiene (optional):** the Tavily/Browserbase keys came through chat in plaintext —
   rotating them is good hygiene, not urgent.

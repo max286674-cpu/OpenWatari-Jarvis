@@ -34,6 +34,11 @@ def main() -> None:
     import jarvis.brain.tools.notion as notion
     from jarvis.brain.proactive import confirm_required
     from jarvis.brain.tools import tool_names
+    from jarvis.config import settings
+
+    # Force the UNCONFIGURED state so this hermetic degradation test holds regardless of a real .env
+    # (live Notion is checked by bench/test_live_integrations.py).
+    settings.notion_token = None
 
     print("[1] all Notion tools degrade gracefully with no token")
     check("notion_search degrades", degrades(asyncio.run(notion.notion_search({"query": "x"}))))

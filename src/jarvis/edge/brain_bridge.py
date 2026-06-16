@@ -80,10 +80,15 @@ class JarvisBrain(FrameProcessor):
                 # Spoken filler so a longer (e.g. fleet) turn isn't dead air.
                 asyncio.create_task(self.push_frame(TTSSpeakFrame(note)))
 
-            reply = await self._agent.respond(text, on_progress=progress)
-            if reply:
-                logger.info(f"reply: {reply!r}")
-                await self.push_frame(TTSSpeakFrame(reply))
+            # Stream sentence-by-sentence so Watari starts speaking the first sentence while the
+            # rest is still being generated (instead of waiting for the whole reply, then talking).
+            full: list[str] = []
+            async for sentence in self._agent.respond_stream(text, on_progress=progress):
+                if sentence:
+                    full.append(sentence)
+                    await self.push_frame(TTSSpeakFrame(sentence))
+            if full:
+                logger.info(f"reply: {' '.join(full)!r}")
         except Exception:  # noqa: BLE001
             logger.exception("brain turn failed")
             await self.push_frame(TTSSpeakFrame("Sorry sir, I hit an error handling that."))

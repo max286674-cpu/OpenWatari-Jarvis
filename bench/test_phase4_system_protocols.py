@@ -77,7 +77,11 @@ async def main() -> None:
         settings.browser_tools_enabled = saved_browser
 
     print("\n[3] protocols (password-gated; launch STUBBED)")
-    check("three protocols registered", set(P.protocol_names()) == {"goodnight", "phoenix", "ragnarok"})
+    expected_protocols = {
+        "goodnight", "phoenix", "ragnarok", "backup", "ping",
+        "diagnostics", "auditpack", "checkpoint",
+    }
+    check("eight protocols registered", set(P.protocol_names()) == expected_protocols)
     r = await protocols_tool.run_protocol({"name": "nope", "password": "x"})
     check("unknown protocol lists options", "goodnight" in r and "no protocol" in r.lower(), r)
     r = await protocols_tool.run_protocol({"name": "ragnarok", "password": ""})

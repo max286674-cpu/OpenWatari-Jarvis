@@ -12,7 +12,7 @@ Run:
 
 from __future__ import annotations
 
-print("Jarvis: loading audio stack (first start can take ~15-30s)…", flush=True)
+print("Watari: loading audio stack (first start can take ~15-30s)…", flush=True)
 
 import asyncio  # noqa: E402
 
@@ -130,15 +130,35 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     return PipelineWorker(Pipeline(stages))
 
 
+async def build_brain():
+    """Pick the brain: LOCAL in-process agent (default, fastest) or REMOTE thin-client to the 24/7
+    VPS brain (one shared Watari + memory). 'auto'/'remote' fall back to local if the VPS is down."""
+    mode = (settings.brain_mode or "local").lower()
+    if mode in ("remote", "auto"):
+        from jarvis.edge.remote_brain import RemoteBrain
+
+        rb = RemoteBrain(headphones_connected=False)
+        if await rb.start():
+            logger.info(f"brain: REMOTE — unified VPS brain at {settings.brain_ws_url}")
+            return rb
+        await rb.stop()
+        if mode == "remote":
+            logger.warning("brain: 'remote' requested but the VPS brain is unreachable — "
+                           "running the LOCAL brain for this session")
+    brain = JarvisBrain()
+    await brain.warmup()  # prime the LLM so the first reply isn't a cold ~3s TTFT
+    logger.info("brain: LOCAL — in-process agent")
+    return brain
+
+
 async def main() -> None:
     logger.info(
-        f"Jarvis assistant | wake={settings.wake_words_list} "
+        f"Watari assistant | wake={settings.wake_words_list} "
         f"vad={settings.vad_enabled} duplex={settings.duplex_mode} "
         f"STT={settings.stt_provider.value} TTS={settings.tts_provider.value}"
     )
     logger.info('Say "Hey Jarvis", then your command. Ambient speech is ignored. Ctrl-C to stop.')
-    brain = JarvisBrain()
-    await brain.warmup()  # prime the LLM so the first reply isn't a cold ~3s TTFT
+    brain = await build_brain()
     runner = WorkerRunner()
     await runner.add_workers(build_worker(brain))
     await runner.run()

@@ -26,6 +26,22 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SECRET_KEYS = ("password", "token", "secret", "api_key", "apikey", "auth", "credential")
 
 
+def _secret_values() -> list[str]:
+    """Actual secret VALUES from settings, to scrub from the whole line (defence in depth).
+
+    Key-based redaction only catches obvious arg keys; this also removes a secret that leaks via a
+    tool *result* (e.g. PowerShell echoing an env var) or an unexpectedly-named field. Only
+    reasonably long strings are scrubbed so we don't mangle ordinary words.
+    """
+    vals: list[str] = []
+    for name in getattr(settings, "model_fields", {}):
+        if any(s in name.lower() for s in _SECRET_KEYS) or name.endswith("_password"):
+            v = getattr(settings, name, None)
+            if isinstance(v, str) and len(v) >= 6:
+                vals.append(v)
+    return vals
+
+
 def _audit_dir() -> Path:
     base = Path(settings.audit_log_dir) if settings.audit_log_dir else _REPO_ROOT / "audit"
     return base
@@ -56,9 +72,14 @@ def record(tool: str, args: dict | None, result: str, *, ok: bool = True) -> Non
             "ok": ok,
             "result": (result or "")[:500],
         }
+        payload = json.dumps(line, ensure_ascii=False)
+        # Value-level scrub: remove any real secret that slipped into args or the result text.
+        for sv in _secret_values():
+            if sv in payload:
+                payload = payload.replace(sv, "***redacted***")
         path = d / f"{now:%Y-%m-%d}.jsonl"
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+            f.write(payload + "\n")
     except Exception as e:  # noqa: BLE001 — auditing must never break a turn
         logger.warning(f"audit write failed: {type(e).__name__}: {e}")
 

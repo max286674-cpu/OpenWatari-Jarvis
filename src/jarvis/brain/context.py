@@ -18,15 +18,21 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSONALITY_PATH = _REPO_ROOT / "personality" / "jarvis.md"
 MEMORY_DIR = _REPO_ROOT / "memory"
 
-# Order matters: who he is, then who Vazghen is, then the rest. Missing files are skipped.
-_MEMORY_ORDER = [
+# Always-on context: injected into EVERY turn, so it is kept deliberately lean (see
+# fine-tuning.md, Item 1). Order matters: who Vazghen is, the proactive mandate, his ventures,
+# then the environment. Two files are intentionally NOT here:
+#   * tools.md       — duplicated the tool schemas the model already receives every turn.
+#   * openclaw-fleet.md — its actionable rule (delegate to ispir only) is already in the persona.
+# Both stay on disk as on-demand reference (readable via read_source / the vault), they're just
+# not paid for on every turn. Files are loaded ONLY if listed here (no glob) to keep the prompt
+# disciplined — a new memory file must be added explicitly and weighed against the token budget.
+_ALWAYS_ON = [
     "about-vazghen.md",
     "proactive-companion.md",
     "projects.md",
-    "tools.md",
-    "openclaw-fleet.md",
-    "environment.md",
 ]
+# Demoted to on-demand reference (kept on disk, not injected every turn): environment.md (ports/
+# paths the brain reads from config, not the prompt), plus tools.md and openclaw-fleet.md.
 
 
 def _read(p: Path) -> str:
@@ -38,18 +44,12 @@ def _read(p: Path) -> str:
 
 
 def load_memory_files() -> list[tuple[str, str]]:
-    """Return (filename, content) for each memory file, ordered, missing ones skipped."""
-    seen: set[str] = set()
-    files: list[Path] = []
-    for name in _MEMORY_ORDER:
-        p = MEMORY_DIR / name
-        if p.exists():
-            files.append(p)
-            seen.add(name)
-    # include any other .md not in the explicit order (future additions)
-    for p in sorted(MEMORY_DIR.glob("*.md")):
-        if p.name not in seen:
-            files.append(p)
+    """Return (filename, content) for each ALWAYS-ON memory file, in order, missing ones skipped.
+
+    Only files in ``_ALWAYS_ON`` are loaded — other ``memory/*.md`` are on-demand reference and
+    deliberately excluded from the per-turn prompt (see ``_ALWAYS_ON`` note above).
+    """
+    files = [MEMORY_DIR / name for name in _ALWAYS_ON if (MEMORY_DIR / name).exists()]
     return [(p.name, _read(p)) for p in files]
 
 
@@ -67,20 +67,41 @@ def _learned_digest() -> str:
         return ""
 
 
-def validate_vault() -> tuple[bool, str]:
-    """L3 must always be readable. Returns (ok, message) and logs loudly if not."""
+def _vault_reachable(p: Path) -> bool:
+    """True only if the path is a directory we can actually list (not a cloud placeholder)."""
+    try:
+        if not p.is_dir():
+            return False
+        next(p.iterdir(), None)  # touch it — proves read access, not just existence
+        return True
+    except OSError:
+        return False
+
+
+def validate_vault(retries: int = 3, grace: float = 0.4) -> tuple[bool, str]:
+    """L3 must always be readable. Returns (ok, message) and logs loudly if not.
+
+    A momentary blip — the 15-min vault sync's delete→move window, an antivirus lock, or a
+    OneDrive 'online-only' placeholder rehydrating — must NOT fire the 'I've lost your vault'
+    alarm. So we retry with a short grace; only a *sustained* failure is reported as lost access.
+    """
+    import time
+
     if not settings.vault_path:
         msg = "Obsidian vault (L3) is NOT configured — set JARVIS_VAULT_PATH to the local mirror."
         logger.warning(msg)
         return False, msg
     p = Path(settings.vault_path)
-    if not p.is_dir():
-        msg = f"Obsidian vault path '{settings.vault_path}' is not a readable folder."
-        logger.warning(msg)
-        return False, msg
-    n = sum(1 for _ in p.rglob("*.md"))
-    logger.info(f"Obsidian vault (L3) ready: {n} notes at {p}")
-    return True, f"vault ready ({n} notes)"
+    for attempt in range(retries):
+        if _vault_reachable(p):
+            n = sum(1 for _ in p.rglob("*.md"))
+            logger.info(f"Obsidian vault (L3) ready: {n} notes at {p}")
+            return True, f"vault ready ({n} notes)"
+        if attempt < retries - 1:
+            time.sleep(grace)  # transient? give the sync/placeholder a moment to settle
+    msg = f"Obsidian vault path '{settings.vault_path}' is not a readable folder."
+    logger.warning(msg)
+    return False, msg
 
 
 def build_system_prompt() -> str:
@@ -89,34 +110,25 @@ def build_system_prompt() -> str:
     parts: list[str] = []
     if persona:
         parts.append(persona)
-    mem_blocks = [f"## Memory — {name}\n\n{content}" for name, content in load_memory_files() if content]
+    mem_blocks = [f"## {name}\n{content}" for name, content in load_memory_files() if content]
     if mem_blocks:
         parts.append(
-            "# Context you carry (long-term memory)\n\n"
-            "Use this to ground your answers. Don't recite it; draw on it naturally.\n\n"
+            "# Context you carry (draw on it naturally; don't recite it)\n\n"
             + "\n\n".join(mem_blocks)
         )
     digest = _learned_digest()
     if digest:
         parts.append(
-            "# What you've learned about Vazghen (recent)\n\n"
-            "Things you saved in past conversations. Use the `recall` tool for anything older.\n\n"
-            + digest
+            "# Recently learned about Vazghen (use `recall` for older)\n" + digest
         )
+    # Operating rules (persona covers the rest — kept terse to spare per-turn tokens).
     parts.append(
-        "# Acting proactively, clarifying, and confirming\n"
-        "When a request is too thin to act on safely — a bare 'do it', an unclear target — ask one "
-        "short clarifying question before guessing. Before anything outward-facing or hard to undo "
-        "(sending an email or message, deleting files, killing processes, running PowerShell, "
-        "creating a calendar event, operating a lock or device, running a protocol), state what "
-        "you're about to do and get a yes first. Reads and lookups need no confirmation — just do "
-        "them. If you ever speak unprompted, lead with why in a few words, then stop."
-    )
-    parts.append(
-        "# Voice-output rules\n"
-        "You are heard, not read. No markdown, no bullet points, no emoji, no code blocks. "
-        "Keep replies to one or two spoken sentences unless asked for more. Numbers and dates "
-        "spelled the way you'd say them aloud."
+        "# Clarify, confirm, speak\n"
+        "If a request is too thin to act on safely (a bare 'do it', an unclear target), ask one "
+        "short clarifying question first. Confirm before anything outward-facing or hard to undo "
+        "(send/delete/kill/PowerShell/calendar write/lock/protocol); reads and lookups need none. "
+        "Output is spoken: no markdown or emoji, one or two sentences unless asked for more, numbers "
+        "and dates said the way you'd speak them. If you ever speak unprompted, lead with why."
     )
     return "\n\n".join(parts)
 

@@ -19,7 +19,12 @@ import time
 
 import numpy as np
 from loguru import logger
-from pipecat.frames.frames import BotStoppedSpeakingFrame, Frame, InputAudioRawFrame
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    Frame,
+    InputAudioRawFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # Desired phrase -> openWakeWord pretrained model name (the only ones available without training).
@@ -35,16 +40,31 @@ OPENWAKEWORD_PRETRAINED: dict[str, str] = {
 
 
 def resolve_openwakeword_models(desired: list[str]) -> tuple[list[str], list[str]]:
-    """Split desired phrases into (loadable openWakeWord model names, pending phrases)."""
+    """Split desired phrases into (loadable openWakeWord models, pending phrases).
+
+    A phrase that is a path to a trained model file (``.onnx``/``.tflite``) — e.g. a custom
+    "hey watari" model from ``bench/train_wake_word.py`` — is loaded directly by path. Everything
+    else maps to a pretrained model name; unmatched phrases are reported pending.
+    """
+    import os
+
     models: list[str] = []
     pending: list[str] = []
     for phrase in desired:
-        key = phrase.strip().lower()
+        raw = phrase.strip()
+        key = raw.lower()
+        if key.endswith((".onnx", ".tflite")):
+            if os.path.isfile(raw):
+                if raw not in models:
+                    models.append(raw)        # custom trained model, loaded by path
+            else:
+                pending.append(raw)           # configured but not trained yet
+            continue
         model = OPENWAKEWORD_PRETRAINED.get(key)
         if model and model not in models:
             models.append(model)
         elif not model:
-            pending.append(phrase.strip())
+            pending.append(raw)
     return models, pending
 
 
@@ -67,6 +87,7 @@ class WakeWordGate(FrameProcessor):
         self._threshold = threshold
         self._listen_window_s = listen_window_s
         self._open_until = 0.0
+        self._bot_speaking = False
         logger.info(f"wake words active: {self._names} (threshold {threshold})")
 
     @property
@@ -95,13 +116,23 @@ class WakeWordGate(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
-        # After Jarvis finishes speaking, keep listening briefly for a follow-up.
-        if isinstance(frame, BotStoppedSpeakingFrame) and self._awake:
-            self._wake()
+        # Track playback so we can spare the CPU while Watari speaks (see below).
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            # After Watari finishes speaking, keep listening briefly for a follow-up.
+            if self._awake:
+                self._wake()
 
         if isinstance(frame, InputAudioRawFrame):
             if self._awake:
                 await self.push_frame(frame, direction)  # forward command audio to STT
+            elif self._bot_speaking:
+                # Asleep AND Watari is talking: skip wake inference entirely. Running an ONNX
+                # predict on every 20ms frame here starves the audio-output thread and makes
+                # playback stutter. We also never want to wake on our own TTS, so just swallow.
+                pass
             else:
                 hit = self._detect(frame)
                 if hit:

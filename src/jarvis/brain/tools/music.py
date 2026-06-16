@@ -1,7 +1,6 @@
 """Music playback — free, music-tuned sources so Jarvis can actually start a song.
 
-Spotify's Web API only controls playback on Premium accounts, so it is NOT the default. The
-sources, in order of preference:
+Sources, in order of preference:
 
 * ``ytmusic`` (DEFAULT) — **YouTube Music** via ytmusicapi: music-tuned search (songs, not random
   videos), free, no account. Resolves to a track and opens the YouTube Music web player (the
@@ -9,9 +8,8 @@ sources, in order of preference:
 * ``telegram`` — your **personal Telegram playlist**: pulls a track from the configured chat and
   delivers it to your phone Telegram (see ``telegram.telegram_music``).
 * ``youtube`` — plain YouTube search (kept as a fallback / for non-music clips).
-* ``spotify`` — only if Vazghen has Spotify Premium.
 
-The default source is ``settings.music_source``.
+The default source is ``settings.music_source``. All sources are free; no Premium account needed.
 """
 
 from __future__ import annotations
@@ -66,12 +64,14 @@ async def play_music(args: dict) -> str:
     query = (args.get("query") or "").strip()
     source = (args.get("source") or settings.music_source or "ytmusic").strip().lower()
 
-    if source == "spotify":
-        from jarvis.brain.tools.spotify import spotify as spotify_tool
-
-        return await spotify_tool({"action": "search" if query else "play", "query": query})
-
     if source == "telegram":
+        # Preferred: STREAM the track live into the Music Room voice chat (videochat) that Vazghen
+        # joins to listen — not a file drop. Falls back to delivering the file only if no music room
+        # is configured or he explicitly asked to play it OUT LOUD on the desktop (local=true).
+        if settings.telegram_music_room_chat and not bool(args.get("local")):
+            from jarvis.brain.tools.voicechat import play_in_music_room
+
+            return await play_in_music_room({"query": query})
         from jarvis.brain.tools.telegram import telegram_music
 
         return await telegram_music(
@@ -124,8 +124,7 @@ SCHEMAS = [
             "description": (
                 "Play a song or artist. Default source 'ytmusic' (YouTube Music) is FREE and "
                 "music-tuned — no account, plays with sound. 'telegram' plays from Vazghen's "
-                "personal Telegram playlist (delivered to his phone). 'youtube' is plain search. "
-                "Use 'spotify' only if he has Premium. Prefer this over the spotify tool."
+                "personal Telegram playlist (delivered to his phone). 'youtube' is plain search."
             ),
             "parameters": {
                 "type": "object",
@@ -133,7 +132,7 @@ SCHEMAS = [
                     "query": {"type": "string", "description": "Song / artist to play (optional for 'telegram')."},
                     "source": {
                         "type": "string",
-                        "enum": ["ytmusic", "telegram", "youtube", "spotify"],
+                        "enum": ["ytmusic", "telegram", "youtube"],
                         "description": "Default 'ytmusic' (free). 'telegram' = his saved playlist.",
                     },
                     "local": {"type": "boolean", "description": "For source 'telegram': true plays OUT LOUD on the desktop; false delivers to his phone."},

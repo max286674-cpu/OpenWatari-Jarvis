@@ -46,7 +46,7 @@ async def _fire(message: str, push_phone: bool = True) -> None:
         try:
             from jarvis.brain.tools.notify import push
 
-            await push(message, title="Reminder" if spoke else "Jarvis reminder")
+            await push(message, title="Reminder" if spoke else "Watari reminder")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"reminder push failed: {e}")
 

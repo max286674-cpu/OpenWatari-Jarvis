@@ -1,13 +1,18 @@
 # Security
 
-Jarvis is a high-trust agent: he runs shell commands, drives a real browser, sends messages and
-email, controls smart-home devices, and edits and commits his own source code. This document
-describes the safety model that makes that trustworthy, what is kept out of version control, and how
-to report a problem.
+OpenWatari is a framework for a high-trust agent (the assistant, **Watari**): a deployed instance
+runs shell commands, drives a real browser, sends messages and email, controls smart-home devices,
+and edits and commits its own source code. This document describes the safety model that makes that
+trustworthy, what is kept out of version control, and how to report a problem. **If you fork and
+deploy this, you are the operator — read §11.** (*Jarvis* is only the blueprint/inspiration; the
+internal Python package is named `jarvis` for stability.)
 
 > **Design principle: least surprise, full reversibility, deny-by-default.** Every consequential
 > action is either confirmed first, reversible, scoped, or all three. A missing credential degrades
 > to a spoken "not configured" note — never a crash and never a silent failure.
+
+> **Supported version.** This is a single-tree project; security fixes land on the default branch.
+> Run a recent checkout. There is no separate LTS line.
 
 ---
 
@@ -22,9 +27,11 @@ to report a problem.
   logins), `voiceprint.json` (your biometric template), `jarvis_jobs.sqlite`, `audit/`, `backups/`,
   `.jarvis-browser/` (the persistent browser profile, which holds login cookies), and Jarvis's
   private memory (`memory/learned/`, `memory/journal/`).
-- The **audit log redacts secrets**: any tool argument whose key looks like a password / token /
-  secret / api_key / auth / credential is written as `***redacted***`. Protocol passwords are never
-  logged or spoken.
+- The **audit log redacts secrets two ways**: (1) any tool argument whose *key* looks like a
+  password / token / secret / api_key / auth / credential is written as `***redacted***`; and (2) a
+  value-level scrub removes any actual secret *value* from `.env` (API keys, tokens, protocol
+  passwords) from the whole line — so a secret that leaks into a tool *result* (e.g. PowerShell
+  echoing an env var) never reaches disk. Protocol passwords are never logged or spoken.
 - If you publish this repo, make it **private** — the committed context (`memory/*.md`,
   `personality/jarvis.md`) is personal, and host/service details may be sensitive.
 
@@ -38,9 +45,13 @@ to report a problem.
 
 ## 2. Confirmation tier (outward-facing & destructive actions)
 
-Jarvis **confirms before acting** on anything outward-facing or hard to undo. The persona reads back
-what it's about to do and waits for an explicit yes. Enforced as a policy
-(`brain/proactive.py::CONFIRM_TIER` + `confirm_required`) and reinforced in the system prompt:
+Watari **confirms before acting** on anything outward-facing or hard to undo. This is **enforced in
+code**, not merely prompted: the agent's tool-execution path (`brain/agent.py::_execute_calls`) calls
+`brain/proactive.py::confirm_required` and, for a confirm-tier tool, **blocks the call**, hands the
+model a `CONFIRM_REQUIRED` sentinel so it reads the action back, and runs it only after the next user
+turn affirms it (`_is_affirmation`). One "yes" authorises exactly one action (the grant is consumed).
+So even a weak model that ignores the prompt physically cannot fire a consequential tool unprompted.
+The tier (`CONFIRM_TIER`) covers:
 
 - Messaging/outbound: `send_telegram`, `send_email`, `send_push`.
 - Machine: `file_op` (deletes), `process_op` (kill/start), `run_powershell`, `browser`.
@@ -62,6 +73,10 @@ question instead of a risky guess (`needs_clarification`).
 - **Destructive file ops refuse protected paths.** `file_op` deletes are blocked under
   `JARVIS_SYSTEM_PROTECTED_PATHS` (default `C:\Windows`, `C:\Program Files`,
   `C:\Program Files (x86)`) and drive roots.
+- **System file ops also refuse Jarvis's own secrets/state.** `file_op` delete *and* overwrite
+  refuse `.env`/`.env.*`, `*.session`, `voiceprint.json`, and the repo's `.git/`, `audit/`,
+  `backups/`, `.jarvis-browser/` — the same set the coding tool blocks — so "delete the .env" or
+  clobbering the voiceprint can never land through the system tools either.
 - **Elevation is explicit.** `run_powershell(as_admin=true)` raises a Windows UAC prompt you must
   accept; Jarvis cannot silently elevate.
 - **The browser is visible by default** (`JARVIS_BROWSER_HEADLESS=false`) so you can watch what it
@@ -91,10 +106,14 @@ Net effect: the worst case is an uncommitted bad edit (caught by tests) or a com
 
 ## 5. Protocols (privileged routines)
 
-`goodnight` (stop), `phoenix` (restart Jarvis), and `ragnarok` (restart the machine) are
+`goodnight` (stop), `phoenix` (restart Jarvis), `ragnarok` (restart the machine), `backup`
+(archive memory), `ping` (phone push test), `diagnostics` (local health report), `auditpack`
+(audit archive), and `checkpoint` (non-secret context archive) are
 **password-gated**. Jarvis asks for the password first; it's compared in constant time
 (`hmac.compare_digest`); a wrong or missing password runs nothing. **Change the default passwords**
-in `.env` (`JARVIS_PROTOCOL_*_PASSWORD`) before deploying. Passwords are never spoken or logged.
+in `.env` (`JARVIS_PROTOCOL_*_PASSWORD`) before deploying — the **`jarvis-setup`** wizard generates a
+strong, unique password for all eight automatically, so a fork is never shipped on the placeholders.
+Passwords are never spoken or logged.
 
 The non-privileged routines (`briefing`, `focus`, `lockdown`, `guest`, `commute`, `panic`, `backup`,
 `normal`) change *behaviour*, not the system, and need no password.
@@ -132,9 +151,15 @@ personal context).
 
 - **Local-first.** Audio capture, wake-word, VAD, and (optionally) STT/TTS run on your machine.
   Cloud STT/TTS (Deepgram/ElevenLabs) are opt-in quality choices behind provider flags.
-- **Loopback by default.** The brain WebSocket binds `127.0.0.1`. To reach it from a phone/glasses,
-  bind `0.0.0.0` **and set `JARVIS_API_AUTH_TOKEN`** — remote clients must then present
-  `Authorization: Bearer <token>`. Don't expose it without the token.
+- **Loopback by default.** The brain WebSocket (`/voice`, `/control`) and the HTTP sidecar
+  (`/talk` for the iPhone Siri path) bind `127.0.0.1`. To reach them from a phone/glasses, bind
+  `0.0.0.0` **and set `JARVIS_API_AUTH_TOKEN`** — remote clients must then present the token as
+  `Authorization: Bearer <token>` (native) or `?token=<token>` (browser/Shortcut). Requests without
+  it are refused. The `jarvis-setup` wizard generates this token for you when you choose the VPS
+  deployment shape. **Don't expose any port without the token.**
+- **Prefer a private overlay.** Put the brain host on a private network (e.g. Tailscale/WireGuard)
+  rather than the public internet; the bearer token guards the port, the overlay keeps it unroutable
+  to the world in the first place.
 - **Graceful degradation** means an unconfigured integration makes **no** network calls at all.
 
 ---
@@ -148,10 +173,25 @@ issue. Include reproduction steps and the affected file/function.
 
 ---
 
-## 11. Operator responsibilities
+## 11. Operator responsibilities (you, if you fork & deploy)
 
-- Keep the repository **private**; rotate any key that has ever been shared in plaintext.
-- Change the default protocol passwords.
-- Review `TODO-NOW.md` before enabling outward-facing integrations.
-- Treat the host running the brain as a trusted machine — it holds the tokens that let Jarvis act on
-  your behalf.
+- **Run `jarvis-setup`** (or set them by hand): it generates the brain auth token and the eight
+  protocol passwords so you never ship on defaults.
+- **Keep your repository private** if it carries personal data — `memory/*.md`, `memory/learned/`,
+  `memory/journal/`, and `personality/jarvis.md` describe a real person and their accounts. A clean
+  framework fork (no personal `memory/`) can be public; a configured instance should not be.
+- **Rotate any key ever shared in plaintext** (chat, screenshare, a committed mistake) and use the
+  narrowest scope that works (see §1).
+- **Don't expose the brain without the bearer token**, and prefer a private overlay network (§9).
+- **Review `TODO-NOW.md`** before enabling outward-facing integrations, and enroll a voiceprint (§6)
+  if others share your space.
+- **Treat the host running the brain as trusted** — it holds the tokens that let the assistant act on
+  your behalf. Anyone with shell on that host can read `.env`.
+- **Arm the fleet deliberately** (`JARVIS_FLEET_AUTHORIZED`) — it reaches shared infrastructure.
+
+## 12. Licensing & attribution
+
+This project is MIT-licensed (see [`LICENSE`](LICENSE)); third-party components and their obligations
+— including the single LGPL-3.0 optional dependency and the cloud-service Terms you accept by using
+your own keys — are catalogued in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). MIT covers
+copyright, not trademark: see that file's note on the name "Jarvis" before distributing a fork widely.

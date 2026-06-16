@@ -1,9 +1,12 @@
 [project]
 name = "jarvis"
 version = "0.0.1"
-description = "Jarvis — a 24/7 local-first, voice-first living assistant (Pipecat edge + OpenClaw brain)"
+description = "OpenWatari — an open-source framework for building your own 24/7, voice-first, multi-device AI companion (Watari)"
 requires-python = ">=3.11"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["voice-assistant", "pipecat", "speech", "tts", "stt", "wake-word", "llm-agent", "self-hosted"]
 
 # Base deps shared by edge + brain. Provider-specific heavy deps live in optional groups
 # so a CPU-only edge install doesn't pull GPU/cloud stacks it won't use.
@@ -12,7 +15,11 @@ dependencies = [
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "loguru>=0.7",
+    "rich>=13.0",            # the setup wizard's terminal UI (degrades to plain text if missing)
 ]
+
+[project.scripts]
+jarvis-setup = "jarvis.setup_wizard:main"
 
 [project.optional-dependencies]
 # The real-time voice pipeline (edge). Pinned in Phase 0; providers added per-phase.

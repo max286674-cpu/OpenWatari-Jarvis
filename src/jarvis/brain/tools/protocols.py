@@ -28,14 +28,17 @@ SCHEMAS = [
             "description": (
                 "Run a named protocol — a privileged routine that requires Vazghen's password. "
                 "Available: 'goodnight' (stop Jarvis), 'phoenix' (restart Jarvis), 'ragnarok' "
-                "(restart the laptop). NEVER call this without the password: if he names a "
+                "(restart the laptop), 'backup' (archive memory), 'ping' (phone push test), "
+                "'diagnostics' (write health report), 'auditpack' (archive audit logs), and "
+                "'checkpoint' (archive non-secret context). NEVER call this without the password: "
+                "if he names a "
                 "protocol but hasn't given the password, ask him for it first, then call this "
                 "with both. The runner rejects a wrong password."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Protocol name (goodnight/phoenix/ragnarok)."},
+                    "name": {"type": "string", "description": "Protocol name."},
                     "password": {"type": "string", "description": "The password Vazghen provided."},
                 },
                 "required": ["name", "password"],

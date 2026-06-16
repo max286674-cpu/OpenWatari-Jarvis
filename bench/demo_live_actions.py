@@ -5,7 +5,7 @@ brain decides which tool to call and runs it. Watch his spoken replies + the too
 
     uv run python bench/demo_live_actions.py
 
-It will: open Spotify + play Michael Jackson, message your Telegram Saved Messages, send a
+It will: play Michael Jackson on YouTube Music (free), message your Telegram Saved Messages, send a
 panda GIF there, push a phone notification, and web-search + open your browser for the cheapest
 Air Jordan 1 OG Low US-12.
 """
@@ -40,10 +40,9 @@ async def main() -> None:
 
     t0 = time.perf_counter()
 
-    # 1) Open Spotify, then play Michael Jackson (give the app time to register a device).
-    await say("spotify-open", "Open the Spotify app on my PC. Go ahead, no need to confirm.", settle=12)
-    await say("spotify-play",
-              "Now play a Michael Jackson song on Spotify — pick one. Just do it.")
+    # 1) Play Michael Jackson on YouTube Music (free, music-tuned — no account needed).
+    await say("music-play",
+              "Play a Michael Jackson song — pick one. Just do it.", settle=4)
 
     # 2) Telegram Saved Messages text.
     await say("tg-text",

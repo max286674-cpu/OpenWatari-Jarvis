@@ -41,6 +41,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
+import subprocess
+import sys
 import uuid
 from typing import Any
 
@@ -153,10 +156,75 @@ async def delegate_to_fleet(
 
     try:
         return await asyncio.wait_for(_run(), timeout=timeout_s + 15)
-    except FleetUnavailable:
-        raise
+    except FleetUnavailable as e:
+        try:
+            return await _delegate_via_cli(task, timeout_s)
+        except FleetUnavailable as cli_e:
+            raise FleetUnavailable(f"{e}; CLI fallback failed: {cli_e}") from e
     except Exception as e:  # noqa: BLE001
-        raise FleetUnavailable(f"gateway error: {type(e).__name__}: {e}") from e
+        try:
+            return await _delegate_via_cli(task, timeout_s)
+        except FleetUnavailable as cli_e:
+            raise FleetUnavailable(
+                f"gateway error: {type(e).__name__}: {e}; CLI fallback failed: {cli_e}"
+            ) from e
+
+
+async def _delegate_via_cli(task: str, timeout_s: int) -> str:
+    """Use the sanctioned OpenClaw CLI path to reach ispir.
+
+    On the laptop this runs the CLI over SSH on the VPS. On the VPS itself it runs the local CLI.
+    """
+
+    agent = settings.openclaw_router_agent
+    cli = settings.openclaw_cli_path
+    timeout_arg = str(max(timeout_s, 30))
+    if sys.platform == "win32":
+        if not settings.openclaw_cli_ssh_target:
+            raise FleetUnavailable("no OpenClaw CLI SSH target configured")
+        remote = (
+            f"{shlex.quote(cli)} agent --agent {shlex.quote(agent)} "
+            f"--message {shlex.quote(task)} --json --timeout {shlex.quote(timeout_arg)}"
+        )
+        argv = ["ssh", settings.openclaw_cli_ssh_target, remote]
+    else:
+        argv = [cli, "agent", "--agent", agent, "--message", task, "--json", "--timeout", timeout_arg]
+
+    def _run_cli() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(argv, text=True, capture_output=True, timeout=timeout_s + 30)
+
+    try:
+        proc = await asyncio.to_thread(_run_cli)
+    except Exception as e:  # noqa: BLE001
+        raise FleetUnavailable(f"OpenClaw CLI failed to run: {type(e).__name__}") from e
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()[:2]
+        raise FleetUnavailable(f"OpenClaw CLI exited {proc.returncode}: {' | '.join(detail)}")
+
+    text = _parse_cli_json(proc.stdout)
+    if not text:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()[:2]
+        raise FleetUnavailable(f"OpenClaw CLI returned no text: {' | '.join(detail)}")
+    return text
+
+
+def _parse_cli_json(stdout: str) -> str:
+    """Parse OpenClaw CLI JSON even if warnings follow the JSON blob."""
+
+    start = stdout.find("{")
+    if start < 0:
+        return ""
+    try:
+        data, _ = json.JSONDecoder().raw_decode(stdout[start:])
+    except json.JSONDecodeError:
+        return ""
+    payloads = data.get("payloads") if isinstance(data, dict) else None
+    if isinstance(payloads, list):
+        texts = [p.get("text", "") for p in payloads if isinstance(p, dict)]
+        joined = "\n".join(t for t in texts if t).strip()
+        if joined:
+            return joined
+    return str(data.get("finalAssistantVisibleText") or data.get("finalAssistantRawText") or "").strip()
 
 
 async def _await_response(ws, req_id: str, timeout_s: int, label: str) -> dict[str, Any]:

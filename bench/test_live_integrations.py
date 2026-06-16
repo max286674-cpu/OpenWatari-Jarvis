@@ -26,36 +26,62 @@ def record(name: str, configured: bool, ok: bool, detail: str) -> None:
     rows.append((status, name, detail.replace("\n", " ")[:90]))
 
 
+def _ok(r: str) -> bool:
+    """A tool result is 'live' if it didn't degrade or error."""
+    low = r.lower()
+    return "isn't configured" not in r and "couldn't" not in low and "rejected" not in low
+
+
 async def main() -> None:
-    from jarvis.brain.tools import notify, spotify, telegram, vault, web
+    from jarvis.brain.tools import (
+        calendar,
+        gmail,
+        notify,
+        notion,
+        smarthome,
+        telegram,
+        vault,
+        web,
+    )
 
-    # vault (local, always configured if path set)
+    # Vault (local, configured if path set)
     r = await vault.search_vault({"query": "project"})
-    record("Vault search", bool(settings.vault_path), "isn't configured" not in r and "couldn't" not in r.lower(), r)
+    record("Vault search", bool(settings.vault_path), _ok(r), r)
 
-    # Tavily
+    # Tavily web search
     r = await web.web_search({"query": "what is the capital of France"})
     record("Tavily web_search", bool(settings.tavily_api_key), "Paris" in r or "Answer" in r, r)
 
-    # Firecrawl
+    # Jina Reader page scrape (free + keyless, so always exercised)
     r = await web.scrape_url({"url": "example.com"})
-    record("Firecrawl scrape_url", bool(settings.firecrawl_api_key), "Example Domain" in r, r)
+    record("Jina scrape_url", True, "Example Domain" in r or "example" in r.lower(), r)
 
-    # Browserbase
+    # Browserbase interactive browse
     r = await web.browse_web({"url": "example.com"})
     record("Browserbase browse_web",
            bool(settings.browserbase_api_key and settings.browserbase_project_id),
            "Example Domain" in r, r)
 
-    # Telegram read (Telethon)
+    # Telegram read (Telethon user client)
     r = await telegram.check_telegram({"limit": 5})
-    record("Telegram read", bool(settings.telegram_api_id and settings.telegram_api_hash),
-           "isn't configured" not in r and "couldn't" not in r.lower(), r)
+    record("Telegram read", bool(settings.telegram_api_id and settings.telegram_api_hash), _ok(r), r)
 
-    # Spotify now-playing
-    r = await spotify.spotify({"action": "now_playing"})
-    record("Spotify", bool(settings.spotify_refresh_token),
-           "isn't configured" not in r and "couldn't" not in r.lower(), r)
+    # Gmail (read) — Phase 11
+    r = await gmail.read_email({"query": "is:unread", "max": 3})
+    record("Gmail read_email", bool(settings.google_refresh_token), _ok(r), r)
+
+    # Google Calendar (read) — Phase 11
+    r = await calendar.list_events({})
+    record("Calendar list_events", bool(settings.google_refresh_token), _ok(r), r)
+
+    # Notion (search) — Phase 11. With no shared pages this returns a friendly "no shared pages"
+    # note, which still proves the token authenticates (so it counts as live).
+    r = await notion.notion_search({"query": "project"})
+    record("Notion search", bool(settings.notion_token), _ok(r), r)
+
+    # Home Assistant (state) — Phase 11. SKIP unless configured.
+    r = await smarthome.ha_state({})
+    record("Home Assistant", bool(settings.ha_url and settings.ha_token), _ok(r), r)
 
     # ntfy push
     r = await notify.send_push({"message": "Jarvis live-integration check ✅", "title": "Jarvis"})

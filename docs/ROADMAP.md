@@ -1,5 +1,37 @@
 # JARVIS — 24/7 Living Voice Agent: Development Plan (from scratch)
 
+> **Now named WATARI** (identity-only rename 2026-06-14; internal package/dir/services stay `jarvis`).
+
+## Backlog after the 2026-06-14 elite-pass (open items, prioritised)
+
+Done this pass: model upgraded to `llama-3.3-70b-versatile` (benchmark-won, ~1.5s first sentence);
+streaming voice path (speaks sentence-1 while composing the rest) on both local + WS brains; unified
+brain capability (`JARVIS_BRAIN_MODE=remote`, verified streaming over the tailnet); confirmed local
+PC-control tools; verified proactive ntfy push; killed the recurring PowerShell popup; fixed the
+false-wake + choppy-playback bugs.
+
+Still open (future tasks):
+1. **Custom "Watari" wake-word model** — only free way to a literal "Watari" trigger (Porcupine
+   denied the user a key). Needs an openWakeWord training run: synthetic Piper voices + negatives
+   (~GBs) + a few CPU-hours → a `watari.onnx` dropped into the wake set. Interim trigger = "hey jarvis".
+2. **iPhone mic over HTTPS** — the phone literally can't capture mic over plain HTTP. Plan: add
+   `tailscale serve` routes (tailnet-only, additive — do NOT disturb the `/inbox` funnel) mapping a
+   path → brain HTTP :8766 and `/voice` → WS :8765; rewrite the client to capture mic via
+   `getUserMedia`+`MediaRecorder` and POST audio to a new brain `audio` handler that runs Deepgram
+   REST STT; build the WS URL as `wss://<tailnet-host>/voice` when served over HTTPS. Needs the
+   physical phone to verify.
+3. **Edge command channel for REMOTE mode** — PC-control tools work in local mode (brain on laptop);
+   when `BRAIN_MODE=remote` they'd hit the VPS. To control the laptop from the unified VPS brain,
+   route `process_op`/`run_powershell`/`file_op` back to the edge over a guarded channel.
+4. **A "clean up Task Manager" skill** — a curated `process_op` helper that surfaces idle/duplicate/
+   heavy processes as safe-to-kill candidates and confirms before killing (today it lists + kills by
+   name/pid, which works but leaves the judgement to the model).
+5. **Populate memory** — L1 learned facts shows 0; the elaborate 5-layer memory is unproven until it
+   actually learns. Exercise enrollment + a few real sessions so recall has substance.
+6. **Speed of the unified brain** — VPS first-sentence is ~4s vs ~1.5s local (the VPS is loaded with
+   the 30-agent fleet). If remote becomes the default, give the brain its own faster proxy lane.
+7. **Mentra OS glasses** — `glasses/` TS scaffold only; hardware-gated, correctly last.
+
 ## Context
 
 The previous JARVIS (`D:\JARVIS`, Tauri+SvelteKit+FastAPI) and `C:\openjarvis` are **abandoned legacy** and will not be read or reused. We are building a fresh, voice-first, local-first 24/7 assistant called **Jarvis** that fulfills the full capability list (natural streaming voice, always-listening wake word, proactive scheduling, multi-device, OpenClaw-agent delegation, Obsidian vault, Telegram, MCP servers, speaker biometrics, smart-glasses, latency benchmarks).
@@ -37,7 +69,7 @@ Legend: ✅ done & verified end-to-end · 🟡 in progress · ⬜ not started
 | 4 — Proactivity & 24/7 | ✅ (incl. 4b true-24/7) | **Scheduler** (`brain/scheduler.py`, APScheduler + **SQLite** jobstore → reminders survive restart) wired into the edge brain so fired reminders are **spoken** (fired live-verified); **`set_reminder`/`list_reminders`/`cancel_reminder`** (one-shot/at/daily) + **ntfy `send_push`** phone fallback. **Edge boot service** (`scripts/install_edge_service.ps1`) registers a hidden, auto-restarting logon task running `pythonw -m jarvis.edge.assistant` (parse-verified; user ran it — task Ready). **4b TRUE 24/7 (PC-off) — done:** one-shot/`at` reminders are handed to **ntfy server-side scheduled delivery** (`At` header; window 10s–3d) so they reach the phone with the PC off (no double-push: the in-process job then only speaks); **recurring `daily`** reminders register with an always-on **VPS ticker** (`deploy/vps/`, APScheduler+ntfy+HTTP, systemd) via `JARVIS_TICKER_URL` — graceful no-op if unset. 29/29 offline checks (incl. dedicated 4b block). *Deferred (not needed): VPS brain WS-split — brain runs in-process in the edge* |
 | 5 — Identity & benchmarks | ✅* | **Speaker biometrics** (`edge/speaker_id.py` + `edge/speaker_gate.py`): SpeechBrain **ECAPA** voiceprint, enrolled via `bench/enroll_voice.py`; `SpeakerGate` drops transcripts that aren't Vazghen's voice (cosine ≥ `JARVIS_SPEAKER_THRESHOLD`). Graceful: no-op until enrolled + `JARVIS_SPEAKER_ID_ENABLED=true`, and degrades to accept-all if the (opt-in `identity` extra) torch backend is absent — never locks him out. **Benchmarks** (`bench/benchmarks.py`→`jarvis.bench_metrics`): **TTFW** (user-stop→first word, measured live by `edge/latency_meter.py`) + **VAQI** 0–100 (latency·responsiveness·smoothness). 23/23 offline checks. **\*Pending:** `uv sync --extra identity` + one-time `enroll_voice.py` to light up the gate (logic fully verified with a stub embedder) |
 | 6 — Multi-device | ✅* | **Four devices enabled + routed** (`edge/device_profile.py::resolve_device_route` + `SUPPORTED_DEVICES`): **this host laptop** (speakers, full local pipeline), **iPhone** (thin client→brain WS), **AirPods Pro Max** (private→barge-in ON), **Mentra OS glasses** (`glasses/` MentraOS TS bridge→brain WS, private→barge-in ON). **AirPods auto-route:** connected to *either* phone or laptop ⇒ everything routes to the headphones + barge-in auto-on (laptop via `audio_devices.prefer_private_output`; phone via `headphones_connected` on the `Hello` frame). Protocol carries `device_id` (`shared/protocol.py`: `Hello`+`Utterance`). **Brain WS server built** (`brain/server.py`): hosts ONE shared `JarvisAgent` so phone+glasses+laptop reach the SAME brain+memory; Hello handshake → `lifecycle:thinking` → `tool` fillers → per-sentence `assistant` chunks (incremental TTS) → barge/supersede cancel; optional bearer auth; also serves the phone client over HTTP. **iPhone client built** (`clients/iphone/index.html`): self-contained Safari web app (push-to-talk via Web Speech API + text fallback, `speechSynthesis` playback, "AirPods on this phone" toggle → `headphones_connected`). 22/22 (routing) + 23/23 (server, hermetic) offline checks + a live-socket round-trip; see `docs/multi-device.md`. **\*Pending:** live test needs the physical phone/glasses; Mentra bridge SDK transcription calls still scaffolded (brain link + routing done) |
-| **7 — Protocols** | ✅ | password-gated executable routines (FRIDAY/JARVIS style): **`goodnight`** (stop Jarvis) · **`phoenix`** (restart Jarvis) · **`ragnarok`** (restart laptop). `run_protocol(name,password)` tool + `brain/protocols.py` (constant-time password check) + detached scripts in `src/jarvis/protocols/`. Jarvis asks for the password first (persona+memory rules). Verified |
+| **7 — Protocols** | ✅ | password-gated executable routines (FRIDAY/JARVIS style): **`goodnight`** (stop Jarvis) · **`phoenix`** (restart Jarvis) · **`ragnarok`** (restart laptop) · **`backup`** (archive memory) · **`ping`** (phone push test) · **`diagnostics`** (health report) · **`auditpack`** (audit archive) · **`checkpoint`** (non-secret context archive). `run_protocol(name,password)` tool + `brain/protocols.py` (constant-time password check) + detached scripts in `src/jarvis/protocols/`. Jarvis asks for the password first (persona+memory rules). Verified |
 | 8 — Memory & automation infra | ✅ | Folded into Phase 9 as memory layers: **Redis** = L4 hot-cache (9b, built, graceful) · **vector** = L5 semantic recall (9c, built, graceful) · **n8n** skipped (overlaps Phase 4). Old `D:\JARVIS` Docker containers are abandoned/disposable |
 | **9 — Elite multi-layer memory** | ✅ | **L0–L5 all built.** L1 learned facts + L2 journal (`brain/memory.py`); L3 vault validated always-on at warmup; **L4 hot-cache** (`brain/cache.py`: in-process TTL always-on + optional Redis, fail-open, wired into `web_search`/utilities); **L5 semantic recall** (`brain/semantic.py`: optional embedder, blends cosine into keyword recall, graceful no-op without `sentence-transformers`). Tools `remember`/`recall`/`forget`/`read_journal`. 17+9+8 offline checks (`test_phase9*.py`) |
 | **10 — Proactive engine** | ✅ | `brain/proactive.py`: background **tick** + relevance threshold + **interruption budget** + **quiet hours** + repeat-suppression + day-rollover; speaks to listening clients (interrupt) or ntfy push; wired into `brain/server.py` (off unless `JARVIS_PROACTIVE_ENABLED`). Six verbs covered, incl. `confirm_required`/`needs_clarification` policy + a system-prompt clarify/confirm rule. **Modes** (focus/lockdown) mute it on demand. 26/26 checks (`test_phase10_proactive.py`) |
@@ -326,6 +358,32 @@ of the three *patterns* are real upgrades worth adopting (pointed at `C:\Jarvis`
 (or re-pointed at `C:\Jarvis`) so they don't run against the abandoned project. **Verify:** `8a` — a
 repeated question returns from cache measurably faster (logged), and the brain still answers with redis
 stopped (graceful fallback).
+
+---
+
+### Phase FINAL — Physical hardware acquisition & integration — ⛔ BLOCKED on buying the devices
+**Explicitly the LAST phase, by Vazghen's instruction (2026-06-12):** he does **not** own the
+Mentra OS glasses or a Home Assistant device yet, so the two hardware-dependent capabilities are
+parked here as a single closing phase to be done *after the hardware is purchased*. Everything in
+software is already built and waiting — these items are integration + a live device test, not new
+architecture.
+
+- **Mentra OS smart-glasses** — the `glasses/` MentraOS TypeScript bridge + brain WS link + private
+  device routing (`device_id="mentra"` → barge-in on) are **already built** (Phase 6). Remaining
+  work is hardware-only: pair the physical glasses, finish the SDK transcription/display calls
+  (currently scaffolded), and run a live on-device round-trip (speak through the glasses → brain →
+  reply shown + spoken). **Blocked until the glasses are bought.**
+- **Home Assistant smart-home** — `brain/tools/smarthome.py` (`ha_state`/`ha_call`, locks
+  confirm-gated) is **already built** and self-degrades without credentials (Phase 11). Remaining
+  work is hardware-only: stand up a Home Assistant instance/hub on a local device, set
+  `JARVIS_HOMEASSISTANT_URL` + token, expose the real entities, and verify a live device action
+  (e.g. "turn on the desk lamp"). **Blocked until a Home Assistant device/hub is acquired.**
+
+**Acquisition checklist (Vazghen):** (1) buy Mentra OS glasses + a Home-Assistant-capable hub
+(e.g. Home Assistant Green/Yellow or a Raspberry Pi running HAOS); (2) hand over the HA URL + a
+long-lived access token and the Mentra developer credentials; (3) Jarvis finishes the two
+integrations and runs the live device tests above. **Until then this phase stays ⛔ and nothing
+else in the roadmap depends on it.**
 
 ---
 

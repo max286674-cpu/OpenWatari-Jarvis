@@ -27,7 +27,6 @@ from jarvis.brain.tools import (
     routines,
     skills,
     smarthome,
-    spotify,
     system,
     telegram,
     utility,
@@ -36,18 +35,67 @@ from jarvis.brain.tools import (
     web,
 )
 
-_MODULES = [vault, memory, web, telegram, voicechat, spotify, music, localplay, system, browser,
+_MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, browser,
             protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
             coding, skills, notion]
 
 Handler = Callable[[dict], Awaitable[str]]
 
+# --- Lazy tool groups (fine-tuning.md Item 2) ---------------------------------------------
+# Every handler is ALWAYS in the registry below (so tests, the proactive engine, and direct
+# handler calls keep working). These groups are about what the AGENT *advertises to the model on a
+# given turn*: low-frequency modules are held back until the turn actually needs them, keeping the
+# per-turn schema surface lean. No capability is removed — a group simply lights up when relevant.
+_LAZY_GROUPS: dict[str, list] = {
+    "coding": [coding],                  # read/write source, tests, lint, git — only for dev work
+    "office": [notion, gmail, calendar],  # email, calendar, Notion — when he asks about them
+    "home": [smarthome, voicechat],      # smart-home control + Telegram music-room streaming
+}
+# Substring triggers (lowercased) that activate a group for a turn. Broad on purpose — a miss just
+# means a one-turn delay (the follow-up usually contains the word, and groups stay warm one turn).
+LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
+    "coding": ("code", "coding", "source", "function", "bug", "refactor", "commit", "git ",
+               "lint", "unit test", "run the test", "run tests", "repo", "push", "branch",
+               "revert", "your code", "self-improve", "self improve", "improve yourself",
+               "pull request", "diff", "the suite"),
+    "office": ("email", "e-mail", "mail", "inbox", "gmail", "draft", "calendar", "schedule",
+               "event", "meeting", "appointment", "agenda", "notion", "document", "page",
+               "task list", "my tasks"),
+    "home": ("smart home", "home assistant", "light", "lamp", "thermostat", "heating", "lock",
+             "unlock", "music room", "voice chat", "stream music", "play in the room"),
+}
+
+_LAZY_MODULES = {m for mods in _LAZY_GROUPS.values() for m in mods}
+# Core modules are advertised on every turn; lazy ones only when their group is active.
+CORE_MODULES = [m for m in _MODULES if m not in _LAZY_MODULES]
+
+
+def _schemas_of(mods: list) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for mod in mods:
+        out.extend(mod.SCHEMAS)
+    return out
+
 
 def tool_schemas() -> list[dict[str, Any]]:
-    schemas: list[dict[str, Any]] = []
-    for mod in _MODULES:
-        schemas.extend(mod.SCHEMAS)
-    return schemas
+    """The FULL registry of schemas (every group). Used by tests + the report's registry view."""
+    return _schemas_of(_MODULES)
+
+
+def core_tool_schemas() -> list[dict[str, Any]]:
+    """Schemas advertised on every turn (core groups only) — the lean per-turn surface."""
+    return _schemas_of(CORE_MODULES)
+
+
+def group_tool_schemas(group: str) -> list[dict[str, Any]]:
+    """Schemas for one lazy group, added to a turn when that group activates."""
+    return _schemas_of(_LAZY_GROUPS.get(group, []))
+
+
+def groups_for_text(text: str) -> set[str]:
+    """Which lazy groups a user utterance should activate (substring trigger match)."""
+    t = (text or "").lower()
+    return {g for g, kws in LAZY_GROUP_TRIGGERS.items() if any(k in t for k in kws)}
 
 
 def tool_handlers() -> dict[str, Handler]:

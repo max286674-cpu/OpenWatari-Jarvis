@@ -10,8 +10,11 @@ Run:  uv run python bench/enroll_voice.py
 
 from __future__ import annotations
 
+import argparse
+import re
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -25,6 +28,25 @@ PROMPTS = [
     "Say any sentence in your normal voice.",
     "Say one more sentence, a little longer.",
 ]
+# When reading the 3-minute script, capture one longer clip per '## Segment' block.
+SCRIPT_CLIP_S = 40
+
+
+def _script_segments(path: Path) -> list[tuple[str, int]]:
+    """Parse 'to-read-script.md' into (prompt, seconds) per '## Segment' header.
+
+    Pulls the '(≈ N s)' hint from each header to size the recording; falls back to SCRIPT_CLIP_S.
+    """
+    text = path.read_text(encoding="utf-8")
+    segs: list[tuple[str, int]] = []
+    for m in re.finditer(r"^##\s+(Segment[^\n]*)", text, re.MULTILINE):
+        header = m.group(1).strip()
+        sec = SCRIPT_CLIP_S
+        hint = re.search(r"≈\s*(\d+)\s*s", header)
+        if hint:
+            sec = int(hint.group(1)) + 3  # small buffer so the tail isn't clipped
+        segs.append((f"Read aloud: '{header}'", sec))
+    return segs
 
 
 def _record(seconds: int) -> bytes:
@@ -43,19 +65,36 @@ def _record(seconds: int) -> bytes:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description="Enroll Vazghen's voiceprint.")
+    ap.add_argument("--script", type=str, default=None,
+                    help="Path to to-read-script.md for a longer, stronger 3-minute enrollment.")
+    args = ap.parse_args()
+
     verifier = SpeakerVerifier()
     if verifier._ensure_embedder() is None:  # noqa: SLF001
         print("ECAPA backend not available. Install it:  uv sync --extra identity")
         sys.exit(1)
 
+    if args.script:
+        spath = Path(args.script)
+        if not spath.is_file():
+            spath = Path(__file__).resolve().parents[1] / args.script
+        if not spath.is_file():
+            print(f"Script not found: {args.script}")
+            sys.exit(1)
+        clips = _script_segments(spath)
+        print(f"Reading {spath.name} — {len(clips)} segments, ~3 minutes total.\n")
+    else:
+        clips = [(PROMPTS[i], CLIP_S) for i in range(N_CLIPS)]
+
     embeddings = []
-    for i in range(N_CLIPS):
-        print(f"\n[{i + 1}/{N_CLIPS}] {PROMPTS[i % len(PROMPTS)]}")
+    for i, (prompt, clip_s) in enumerate(clips):
+        print(f"\n[{i + 1}/{len(clips)}] {prompt}")
         for c in (3, 2, 1):
             print(f"  recording in {c}…", end="\r", flush=True)
             time.sleep(1)
-        print(f"  ● recording {CLIP_S}s — speak now")
-        pcm = _record(CLIP_S)
+        print(f"  ● recording {clip_s}s — speak now")
+        pcm = _record(clip_s)
         emb = verifier.embed(pcm, SR)
         if emb is None:
             print("  (clip too short / failed, retrying)")
