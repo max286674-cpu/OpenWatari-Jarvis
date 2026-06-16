@@ -1273,6 +1273,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -1341,6 +1342,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "redis", marker = "extra == 'brain'", specifier = ">=5.0" },
+    { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "speechbrain", marker = "extra == 'identity'", specifier = ">=1.0" },
     { name = "sqlalchemy", marker = "extra == 'brain'", specifier = ">=2.0" },
