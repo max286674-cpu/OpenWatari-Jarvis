@@ -53,3 +53,8 @@ _suite_out.txt
 
 # Original logo/banner exports (clean copies tracked in assets/ + website/public/)
 /OpenWatari*.png
+
+# Docs site — deployed via Vercel CLI (vercel --cwd website --prod), kept out of the repo
+website/
+# Personal finish-line checklist (this instance, not the framework)
+MY-WATARI-CHECKLIST.md

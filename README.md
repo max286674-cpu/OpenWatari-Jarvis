@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/openwatari-banner.png" alt="OpenWatari" width="100%">
+<img src="assets/openwatari-logo.png" alt="OpenWatari" width="140">
 
 # OpenWatari
 
@@ -13,9 +13,11 @@ proactive companion · phone / laptop / glasses · self-improving — local-firs
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Platform](https://img.shields.io/badge/edge-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)
 
-📖 **Documentation:** **[openwatari.vercel.app](https://openwatari.vercel.app)** — the full docs site (source in [`website/`](website/))
+📖 **Documentation:** **[openwatari.vercel.app](https://openwatari.vercel.app)** — the full docs site
 
 </div>
+
+<img src="assets/openwatari-banner.png" alt="OpenWatari — build your own voice-first AI companion" width="100%">
 
 ---
 
