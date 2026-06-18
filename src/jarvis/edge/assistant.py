@@ -63,6 +63,7 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     tts = build_tts()  # ElevenLabs (cloud) | Piper | Kokoro (both fully local) per JARVIS_TTS_PROVIDER
 
     stages: list = [transport.input()]
+    wake_gate = None  # set below if wake-word gating is enabled; drives the idle listening pulse
 
     # Silero VAD first, so every later stage sees speech-start/stop frames (used for
     # barge-in now, endpointing later). It runs on raw mic audio regardless of wake state.
@@ -76,15 +77,14 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
                 f"wake words pending custom engine (Porcupine/training): {pending}"
             )
         if models:
-            stages.append(
-                WakeWordGate(
-                    models=models,
-                    threshold=settings.wake_word_threshold,
-                    listen_window_s=settings.wake_listen_window_s,
-                    suppress_during_tts=not barge_in,
-                    ack_phrase=settings.wake_ack_phrase,
-                )
+            wake_gate = WakeWordGate(
+                models=models,
+                threshold=settings.wake_word_threshold,
+                listen_window_s=settings.wake_listen_window_s,
+                suppress_during_tts=not barge_in,
+                ack_phrase=settings.wake_ack_phrase,
             )
+            stages.append(wake_gate)
         else:
             logger.warning("no loadable wake words — mic ungated (open)")
 
@@ -121,7 +121,9 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
 
     stages += [brain or JarvisBrain(), tts, TTSLeadInSilence(), TTFWMeter(), transport.output()]
 
-    return PipelineWorker(Pipeline(stages))
+    worker = PipelineWorker(Pipeline(stages))
+    worker._wake_gate = wake_gate  # main() reads this to drive the idle listening pulse
+    return worker
 
 
 async def build_brain():
@@ -154,8 +156,23 @@ async def main() -> None:
     logger.info('Say "Hey Jarvis", then your command. Ambient speech is ignored. Ctrl-C to stop.')
     brain = await build_brain()
     runner = WorkerRunner()
-    await runner.add_workers(build_worker(brain))
-    await runner.run()
+    worker = build_worker(brain)
+    await runner.add_workers(worker)
+
+    # Soft 'listening' ping: ONE gentle ping shortly after start so you KNOW the edge is up and
+    # listening before you say the first wake word. It sounds exactly once, then stays silent — the
+    # wake acknowledgement ("I'm listening, sir.") covers every later turn.
+    pulse = None
+    if settings.wake_word_enabled and settings.listening_pulse:
+        from jarvis.edge.listening_pulse import ListeningPulse
+
+        pulse = ListeningPulse(delay_s=settings.listening_pulse_period_s)
+        pulse.start()
+    try:
+        await runner.run()
+    finally:
+        if pulse:
+            pulse.stop()
 
 
 if __name__ == "__main__":

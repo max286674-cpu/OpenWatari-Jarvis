@@ -83,7 +83,9 @@ class WakeWordGate(FrameProcessor):
         if not models:
             raise ValueError("WakeWordGate needs at least one loadable wake-word model")
         # Spoken "I heard you" acknowledgement choices (pipe-separated -> random for variety).
+        # Spoken only on the FIRST wake word of the session, then never again (self._acked).
         self._ack_choices = [p.strip() for p in (ack_phrase or "").split("|") if p.strip()]
+        self._acked = False
         import openwakeword
         from openwakeword.model import Model
 
@@ -101,6 +103,12 @@ class WakeWordGate(FrameProcessor):
     @property
     def _awake(self) -> bool:
         return time.monotonic() < self._open_until
+
+    @property
+    def is_idle(self) -> bool:
+        """True when waiting for a wake word (not in a listening window, not speaking) — the only
+        time the soft 'listening' pulse should sound. Drives edge/listening_pulse.py."""
+        return not self._awake and not self._bot_speaking
 
     def _wake(self) -> None:
         self._open_until = time.monotonic() + self._listen_window_s
@@ -154,9 +162,11 @@ class WakeWordGate(FrameProcessor):
                 if hit:
                     self._wake()
                     logger.info(f"wake: '{hit}' detected — listening")
-                    if self._ack_choices:
-                        # Speak a short acknowledgement downstream so Vazghen hears that the wake
-                        # word landed and Watari is now listening — before he says the command.
+                    if self._ack_choices and not self._acked:
+                        # Speak a short acknowledgement ONCE (the first wake word of the session) so
+                        # Vazghen hears that the wake word landed and Watari is now listening. Later
+                        # wakes stay silent so it doesn't preface every command.
+                        self._acked = True
                         ack = random.choice(self._ack_choices)
                         await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
                 # asleep: swallow audio so the STT never hears ambient speech

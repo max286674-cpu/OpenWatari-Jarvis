@@ -51,6 +51,9 @@ Thumbs.db
 pretrained_models/
 _suite_out.txt
 
+# --- Runtime logs (edge/pc_agent — churn + may contain host/IP) ---
+logs/
+
 # Original logo/banner exports (clean copies tracked in assets/ + website/public/)
 /OpenWatari*.png
 

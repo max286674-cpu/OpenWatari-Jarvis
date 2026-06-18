@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # actively listening — before you say the command. Pipe-separated choices are picked at random
     # for natural variety; set empty ("") to disable.
     wake_ack_phrase: str = "Yes, sir?|I'm listening, sir.|Sir?|Go ahead, sir."
+    # A soft audible "heartbeat" pulse while the edge is idle and waiting for the wake word — so you
+    # always KNOW it's up and actively listening. It stops the instant a wake word fires, and resumes
+    # when the conversation goes idle again. Set false to disable.
+    listening_pulse: bool = True
+    listening_pulse_period_s: float = 2.5   # seconds between pulses while idle
     porcupine_access_key: str | None = None  # Picovoice key, for the custom-phrase engine
     half_duplex: bool = True              # mute mic while Jarvis speaks (no self-hearing);
     #                                       set false only with AEC (Krisp) or headphones
