@@ -99,7 +99,7 @@ async def test_no_double_failover_midstream() -> None:
             yield _chunk("SHOULD-NOT-APPEAR")
         return gen()
 
-    llm._client.chat.completions.create = fake_create
+    llm._default.chat.completions.create = fake_create
     texts = []
     async for kind, payload in llm.stream_with_tools([{"role": "user", "content": "hi"}]):
         if kind == "text":

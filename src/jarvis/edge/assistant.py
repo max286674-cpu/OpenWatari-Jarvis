@@ -19,7 +19,7 @@ import asyncio  # noqa: E402
 from loguru import logger  # noqa: E402
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.worker import PipelineWorker  # noqa: E402
-from pipecat.services.elevenlabs.tts import ElevenLabsTTSService  # noqa: E402
+from jarvis.edge.tts import build_tts  # noqa: E402
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams  # noqa: E402
 from pipecat.workers.runner import WorkerRunner  # noqa: E402
 
@@ -29,15 +29,13 @@ from jarvis.edge.audio_gate import HalfDuplexGate  # noqa: E402
 from jarvis.edge.brain_bridge import JarvisBrain  # noqa: E402
 from jarvis.edge.device_profile import resolve_barge_in  # noqa: E402
 from jarvis.edge.stt import build_stt  # noqa: E402
+from jarvis.edge.tts_leadin import TTSLeadInSilence  # noqa: E402
 from jarvis.edge.vad_bargein import BargeInProcessor, build_vad_processor  # noqa: E402
 from jarvis.edge.wake_word import WakeWordGate, resolve_openwakeword_models  # noqa: E402
 
 
 def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     """Assemble the pipeline. Construction loads the wake-word model + Jarvis's brain."""
-    if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id):
-        raise RuntimeError("ElevenLabs api key / voice id not set (.env)")
-
     # Resolve which speaker/headphone Jarvis plays through (config or saved voice pref).
     out_index, out_label = resolve_output_index(
         settings.audio_output_device, auto_route_headphones=settings.auto_route_headphones
@@ -62,13 +60,7 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
         params.output_device_index = out_index
     transport = LocalAudioTransport(params)
     stt = build_stt()  # Deepgram-multi (EN/FR/DE/RU) or Whisper (all six incl. Armenian)
-    tts = ElevenLabsTTSService(
-        api_key=settings.elevenlabs_api_key,
-        settings=ElevenLabsTTSService.Settings(
-            voice=settings.elevenlabs_voice_id,
-            model=settings.elevenlabs_model,
-        ),
-    )
+    tts = build_tts()  # ElevenLabs (cloud) | Piper | Kokoro (both fully local) per JARVIS_TTS_PROVIDER
 
     stages: list = [transport.input()]
 
@@ -89,6 +81,8 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
                     models=models,
                     threshold=settings.wake_word_threshold,
                     listen_window_s=settings.wake_listen_window_s,
+                    suppress_during_tts=not barge_in,
+                    ack_phrase=settings.wake_ack_phrase,
                 )
             )
         else:
@@ -125,7 +119,7 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     # Phase 5 — measure TTFW (user-stop → first spoken word) live; pure pass-through, logged.
     from jarvis.edge.latency_meter import TTFWMeter
 
-    stages += [brain or JarvisBrain(), tts, TTFWMeter(), transport.output()]
+    stages += [brain or JarvisBrain(), tts, TTSLeadInSilence(), TTFWMeter(), transport.output()]
 
     return PipelineWorker(Pipeline(stages))
 
@@ -165,7 +159,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("stopped")
+    # Supervised: relaunch on any exit (crash or clean pipeline end) + log to logs/edge.log, so a
+    # brain restart or a transient audio glitch never leaves the laptop silently without Watari.
+    from jarvis.edge._supervisor import run_supervised
+
+    run_supervised("edge", main)

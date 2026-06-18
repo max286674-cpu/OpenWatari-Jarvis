@@ -7,6 +7,7 @@ that answers. Supports both plain streaming and OpenAI-style tool-calling.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,20 +26,69 @@ class _EmptyResponse(Exception):
 
 
 class LLMClient:
-    """Thin wrapper over the freellmapi OpenAI-compatible endpoint with model failover."""
+    """OpenAI-compatible client with model failover + per-model provider routing.
+
+    A chain entry is a model name optionally prefixed with a provider: ``groq:<model>`` hits Groq
+    directly (api.groq.com, JARVIS_GROQ_API_KEY) for a fast, consistent primary; an unprefixed name
+    goes to the freellmapi proxy. Failover walks ``settings.llm_chain``; streaming also fails over if
+    no FIRST token arrives within ``llm_first_token_timeout_seconds`` (a slow/hung model -> fast
+    recovery instead of a full-timeout stall)."""
 
     def __init__(self) -> None:
-        self._client = AsyncOpenAI(
-            base_url=settings.freellmapi_base_url,
-            api_key=settings.freellmapi_api_key or "freellmapi",
-            timeout=settings.llm_request_timeout_seconds,
-            max_retries=0,  # we do our own cross-model failover, not in-model retries
+        self._timeout = settings.llm_request_timeout_seconds
+        self._first_token_timeout = max(0.5, settings.llm_first_token_timeout_seconds)
+        self._clients: dict[str, AsyncOpenAI] = {}
+        self._default = self._make_client(
+            settings.freellmapi_base_url, settings.freellmapi_api_key or "freellmapi"
         )
         self._chain = settings.llm_chain
+
+    def _make_client(self, base_url: str, api_key: str) -> AsyncOpenAI:
+        return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=self._timeout, max_retries=0)
+
+    def _resolve(self, entry: str) -> tuple[AsyncOpenAI, str]:
+        """Map a chain entry to (client, model_name), honouring a ``provider:`` prefix."""
+        if entry.startswith("groq:"):
+            client = self._clients.get("groq")
+            if client is None:
+                client = self._clients["groq"] = self._make_client(
+                    settings.groq_base_url, settings.groq_api_key or "missing-groq-key"
+                )
+            return client, entry[len("groq:"):]
+        return self._default, entry
 
     @property
     def chain(self) -> list[str]:
         return self._chain
+
+    async def warmup(self) -> None:
+        """Pre-open a connection to EVERY distinct provider in the chain, so neither the first turn
+        NOR the first failover pays a cold TLS/connection setup — a real, measurable slice of TTFT
+        (fine-tuning.md Item 3 / docs/AUDIT.md). One tiny 1-token ping per distinct client, fired
+        concurrently and best-effort: a provider that's down logs a debug line, never blocks startup.
+        """
+        seen: set[int] = set()
+        pings = []
+        for entry in self._chain:
+            client, model_name = self._resolve(entry)
+            if id(client) in seen:
+                continue
+            seen.add(id(client))
+            pings.append(self._ping(client, model_name))
+        if pings:
+            await asyncio.gather(*pings, return_exceptions=True)
+
+    async def _ping(self, client: AsyncOpenAI, model_name: str) -> None:
+        try:
+            await client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.0,
+                max_tokens=1,
+            )
+            logger.debug(f"warmup: primed '{model_name}'")
+        except Exception as e:  # noqa: BLE001 — warmup is best-effort
+            logger.debug(f"warmup ping for '{model_name}' skipped: {type(e).__name__}")
 
     async def complete(
         self,
@@ -56,22 +106,29 @@ class LLMClient:
         """
         last_err: Exception | None = None
         for model in self._chain:
+            client, model_name = self._resolve(model)
             try:
                 kwargs: dict[str, Any] = {
-                    "model": model,
+                    "model": model_name,
                     "messages": messages,
                     "temperature": temperature,
                 }
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = tool_choice
-                resp = await self._client.chat.completions.create(**kwargs)
+                resp = await client.chat.completions.create(**kwargs)
                 if not getattr(resp, "choices", None):
                     # 200 with no choices = proxy/model error object — fail over, don't crash.
                     raise _EmptyResponse(getattr(resp, "error", None) or "empty choices")
+                msg = resp.choices[0].message
+                # A 200 with a choice but NEITHER content NOR a tool call = the model said nothing
+                # usable (congested free proxies do this intermittently). Treat it as a miss and fail
+                # over to the next model rather than muting Watari with "I didn't catch that".
+                if not (getattr(msg, "content", None) or getattr(msg, "tool_calls", None)):
+                    raise _EmptyResponse("message had neither content nor tool_calls")
                 if model != self._chain[0]:
                     logger.warning(f"LLM primary unavailable; answered via fallback '{model}'")
-                return resp.choices[0].message
+                return msg
             except (*_FAILOVER, _EmptyResponse) as e:
                 last_err = e
                 logger.warning(f"LLM model '{model}' failed ({type(e).__name__}); trying next")
@@ -97,11 +154,12 @@ class LLMClient:
         """
         last_err: Exception | None = None
         for model in self._chain:
+            client, model_name = self._resolve(model)
             tool_acc: dict[int, dict[str, str]] = {}
             got_any = False
             try:
                 kwargs: dict[str, Any] = {
-                    "model": model,
+                    "model": model_name,
                     "messages": messages,
                     "temperature": temperature,
                     "stream": True,
@@ -109,8 +167,22 @@ class LLMClient:
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = tool_choice
-                stream = await self._client.chat.completions.create(**kwargs)
-                async for chunk in stream:
+                stream = await client.chat.completions.create(**kwargs)
+                ait = stream.__aiter__()
+                while True:
+                    try:
+                        # The FIRST token must arrive within the deadline (snappy failover off a
+                        # slow/hung model); once we're streaming, later chunks aren't capped.
+                        chunk = await asyncio.wait_for(
+                            ait.__anext__(),
+                            timeout=None if got_any else self._first_token_timeout,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError as e:
+                        raise _EmptyResponse(
+                            f"no first token within {self._first_token_timeout}s"
+                        ) from e
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
@@ -152,9 +224,10 @@ class LLMClient:
         """Stream text deltas from the first model that responds (no tools)."""
         last_err: Exception | None = None
         for model in self._chain:
+            client, model_name = self._resolve(model)
             try:
-                stream = await self._client.chat.completions.create(
-                    model=model,
+                stream = await client.chat.completions.create(
+                    model=model_name,
                     messages=messages,
                     temperature=temperature,
                     stream=True,

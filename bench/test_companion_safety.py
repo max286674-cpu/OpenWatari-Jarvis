@@ -162,7 +162,7 @@ def test_immediate_ack() -> None:
     check("immediate ack fires on a command", any("Right away" in n for n in notes))
     chatter: list[str] = []
     agent._immediate_ack("haha that's pretty funny", chatter.append)
-    check("no immediate ack on plain chatter", not chatter)
+    check("plain accepted speech gets a brief acknowledgement", any("Yes, sir" in n for n in chatter))
 
 
 async def test_progress_watchdog() -> None:
@@ -198,6 +198,52 @@ async def test_progress_watchdog() -> None:
         settings.tool_slow_warn_seconds, settings.tool_long_update_seconds = old_warn, old_every
 
 
+def test_session_persistence() -> None:
+    """Working thread survives a 'restart' (new agent) via the on-disk snapshot, and an expired
+    snapshot is dropped on load."""
+    old_path = settings.session_persist_path
+    tmp = Path(tempfile.mkdtemp()) / "sess.json"
+    settings.session_persist_path = str(tmp)
+    try:
+        a = JarvisAgent()
+        a._history = [{"role": "user", "content": "remember 42"},
+                      {"role": "assistant", "content": "noted, sir"}]
+        a._trim()  # persists
+        check("snapshot file written on turn", tmp.exists())
+
+        b = JarvisAgent()  # simulates a brain restart
+        check("new agent resumes the thread after restart",
+              b._history == a._history and len(b._history) == 2)
+
+        # An old snapshot (beyond the idle-reset window) must NOT be resurrected.
+        import json as _j
+        import time as _t
+        tmp.write_text(_j.dumps({"saved_at": _t.time() - 4 * 3600,
+                                 "history": [{"role": "user", "content": "stale"}]}), encoding="utf-8")
+        c = JarvisAgent()
+        c._idle_reset_min = 180
+        c._load_session()
+        check("expired snapshot is dropped on load", c._history == [])
+
+        # Manual reset clears the snapshot too.
+        d = JarvisAgent()
+        d._history = [{"role": "user", "content": "x"}]
+        d._trim()
+        d.reset_session("manual")
+        check("reset_session removes the snapshot file", not tmp.exists())
+    finally:
+        settings.session_persist_path = old_path
+
+
+def test_wake_ack_config() -> None:
+    """The wake-word acknowledgement phrase parses into random-choice options; empty disables."""
+    choices = [p.strip() for p in (settings.wake_ack_phrase or "").split("|") if p.strip()]
+    check("wake ack phrase yields >=1 spoken option", len(choices) >= 1)
+    check("wake ack phrases are non-empty", all(choices))
+    check("empty ack phrase disables (no options)",
+          [p for p in "".split("|") if p.strip()] == [])
+
+
 def main() -> None:
     test_affirmation()
     test_begin_turn_supersede()
@@ -205,6 +251,8 @@ def main() -> None:
     test_proactive_durable()
     test_ack_for()
     test_immediate_ack()
+    test_session_persistence()
+    test_wake_ack_config()
     asyncio.run(test_confirm_gate())
     asyncio.run(test_vault_write())
     asyncio.run(test_progress_watchdog())

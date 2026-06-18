@@ -6,6 +6,8 @@
 *.session-journal
 voiceprint.json
 runtime_prefs.json
+jarvis_session.json
+jarvis_tasks.sqlite
 
 # --- Python / tooling ---
 .venv/
@@ -26,13 +28,19 @@ audit/
 backups/
 .jarvis-browser/
 
-# --- Jarvis's private memory (personal data — keep out of git by default) ---
+# --- Private memory & profile (personal data — keep out of git; *.example.md templates ship) ---
 memory/learned/
 memory/journal/
+# Personal profile files: the framework ships *.example.md templates; your filled-in copies stay local.
+memory/about-you.md
+memory/projects.md
+memory/environment.md
+memory/openclaw-fleet.md
 
 # --- Internal working docs (kept local, not published) ---
 fine-tuning.md
 TODO-NOW.md
+IPHONE-WATARI-CHECKLIST.md
 
 # --- OS ---
 .DS_Store
@@ -42,3 +50,6 @@ Thumbs.db
 .speechbrain-ecapa/
 pretrained_models/
 _suite_out.txt
+
+# Original logo/banner exports (clean copies tracked in assets/ + website/public/)
+/OpenWatari*.png

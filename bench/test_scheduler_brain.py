@@ -108,6 +108,48 @@ async def main() -> None:
         except Exception:  # noqa: BLE001 — Windows may still hold the sqlite handle; harmless
             pass
 
+    print("\n[3] daily task briefing builds today's summary and delivers it via proactive emit")
+    captured: dict = {}
+
+    async def fake_emit(msg, urgency, speak):
+        captured.update(msg=msg, urgency=urgency, speak=speak)
+        return "voice"
+
+    import jarvis.brain.tools.notion as nt
+    SCHEDULER.set_briefing_emit(fake_emit)
+
+    seen_scope: dict = {}
+
+    async def fake_tasks(args):
+        seen_scope["scope"] = args.get("scope")
+        return ("1 overdue, sir: rent (2d overdue). 1 due today: call the bank. "
+                "this week: file taxes (Fri). recurring: weekly review.")
+    _orig = nt.notion_tasks
+    nt.notion_tasks = fake_tasks
+    try:
+        await sch._fire_briefing()
+        check("briefing spoken (speak=True)", captured.get("speak") is True)
+        check("briefing opens with a greeting", str(captured.get("msg", "")).startswith("Good morning"))
+        check("briefing includes today's tasks", "call the bank" in captured.get("msg", ""))
+        # #6 — the briefing now covers deadlines + recurring, not today-only: it reads the 'open' scope.
+        check("briefing reads the broad 'open' scope", seen_scope.get("scope") == "open")
+        check("briefing includes upcoming deadlines", "file taxes" in captured.get("msg", ""))
+        check("briefing includes recurring tasks", "weekly review" in captured.get("msg", ""))
+        # the recurring-detection heuristic the reader uses
+        check("recurring detect: 'Weekly review' is recurring", nt._is_recurring("Weekly review"))
+        check("recurring detect: 'Water plants daily'", nt._is_recurring("Water plants daily"))
+        check("recurring detect: a one-off task is NOT recurring", not nt._is_recurring("Call the bank"))
+        # 'nothing due' path
+        async def empty_tasks(args):
+            return "Nothing due, sir — you're clear for today."
+        nt.notion_tasks = empty_tasks
+        captured.clear()
+        await sch._fire_briefing()
+        check("clear-day briefing still sent", "clear" in captured.get("msg", "").lower())
+    finally:
+        nt.notion_tasks = _orig
+        SCHEDULER.set_briefing_emit(None)
+
     print(f"\n=== {passed}/{passed + failed} checks passed ===")
     if failed:
         sys.exit(1)

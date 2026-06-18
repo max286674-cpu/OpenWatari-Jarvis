@@ -1311,6 +1311,7 @@ edge = [
     { name = "textual" },
 ]
 identity = [
+    { name = "pyaudio" },
     { name = "speechbrain" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -1336,6 +1337,7 @@ requires-dist = [
     { name = "playwright", marker = "extra == 'browse'", specifier = ">=1.47" },
     { name = "py-tgcalls", marker = "extra == 'channels'", specifier = ">=2.3" },
     { name = "pyaudio", marker = "extra == 'edge'", specifier = ">=0.2.11" },
+    { name = "pyaudio", marker = "extra == 'identity'", specifier = ">=0.2.11" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

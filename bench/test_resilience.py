@@ -46,7 +46,7 @@ async def test_llm_failover() -> None:
         msg = SimpleNamespace(content="Yerevan, sir.", tool_calls=None)
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
 
-    llm._client.chat.completions.create = fake_create
+    llm._default.chat.completions.create = fake_create
     msg = await llm.complete([{"role": "user", "content": "capital of Armenia?"}])
     check("a fallback model answered after the primary failed", msg.content == "Yerevan, sir.")
 

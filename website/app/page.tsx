@@ -3,13 +3,16 @@ import Link from "next/link";
 export default function Home() {
   return (
     <>
+      <div className="hero">
+        <img src="/banner.png" alt="OpenWatari" />
+      </div>
       <h1>OpenWatari</h1>
       <p className="lead">
         An open-source framework for building your own 24/7, voice-first, multi-device AI
         companion — <strong>Watari</strong>.
       </p>
       <p>
-        <span className="badge">MIT licensed</span>
+        <span className="badge v">MIT licensed</span>
         <span className="badge">Python 3.11+</span>
         <span className="badge">Local-first</span>
         <span className="badge">Self-hosted</span>
@@ -70,21 +73,32 @@ export default function Home() {
       </p>
 
       <h2>Start here</h2>
-      <ul>
-        <li>
-          <Link href="/quickstart">Quick start</Link> — install, run the wizard, talk to it in 5
-          minutes.
-        </li>
-        <li>
-          <Link href="/architecture">Architecture</Link> — the edge/brain split and the memory layers.
-        </li>
-        <li>
-          <Link href="/networking">Networking</Link> — why every device must be on your Tailnet.
-        </li>
-        <li>
-          <Link href="/security">Security</Link> — the enforced safety model before you deploy.
-        </li>
-      </ul>
+      <div className="cards">
+        <div className="card">
+          <h3><Link href="/quickstart">Quick start →</Link></h3>
+          <p>Install, run the wizard, and talk to it in 5 minutes.</p>
+        </div>
+        <div className="card">
+          <h3><Link href="/integrations">Integrations & tools →</Link></h3>
+          <p>Enable every capability — Telegram, Music Room, Notion, Gmail, vault, and more.</p>
+        </div>
+        <div className="card">
+          <h3><Link href="/vault">Obsidian vault & memory →</Link></h3>
+          <p>Connect your notes and switch on read/write long-term memory.</p>
+        </div>
+        <div className="card">
+          <h3><Link href="/personalize">Personalize →</Link></h3>
+          <p>Name it, set how it addresses you, and pick its languages — from config.</p>
+        </div>
+        <div className="card">
+          <h3><Link href="/architecture">Architecture →</Link></h3>
+          <p>The edge/brain split and the six memory layers.</p>
+        </div>
+        <div className="card">
+          <h3><Link href="/security">Security →</Link></h3>
+          <p>The enforced safety model to understand before you deploy.</p>
+        </div>
+      </div>
 
       <div className="footer">
         OpenWatari — a from-scratch, local-first companion framework. Jarvis was the inspiration, not

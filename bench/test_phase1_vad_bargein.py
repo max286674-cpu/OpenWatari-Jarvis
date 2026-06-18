@@ -186,6 +186,52 @@ def test_brain_cancels_on_interruption() -> None:
     check(ok, "in-flight turn cancelled + busy cleared")
 
 
+def test_brain_can_cancel_or_supersede_busy_turn() -> None:
+    print("[6] Brain bridge accepts cancel/new speech while a task is busy")
+    from jarvis.edge.brain_bridge import JarvisBrain
+
+    async def long_turn():
+        await asyncio.sleep(5)
+
+    async def run_cancel() -> bool:
+        brain = JarvisBrain.__new__(JarvisBrain)
+        brain._busy = True
+        spoken: list[str] = []
+
+        async def push(frame, *_a, **_k):
+            spoken.append(getattr(frame, "text", ""))
+
+        brain.push_frame = push  # type: ignore[method-assign]
+        brain._turn_task = asyncio.create_task(long_turn())
+        await brain._start_or_supersede_turn("cancel that")
+        await asyncio.sleep(0.05)
+        return brain._turn_task.cancelled() and brain._busy is False and any("Cancelled" in s for s in spoken)
+
+    async def run_supersede() -> bool:
+        brain = JarvisBrain.__new__(JarvisBrain)
+        brain._busy = True
+        spoken: list[str] = []
+        handled: list[str] = []
+
+        async def push(frame, *_a, **_k):
+            spoken.append(getattr(frame, "text", ""))
+
+        async def handle(text: str):
+            handled.append(text)
+            brain._busy = False
+
+        brain.push_frame = push  # type: ignore[method-assign]
+        brain._handle = handle  # type: ignore[method-assign]
+        old = asyncio.create_task(long_turn())
+        brain._turn_task = old
+        await brain._start_or_supersede_turn("open my notes instead")
+        await asyncio.sleep(0.05)
+        return old.cancelled() and handled == ["open my notes instead"] and any("switching" in s for s in spoken)
+
+    check(asyncio.run(run_cancel()), "spoken cancel stops the busy task")
+    check(asyncio.run(run_supersede()), "new request supersedes the busy task")
+
+
 def main() -> int:
     print("=== Phase 1: VAD + barge-in verification ===\n")
     test_vad_builds()
@@ -193,6 +239,7 @@ def main() -> int:
     test_pipeline_assembles()
     test_device_profile()
     test_brain_cancels_on_interruption()
+    test_brain_can_cancel_or_supersede_busy_turn()
 
     passed = sum(1 for ok, _ in _results if ok)
     total = len(_results)

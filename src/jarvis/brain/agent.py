@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -209,6 +211,8 @@ class JarvisAgent:
         # Smart session reset: clear stale WORKING memory after a long idle gap (durable memory kept).
         self._last_turn_at: datetime | None = None
         self._idle_reset_min = max(0, _s.session_idle_reset_minutes)
+        # Restart-durable working memory: resume the rolling thread after a brain restart/crash.
+        self._load_session()
         # The handler REGISTRY is always complete — every tool can execute. What varies per turn is
         # what we ADVERTISE to the model: a lean CORE surface every turn, plus any lazy group the
         # turn needs (fine-tuning.md Item 2). _core_tools = built-ins + core schemas (the typical
@@ -266,6 +270,11 @@ class JarvisAgent:
         self._history = []
         self._pending_confirm = None
         self._confirm_granted = False
+        # Drop the on-disk snapshot too, so a restart doesn't resurrect the thread we just cleared.
+        try:
+            self._session_path().unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
         if history:
             async def _run() -> None:
                 try:
@@ -311,12 +320,10 @@ class JarvisAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"memory/vault startup check skipped: {e}")
         try:
-            await self._llm.complete(
-                [{"role": "system", "content": "reply with: ready"},
-                 {"role": "user", "content": "ready?"}],
-                temperature=0.0,
-            )
-            logger.info("brain warmup complete")
+            # Prime EVERY distinct provider in the chain (primary + each fallback's client), so the
+            # first turn and the first failover both skip cold-connect latency — not just the primary.
+            await self._llm.warmup()
+            logger.info("brain warmup complete (all providers primed)")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"brain warmup skipped: {e}")
 
@@ -333,6 +340,21 @@ class JarvisAgent:
             )
         # Jarvis briefs the team lead (ispir) only — no per-call agent target by design.
         task = args.get("task", "")
+        if args.get("background"):
+            # Long/open-ended work: fire it in the BACKGROUND and return at once, so the turn isn't
+            # blocked for minutes. The TaskQueue persists progress (status queries read the row) and
+            # announces completion by voice. coro_factory receives the queue's progress callback.
+            from jarvis.brain.tasks import TASKS
+
+            t = TASKS.run(
+                title=task,
+                coro_factory=lambda on_progress: delegate_to_fleet(task, on_progress=on_progress),
+                kind="fleet",
+            )
+            return (
+                f"BACKGROUNDED: handed to the team lead (task id {t.id}). Tell Vazghen you're on it "
+                "and you'll let him know the moment it's done — he can ask 'how's that going?' anytime."
+            )
         try:
             return await delegate_to_fleet(task, on_progress=lambda n: logger.info(f"[fleet] {n}"))
         except FleetUnavailable as e:
@@ -493,6 +515,8 @@ class JarvisAgent:
             return
         if _wants_forced_tool(user_text) or groups_for_text(user_text):
             on_progress("Right away, sir.")
+        else:
+            on_progress("Yes, sir.")
 
     async def respond_stream(self, user_text: str, on_progress: Callable | None = None):
         """Streaming twin of ``respond``: yields spoken sentences AS they generate, so TTS can
@@ -576,6 +600,44 @@ class JarvisAgent:
         max_msgs = self._max_history_turns * 2
         if len(self._history) > max_msgs:
             self._history = self._history[-max_msgs:]
+        self._persist_session()
+
+    # ---- restart-durable working memory --------------------------------------------------
+    def _session_path(self) -> Path:
+        p = settings.session_persist_path
+        return Path(p) if p else Path(__file__).resolve().parents[3] / "jarvis_session.json"
+
+    def _persist_session(self) -> None:
+        """Snapshot the rolling thread to disk so a restart resumes it. Best-effort, never raises."""
+        try:
+            self._session_path().write_text(
+                json.dumps({"saved_at": time.time(), "history": self._history}),
+                encoding="utf-8",
+            )
+        except Exception as e:  # noqa: BLE001 — persistence must never break a turn
+            logger.debug(f"session persist skipped: {e}")
+
+    def _load_session(self) -> None:
+        """Restore the thread on startup unless it's older than the idle-reset window (then drop it)."""
+        path = self._session_path()
+        try:
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            history = data.get("history") or []
+            saved_at = float(data.get("saved_at") or 0)
+            age_min = (time.time() - saved_at) / 60.0
+            if not history:
+                return
+            if self._idle_reset_min and age_min >= self._idle_reset_min:
+                logger.info(f"session snapshot expired ({age_min:.0f}m old) — starting fresh")
+                path.unlink(missing_ok=True)
+                return
+            self._history = history
+            self._last_turn_at = datetime.fromtimestamp(saved_at, USER_TZ)
+            logger.info(f"resumed conversation thread: {len(history)} messages ({age_min:.0f}m old)")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"session restore skipped: {e}")
 
     def _spawn_review(self) -> None:
         """Self-improvement: every N turns, kick off a background pass that learns durable facts into

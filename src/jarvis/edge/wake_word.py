@@ -15,6 +15,7 @@ Placement: directly after ``transport.input()`` (before the echo gate and STT).
 
 from __future__ import annotations
 
+import random
 import time
 
 import numpy as np
@@ -24,6 +25,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     Frame,
     InputAudioRawFrame,
+    TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -74,10 +76,14 @@ class WakeWordGate(FrameProcessor):
         models: list[str],
         threshold: float = 0.5,
         listen_window_s: float = 8.0,
+        suppress_during_tts: bool = True,
+        ack_phrase: str = "",
     ) -> None:
         super().__init__()
         if not models:
             raise ValueError("WakeWordGate needs at least one loadable wake-word model")
+        # Spoken "I heard you" acknowledgement choices (pipe-separated -> random for variety).
+        self._ack_choices = [p.strip() for p in (ack_phrase or "").split("|") if p.strip()]
         import openwakeword
         from openwakeword.model import Model
 
@@ -88,6 +94,8 @@ class WakeWordGate(FrameProcessor):
         self._listen_window_s = listen_window_s
         self._open_until = 0.0
         self._bot_speaking = False
+        self._suppress_during_tts = suppress_during_tts
+        self._resume_after_tts = False
         logger.info(f"wake words active: {self._names} (threshold {threshold})")
 
     @property
@@ -119,14 +127,22 @@ class WakeWordGate(FrameProcessor):
         # Track playback so we can spare the CPU while Watari speaks (see below).
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            if self._suppress_during_tts and self._awake:
+                self._resume_after_tts = True
+                self._open_until = 0.0
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
             # After Watari finishes speaking, keep listening briefly for a follow-up.
-            if self._awake:
+            if self._awake or self._resume_after_tts:
                 self._wake()
+            self._resume_after_tts = False
 
         if isinstance(frame, InputAudioRawFrame):
-            if self._awake:
+            if self._bot_speaking and self._suppress_during_tts:
+                # Open speakers path: never run wake inference or forward mic audio while Watari is
+                # speaking. His own TTS can otherwise re-trigger wake/listening and leak into STT.
+                pass
+            elif self._awake:
                 await self.push_frame(frame, direction)  # forward command audio to STT
             elif self._bot_speaking:
                 # Asleep AND Watari is talking: skip wake inference entirely. Running an ONNX
@@ -138,6 +154,11 @@ class WakeWordGate(FrameProcessor):
                 if hit:
                     self._wake()
                     logger.info(f"wake: '{hit}' detected — listening")
+                    if self._ack_choices:
+                        # Speak a short acknowledgement downstream so Vazghen hears that the wake
+                        # word landed and Watari is now listening — before he says the command.
+                        ack = random.choice(self._ack_choices)
+                        await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
                 # asleep: swallow audio so the STT never hears ambient speech
             return
 

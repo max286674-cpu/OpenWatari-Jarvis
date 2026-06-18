@@ -1,13 +1,13 @@
-# Jarvis — Voice Recognition Read-Aloud Script (≈ 3 minutes)
+# Watari — Voice Recognition Read-Aloud Script (≈ 3 minutes)
 
 **Purpose:** read this aloud once to (a) enroll your voiceprint for speaker biometrics and
 (b) calibrate speech-to-text. Read at a natural, unhurried pace — about 140 words per minute.
-Sit where you normally talk to Jarvis, with your usual mic. Don't perform; speak the way you
+Sit where you normally talk to Watari, with your usual mic. Don't perform; speak the way you
 actually speak. The script is ~430 words and is built to cover a wide range of sounds, numbers,
 names, and intonations so the voiceprint is robust.
 
 **How to use it:**
-1. `uv sync --extra identity` (one-time, installs the ECAPA backend).
+1. `uv sync --extra identity` (one-time, installs the ECAPA backend and microphone capture).
 2. `uv run python bench/enroll_voice.py --script "to-read-script.md"` and read each prompted
    block when it says *recording*. (Plain `enroll_voice.py` still works for a quick 12-second
    enrollment; the script gives a stronger profile.)
@@ -49,7 +49,7 @@ article and read me just the headline?
 Now a few different tones. A question: are you absolutely sure about that? … A command: stop,
 wait, and start over. … Surprise: that's incredible, I did not expect that at all! … Calm and
 slow: everything is fine, take your time, there's no rush. … That's the whole script — thank
-you, Jarvis.
+you, Watari.
 
 ---
 

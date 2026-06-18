@@ -98,6 +98,9 @@ CONFIRM_TIER = {
     "write_source", "git_commit", "git_push", "git_revert",
     # Notion writes modify Vazghen's shared docs.
     "notion_append", "notion_comment", "notion_create_page",
+    # Deleting a task is destructive (archives the row) — confirm. Creating/updating/completing a
+    # task is frictionless by design (capture-by-voice), so those are intentionally NOT gated.
+    "notion_delete_task",
 }
 
 _PRONOUN_ONLY = {"it", "that", "this", "them", "those", "these", "him", "her", "they"}

@@ -41,12 +41,32 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore", env_prefix="JARVIS_"
     )
 
-    # --- Provider selection (the three knobs that define a deployment) -------------------
-    # Whisper (local faster-whisper) by default: understands ALL six of Vazghen's languages
-    # (English/French/German/Armenian/Russian/Ukrainian) via auto-detect, free + offline. Deepgram
-    # is faster but can't do Armenian/Ukrainian — switch with JARVIS_STT_PROVIDER=deepgram.
-    stt_provider: STTProvider = STTProvider.whisper
+    # --- Identity (make the SAME code YOUR assistant — the framework personalization layer) ----
+    # The persona file (personality/<persona_file>) is a TEMPLATE: build_system_prompt() fills these
+    # in, so a new user personalises their assistant entirely from .env / the setup wizard, without
+    # editing any prompt or code. Defaults are intentionally generic for the framework.
+    assistant_name: str = "Watari"        # what the assistant calls itself
+    user_name: str = ""                   # your name (blank = he won't use a name)
+    # How he addresses you: an honorific ("sir", "ma'am", "boss"), your name, or "" for none.
+    user_address: str = ""
+    understood_languages: str = "English"  # comma-list of languages he can UNDERSTAND (STT side)
+    reply_language: str = "English"        # the single language he always REPLIES in
+    persona_file: str = "jarvis.md"        # which file in personality/ holds the persona template
+
+    # --- Provider selection (the knobs that define a deployment) -------------------------
+    # Cloud is the PRIMARY for quality/latency; if it can't be built (missing key, engine not
+    # installed, construction error) we automatically fall back to the LOCAL engine so the voice
+    # pipeline always comes up (see edge/stt.py + edge/tts.py, voice_local_fallback below).
+    #   * STT: Deepgram (cloud) -> Whisper (local). Deepgram can't do Armenian/Ukrainian — if you
+    #     speak those TO Watari, set JARVIS_STT_PROVIDER=whisper (local auto-detects all six).
+    #   * TTS: ElevenLabs (cloud) -> Piper (local).
+    stt_provider: STTProvider = STTProvider.deepgram
     tts_provider: TTSProvider = TTSProvider.elevenlabs
+    # When a CLOUD provider above can't be constructed, fall back to its local counterpart instead of
+    # failing the whole pipeline. The local fallback engines need the `local-voice` extra installed.
+    voice_local_fallback: bool = True
+    tts_fallback_provider: TTSProvider = TTSProvider.piper
+    stt_fallback_provider: STTProvider = STTProvider.whisper
     llm_backend: LLMBackend = LLMBackend.freellmapi   # Jarvis's OWN reasoning model
 
     # --- Wake word ----------------------------------------------------------------------
@@ -57,6 +77,10 @@ class Settings(BaseSettings):
     wake_words: str = "jarvis,alfred,robbin,assist,time to work,wake up,six-one-nine"
     wake_word_threshold: float = 0.5
     wake_listen_window_s: float = 8.0     # how long the mic stays open after a wake/reply
+    # Spoken acknowledgement the instant a wake word fires, so you KNOW Watari heard you and is
+    # actively listening — before you say the command. Pipe-separated choices are picked at random
+    # for natural variety; set empty ("") to disable.
+    wake_ack_phrase: str = "Yes, sir?|I'm listening, sir.|Sir?|Go ahead, sir."
     porcupine_access_key: str | None = None  # Picovoice key, for the custom-phrase engine
     half_duplex: bool = True              # mute mic while Jarvis speaks (no self-hearing);
     #                                       set false only with AEC (Krisp) or headphones
@@ -148,14 +172,17 @@ class Settings(BaseSettings):
     # fleet touches shared VPS infra, so it stays a deliberate opt-in. Set JARVIS_FLEET_AUTHORIZED=
     # true in .env to arm it for a 24/7 deployment. (Jarvis still always re-voices results as himself.)
     fleet_authorized: bool = False
-    openclaw_gateway_url: str = "http://100.107.141.83:3200"
+    # The fleet is a SEPARATE, optional system (your own OpenClaw deployment). It ships fully
+    # disabled with NO host baked in — set these in .env only if you run a gateway. Blank = the
+    # delegate_to_fleet tool simply tells you the bridge isn't configured.
+    openclaw_gateway_url: str = ""        # e.g. http://<your-gateway-host>:3200
     openclaw_token: str | None = None
     openclaw_remote_token: str | None = None
     openclaw_gateway_password: str | None = None
     openclaw_router_agent: str = "ispir"
     openclaw_request_timeout_seconds: int = 30
-    openclaw_cli_path: str = "/home/openclaw/.npm-global/bin/openclaw"
-    openclaw_cli_ssh_target: str | None = "openclaw@100.107.141.83"
+    openclaw_cli_path: str = "openclaw"   # path to the OpenClaw CLI on the gateway host
+    openclaw_cli_ssh_target: str | None = None  # e.g. user@your-gateway-host (for the CLI fallback)
 
     # freellmapi proxy — Jarvis's OWN reasoning LLM (runs on the VPS, tunneled to localhost).
     freellmapi_base_url: str = "http://localhost:3001/v1"
@@ -166,7 +193,24 @@ class Settings(BaseSettings):
     # 70b-versatile is the first fallback for quality escalation when 8b errors/rate-limits.
     llm_primary_model: str = "llama-3.1-8b-instant"
     llm_fallback_models: str = "llama-3.3-70b-versatile,groq/compound,mistral-small-latest,openai/gpt-oss-20b:free"
-    llm_request_timeout_seconds: int = 60
+    # Per-model attempt cap. A real-time voice turn must never block a full minute on one hung
+    # model, so this is tight: a stalled attempt is abandoned and the chain fails over to the next
+    # model within this window. The fast primary (Groq) normally answers in 1-2s, so this only
+    # bites on a genuine hang. Raise it if you make a heavy non-voice batch call.
+    llm_request_timeout_seconds: int = 20
+    # Latency tuning (see docs/AUDIT.md). Any chain entry may be prefixed with a provider:
+    #   * no prefix          -> the freellmapi proxy (freellmapi_base_url)
+    #   * "groq:<model>"     -> Groq DIRECTLY (api.groq.com) with JARVIS_GROQ_API_KEY — TTFT ~0.3s,
+    #                           very consistent; the fastest reliable primary. e.g.
+    #                           JARVIS_LLM_PRIMARY_MODEL=groq:llama-3.3-70b-versatile
+    groq_api_key: str | None = None
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    # If no FIRST token arrives within this many seconds, cancel and fail over to the next model —
+    # turns a slow/hung primary into a fast recovery instead of a full-timeout stall.
+    llm_first_token_timeout_seconds: float = 4.0
+    # Optional two-tier: a fast model tried FIRST (prepended to the chain) for snappier first words;
+    # the normal chain stays as the quality fallback. Blank = single-tier. e.g. "llama-3.1-8b-instant".
+    llm_fast_model: str | None = None
 
     # --- Channels & knowledge -----------------------------------------------------------
     telegram_bot_token: str | None = None
@@ -197,12 +241,22 @@ class Settings(BaseSettings):
     tool_slow_warn_seconds: float = 8.0
     tool_long_update_seconds: float = 120.0
 
+    # --- Background task queue (status-keeping) -------------------------------------------------
+    # Long work (a fleet delegation) runs in the background and is tracked here so Watari can answer
+    # "how's that going?" and announce completion by voice. SQLite so it survives a 24/7 restart.
+    tasks_db_path: str | None = None     # blank = <repo>/jarvis_tasks.sqlite
+
     # --- Session hygiene: smart reset ----------------------------------------------------------
     # When the gap since the last turn exceeds this many minutes, the brain SOFT-RESETS working
     # memory: it journals the prior conversation (L2) and clears the rolling history, so a new
     # conversation hours later doesn't drag stale context/anaphora ("set it back" pointing at a
     # 'it' from this morning). Durable memory (L1/L2/L3) is untouched. 0 disables.
     session_idle_reset_minutes: int = 180
+    # Restart-durable working memory: snapshot the rolling conversation thread to disk each turn so a
+    # brain restart/crash resumes mid-conversation instead of starting blank. Durable layers (L1/L2/
+    # L3) already persist; this covers the short-term thread. A snapshot older than the idle-reset
+    # window is treated as expired (journalled + dropped) on load. Blank = <repo>/jarvis_session.json.
+    session_persist_path: str | None = None
 
     # --- Phase 9: persistent memory (learned facts L1 + daily journal L2) ----------------
     # Markdown-backed long-term memory under memory/learned and memory/journal. The vault
@@ -267,6 +321,14 @@ class Settings(BaseSettings):
     # create; writes are confirm-gated. Degrades until set.
     notion_token: str | None = None
     notion_version: str = "2022-06-28"
+    # Your Notion TASKS database (the dashboard). Share that database with the "Personal Assistant"
+    # integration, then set its id here so Watari can read what's due today / overdue / upcoming and
+    # brief you by voice. The id is the 32-hex chunk in the database URL. Degrades until set.
+    notion_tasks_db_id: str | None = None
+    # Daily proactive VOICE briefing of today's tasks/deadlines (HH:MM, user timezone). Speaks to a
+    # listening device, else sends a Telegram voice note, else an ntfy push. Only scheduled when a
+    # tasks DB is configured. Blank ("") disables the automatic briefing (on-demand still works).
+    task_briefing_time: str = "08:30"
 
     # --- System control (files / processes / PowerShell) --------------------------------
     # Jarvis can manage the local machine: create/delete files & folders, list/kill/start
@@ -364,8 +426,11 @@ class Settings(BaseSettings):
 
     @property
     def llm_chain(self) -> list[str]:
-        """Primary model first, then ordered fallbacks (deduped, blanks dropped)."""
-        chain = [self.llm_primary_model] + [
+        """Optional fast tier first, then primary, then ordered fallbacks (deduped, blanks dropped)."""
+        chain = []
+        if self.llm_fast_model and self.llm_fast_model.strip():
+            chain.append(self.llm_fast_model.strip())
+        chain += [self.llm_primary_model] + [
             m.strip() for m in self.llm_fallback_models.split(",") if m.strip()
         ]
         seen: set[str] = set()

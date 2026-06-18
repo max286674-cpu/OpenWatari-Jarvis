@@ -1,74 +1,28 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import "./globals.css";
+import Sidebar from "./_nav";
 
 export const metadata: Metadata = {
   title: "OpenWatari — build your own voice-first AI companion",
   description:
-    "OpenWatari is an open-source framework for building your own 24/7, voice-first, multi-device AI companion (Watari). Local-first, self-hosted.",
+    "OpenWatari is an open-source framework for building your own 24/7, voice-first, multi-device AI companion (Watari). Local-first, self-hosted, no GPU required.",
+  icons: { icon: "/logo.png" },
+  openGraph: {
+    title: "OpenWatari",
+    description:
+      "Build your own 24/7, voice-first, multi-device AI companion. Local-first, self-hosted.",
+    images: ["/banner.png"],
+    type: "website",
+  },
+  twitter: { card: "summary_large_image", images: ["/banner.png"] },
 };
-
-const NAV: { head: string; links: [string, string][] }[] = [
-  {
-    head: "Start",
-    links: [
-      ["Overview", "/"],
-      ["Quick start", "/quickstart"],
-      ["Setup & keys", "/setup"],
-    ],
-  },
-  {
-    head: "Concepts",
-    links: [
-      ["Architecture", "/architecture"],
-      ["Networking (Tailnet)", "/networking"],
-      ["Devices", "/devices"],
-      ["Memory", "/architecture#memory"],
-    ],
-  },
-  {
-    head: "Operate",
-    links: [
-      ["Configuration", "/configuration"],
-      ["Production readiness", "/production"],
-      ["Security", "/security"],
-      ["License", "/license"],
-    ],
-  },
-];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
         <div className="layout">
-          <aside className="sidebar">
-            <div className="brand">
-              Open<span>Watari</span>
-            </div>
-            <div className="tag">Build your own Watari.</div>
-            {NAV.map((group) => (
-              <div key={group.head}>
-                <div className="navhead">{group.head}</div>
-                <nav>
-                  {group.links.map(([label, href]) => (
-                    <Link key={href + label} href={href}>
-                      {label}
-                    </Link>
-                  ))}
-                </nav>
-              </div>
-            ))}
-            <div className="navhead">Links</div>
-            <nav>
-              <a href="https://github.com/iamvazghen/OpenWatari" target="_blank" rel="noreferrer">
-                GitHub ↗
-              </a>
-              <a href="https://tailscale.com/" target="_blank" rel="noreferrer">
-                Tailscale ↗
-              </a>
-            </nav>
-          </aside>
+          <Sidebar />
           <main className="content">
             <div className="inner">{children}</div>
           </main>

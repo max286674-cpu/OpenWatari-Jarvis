@@ -105,7 +105,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("pc-agent stopped")
+    from jarvis.edge._supervisor import run_supervised
+
+    run_supervised("pc_agent", main)

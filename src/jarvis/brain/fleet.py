@@ -283,6 +283,16 @@ FLEET_TOOL_SCHEMA = {
                         "an agent."
                     ),
                 },
+                "background": {
+                    "type": "boolean",
+                    "description": (
+                        "Set TRUE for long or open-ended work (a website rebuild, deep multi-step "
+                        "research, a big coding job) so you hand it off and keep talking: you get a "
+                        "task id immediately, can answer 'how's that going?' later, and Watari "
+                        "announces completion by voice. Leave FALSE (default) for a quick consult "
+                        "where you wait a few seconds for the answer to relay right now."
+                    ),
+                },
             },
             "required": ["task"],
         },

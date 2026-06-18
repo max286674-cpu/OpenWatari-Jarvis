@@ -103,9 +103,12 @@ def main() -> None:
     # Updated 2026-06-14: bench/pick_model.py measures real time-to-first-SENTENCE under the full
     # agent load. llama-3.3-70b-versatile won (~1.5s, smart, reliable streaming+tools). The old
     # llama-3.1-8b-instant was fast-but-dumb ("Joe not Jarvis") — it must NOT be the primary.
+    # A chain entry may carry a provider prefix (e.g. "groq:llama-3.3-70b-versatile" routes the same
+    # 70b winner directly through Groq for ~0.3s TTFT) — strip it before comparing the model name.
+    primary_model = settings.llm_primary_model.split(":", 1)[-1]
     check("primary is the benchmarked voice winner (llama-3.3-70b-versatile)",
-          settings.llm_primary_model == "llama-3.3-70b-versatile", settings.llm_primary_model)
-    check("the dumb 8b-instant is not the primary", settings.llm_primary_model != "llama-3.1-8b-instant")
+          primary_model == "llama-3.3-70b-versatile", settings.llm_primary_model)
+    check("the dumb 8b-instant is not the primary", primary_model != "llama-3.1-8b-instant")
     check("primary is first in the chain", settings.llm_chain[0] == settings.llm_primary_model)
     check("chain is provider-diverse (>=2 distinct providers as fallbacks)",
           len(settings.llm_chain) >= 3, str(settings.llm_chain))

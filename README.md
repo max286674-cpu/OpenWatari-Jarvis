@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/openwatari-banner.png" alt="OpenWatari" width="100%">
+
 # OpenWatari
 
 **An open-source framework for building your own 24/7, voice-first, multi-device AI companion — "Watari".**

@@ -28,6 +28,7 @@ from jarvis.brain.tools import (
     skills,
     smarthome,
     system,
+    tasks,
     telegram,
     utility,
     vault,
@@ -37,7 +38,7 @@ from jarvis.brain.tools import (
 
 _MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, browser,
             protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
-            coding, skills, notion]
+            coding, skills, notion, tasks]
 
 Handler = Callable[[dict], Awaitable[str]]
 
@@ -60,7 +61,9 @@ LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
                "pull request", "diff", "the suite"),
     "office": ("email", "e-mail", "mail", "inbox", "gmail", "draft", "calendar", "schedule",
                "event", "meeting", "appointment", "agenda", "notion", "document", "page",
-               "task list", "my tasks"),
+               "task list", "my tasks", "task", "tasks", "deadline", "due", "to-do", "todo",
+               "to do", "on my plate", "what's due", "whats due", "what do i need to do",
+               "what needs", "dashboard", "overdue"),
     "home": ("smart home", "home assistant", "light", "lamp", "thermostat", "heating", "lock",
              "unlock", "music room", "voice chat", "stream music", "play in the room"),
 }

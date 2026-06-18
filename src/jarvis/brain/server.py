@@ -176,7 +176,12 @@ class BrainServer:
             return None, "I didn't catch anything, sir.", ""
 
         async with self._lock:
-            reply = await self._agent.respond(text)
+            try:
+                reply = await self._agent.respond(text)
+            except Exception as e:  # noqa: BLE001 — never 500 the phone; always speak something
+                logger.warning(f"/talk turn failed: {type(e).__name__}: {e}")
+                reply = ("I'm having trouble reaching my reasoning right now, sir — "
+                         "give me a moment and try again.")
         audio = await synthesize(reply)
         return audio, reply, text
 
@@ -361,6 +366,12 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
     SCHEDULER.start(on_speak=server.speak_reminder)
     logger.info("reminder scheduler started (brain owns the jobstore)")
 
+    # Daily proactive VOICE briefing of today's Notion tasks/deadlines (only when a tasks DB is set).
+    # Delivery uses the richest proactive path: speak to a listening device, else Telegram voice
+    # note, else ntfy push. Wired after _tg_bridge below via set_briefing_emit.
+    if settings.notion_tasks_db_id and settings.task_briefing_time:
+        SCHEDULER.schedule_daily_briefing(settings.task_briefing_time)
+
     # P1 #6 — memory hygiene. A daily job dedups near-identical learned facts, caps the active set,
     # and rotates old journals so 24/7 accumulation doesn't dull recall or re-bloat the prompt.
     try:
@@ -393,6 +404,27 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
 
     tg_bridge = TelegramBridge(_telegram_respond, settings.telegram_default_chat)
     server._tg_bridge = tg_bridge   # proactive VOICE to the phone (proactive_emit phone fallback)
+    # Now that proactive delivery (incl. the Telegram voice-note fallback) is ready, let the daily
+    # task briefing use it: speak to a listening device, else voice note, else push.
+    SCHEDULER.set_briefing_emit(server.proactive_emit)
+
+    # Background task queue: when a long fleet job finishes, announce it by voice (with how long it
+    # took + complexity + the result), via the same proactive channel — voice, else phone voice note.
+    from jarvis.brain.tasks import TASKS
+
+    async def _announce_task(t) -> None:
+        if t.status == "done":
+            dur = t.meta.get("duration", t.human_elapsed())
+            grade = t.meta.get("complexity", "")
+            head = f"Done, sir — '{t.title}' finished in {dur}"
+            head += f" ({grade})." if grade else "."
+            body = (t.result or "").strip()
+            msg = head + (" " + body[:600] if body else "")
+        else:
+            msg = f"Sir, '{t.title}' didn't complete after {t.human_elapsed()}: {(t.result or '')[:200]}"
+        await server.proactive_emit(msg, 0.7, True)
+
+    TASKS.on_complete = _announce_task
     if tg_bridge.enabled:
         asyncio.create_task(tg_bridge.run())
         logger.info("telegram bridge started — message the bot to reach Watari anywhere, 24/7")

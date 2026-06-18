@@ -65,6 +65,7 @@ browse = [
 ]
 # Phase 5 speaker biometrics: SpeechBrain ECAPA voiceprint (pulls torch — opt-in only).
 identity = [
+    "pyaudio>=0.2.11",          # mic capture for bench/enroll_voice.py
     "speechbrain>=1.0",
     "torch>=2.2",
     "torchaudio>=2.2",

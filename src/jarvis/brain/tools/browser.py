@@ -15,6 +15,7 @@ chromium``). If it's missing the tool says so instead of crashing.
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -75,6 +76,17 @@ _BROWSER = _Browser()
 
 
 async def browser(args: dict) -> str:
+    timeout_s = 25.0
+    try:
+        return await asyncio.wait_for(_browser_action(args), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return (
+            "The browser action timed out after 25 seconds, sir. I stopped trying so I don't get "
+            "stuck in a loop. You may need to do that one manually or give me a simpler browser step."
+        )
+
+
+async def _browser_action(args: dict) -> str:
     if not settings.browser_tools_enabled:
         return "The browser is disabled, sir (JARVIS_BROWSER_TOOLS_ENABLED)."
     action = (args.get("action") or "").strip().lower()
@@ -87,6 +99,7 @@ async def browser(args: dict) -> str:
         )
     try:
         if action != "close":
+            _neutralize_speechbrain_lazy_modules()
             await _BROWSER._ensure()
         page = _BROWSER.page
 
@@ -162,7 +175,28 @@ async def browser(args: dict) -> str:
 
         return f"I don't know the browser action '{action}', sir."
     except Exception as e:  # noqa: BLE001
+        _neutralize_speechbrain_lazy_modules()
         return tool_error("browser", e)
+
+
+def _neutralize_speechbrain_lazy_modules() -> None:
+    """Avoid Playwright error reporting tripping over SpeechBrain's optional lazy k2 module.
+
+    Playwright calls inspect.stack() on API errors. inspect.getmodule() scans sys.modules and calls
+    hasattr(module, "__file__"); SpeechBrain's LazyModule for k2 raises ImportError there if k2 is
+    not installed. Giving that lazy module a harmless __file__ prevents an unrelated optional
+    SpeechBrain dependency from masking the real browser error.
+    """
+    for name, mod in list(sys.modules.items()):
+        if not name.startswith("speechbrain.integrations.k2_fsa") or mod is None:
+            continue
+        try:
+            object.__setattr__(mod, "__file__", "")
+        except Exception:
+            try:
+                setattr(mod, "__file__", "")
+            except Exception:
+                pass
 
 
 def _locator(page, args: dict):

@@ -27,6 +27,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO_ROOT / ".env.example"
 OUT = REPO_ROOT / ".env"
 PERSONA = REPO_ROOT / "personality" / "jarvis.md"
+PERSONA_EXAMPLE = REPO_ROOT / "personality" / "persona.example.md"
+MEMORY_DIR = REPO_ROOT / "memory"
+# (example template -> user's private file) seeded on first run so the user edits private copies,
+# not the shipped templates. These targets are gitignored.
+PROFILE_SEEDS = [
+    ("about-you.example.md", "about-you.md"),
+    ("projects.example.md", "projects.md"),
+    ("environment.example.md", "environment.md"),
+]
 
 # Wake phrases openWakeWord ships pre-trained (free, CPU). Anything else needs Porcupine + a
 # Picovoice key — we surface that rather than silently accept an unsupported phrase.
@@ -94,6 +103,14 @@ except ImportError:  # bare install — no rich yet
         return default if not val else val.startswith("y")
 
 
+def seed_if_missing(src: Path, dst: Path) -> bool:
+    """Copy a shipped template to the user's private file only if it doesn't exist yet. Never clobbers."""
+    if dst.exists() or not src.exists():
+        return False
+    shutil.copy2(src, dst)
+    return True
+
+
 def mask(value: str) -> str:
     if not value:
         return "(blank)"
@@ -147,10 +164,27 @@ def run() -> None:
     ov: dict[str, str] = {}
 
     # 1) Identity ---------------------------------------------------------------------------------
-    banner("1 · Identity", "What your assistant is called and the phrase that wakes it.")
-    name = ask("Display name for your assistant", default="Jarvis")
-    say(f"  The full character lives in [bold]personality/jarvis.md[/bold] — edit it to shape "
-        f"{name}'s voice and rules. (The wizard leaves that file untouched.)")
+    banner("1 · Identity", "Make it YOUR assistant — these fill the persona template, no code edits.")
+    name = ask("What should your assistant call itself?", default="Watari")
+    ov["JARVIS_ASSISTANT_NAME"] = name
+    ov["JARVIS_USER_NAME"] = ask("Your name (blank = it won't use a name)", default="") or ""
+    ov["JARVIS_USER_ADDRESS"] = ask(
+        'How should it address you? ("sir", "boss", your name, or blank)', default="") or ""
+    ov["JARVIS_UNDERSTOOD_LANGUAGES"] = ask(
+        "Languages it should UNDERSTAND (comma-separated)", default="English")
+    ov["JARVIS_REPLY_LANGUAGE"] = ask("Language it should always REPLY in", default="English")
+    # Ensure a persona template exists (fresh clone → copy the generic example), then seed the user's
+    # PRIVATE profile files from their examples so they edit private copies, not the shipped templates.
+    if seed_if_missing(PERSONA_EXAMPLE, PERSONA):
+        say(f"  Created [bold]personality/jarvis.md[/bold] from the template — edit it to shape "
+            f"{name}'s voice. The identity above fills its tokens automatically.")
+    else:
+        say(f"  Persona at [bold]personality/jarvis.md[/bold] — edit the prose to shape {name}'s "
+            "voice; the identity above fills its tokens automatically.")
+    seeded = [dst for src, dst in PROFILE_SEEDS if seed_if_missing(MEMORY_DIR / src, MEMORY_DIR / dst)]
+    if seeded:
+        say("  Seeded your private profile files (fill them with your details): "
+            + ", ".join(f"memory/{p}" for p in seeded))
     say(f"  Pre-trained wake phrases (free, on-device): {', '.join(OPENWW_PHRASES)}.")
     say("  Custom phrases (e.g. your assistant's own name) need a Picovoice Porcupine key — "
         "set JARVIS_WAKE_WORD_ENGINE=porcupine + JARVIS_PORCUPINE_ACCESS_KEY later.")

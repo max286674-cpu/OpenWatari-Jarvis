@@ -56,6 +56,13 @@ async def http_post(url: str, **kw: Any) -> httpx.Response:
         return r
 
 
+async def http_patch(url: str, **kw: Any) -> httpx.Response:
+    async with _client() as c:
+        r = await c.patch(url, **kw)
+        r.raise_for_status()
+        return r
+
+
 def clip(text: str, limit: int) -> str:
     text = (text or "").strip()
     return text if len(text) <= limit else text[:limit].rstrip() + " …(truncated)"

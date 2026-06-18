@@ -12,6 +12,7 @@ silent during a longer turn.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -24,12 +25,18 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from jarvis.brain.agent import JarvisAgent
 
+_CANCEL_RE = re.compile(
+    r"\b(stop|cancel|abort|abandon|never mind|nevermind|forget it|leave it|drop it|"
+    r"shut up|pause|give up)\b",
+    re.IGNORECASE,
+)
+
 
 class JarvisBrain(FrameProcessor):
     def __init__(self, agent: JarvisAgent | None = None) -> None:
         super().__init__()
         self._agent = agent or JarvisAgent()
-        self._busy = False  # ignore overlapping transcripts while a turn is in flight
+        self._busy = False
         self._turn_task: asyncio.Task | None = None
 
     async def warmup(self) -> None:
@@ -65,11 +72,31 @@ class JarvisBrain(FrameProcessor):
 
         if isinstance(frame, TranscriptionFrame):
             text = (getattr(frame, "text", "") or "").strip()
-            if text and not self._busy:
-                self._turn_task = asyncio.create_task(self._handle(text))
+            if text:
+                await self._start_or_supersede_turn(text)
             return  # consume the transcription
 
         await self.push_frame(frame, direction)
+
+    async def _start_or_supersede_turn(self, text: str) -> None:
+        """Start a turn, or let Vazghen interrupt a long/stuck turn with a new instruction.
+
+        The old behaviour ignored transcripts while a tool was running, which made a stuck browser
+        action feel like a loop. Once speech reaches the brain it is already wake-gated and
+        speaker-verified, so a new utterance from Vazghen should be able to cancel or replace the
+        current task.
+        """
+        if self._turn_task and not self._turn_task.done():
+            if _CANCEL_RE.search(text):
+                logger.info(f"heard while busy: {text!r} — cancelling current task")
+                self._turn_task.cancel()
+                await self.push_frame(TTSSpeakFrame("Cancelled, sir."))
+                self._busy = False
+                return
+            logger.info(f"heard while busy: {text!r} — superseding current task")
+            self._turn_task.cancel()
+            await self.push_frame(TTSSpeakFrame("Stopping that and switching, sir."))
+        self._turn_task = asyncio.create_task(self._handle(text))
 
     async def _handle(self, text: str) -> None:
         self._busy = True
@@ -89,6 +116,9 @@ class JarvisBrain(FrameProcessor):
                     await self.push_frame(TTSSpeakFrame(sentence))
             if full:
                 logger.info(f"reply: {' '.join(full)!r}")
+        except asyncio.CancelledError:
+            logger.info("brain turn cancelled")
+            raise
         except Exception:  # noqa: BLE001
             logger.exception("brain turn failed")
             await self.push_frame(TTSSpeakFrame("Sorry sir, I hit an error handling that."))

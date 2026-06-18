@@ -65,16 +65,15 @@ def _auto_whisper(model: str):
     return _AutoDetectWhisper(model=model, language=None)
 
 
-def build_stt():
-    """Construct the configured STT service (raises if a required key is missing)."""
-    if settings.stt_provider == STTProvider.whisper:
-        logger.info(
-            f"STT: Whisper local (multilingual AUTO-DETECT, model={settings.whisper_model}) "
-            "— understands EN/FR/DE/HY/RU/UK"
-        )
-        return _auto_whisper(settings.whisper_model)
+def _build_whisper():
+    logger.info(
+        f"STT: Whisper local (multilingual AUTO-DETECT, model={settings.whisper_model}) "
+        "— understands EN/FR/DE/HY/RU/UK"
+    )
+    return _auto_whisper(settings.whisper_model)
 
-    # Deepgram (default).
+
+def _build_deepgram():
     if not settings.deepgram_api_key:
         raise RuntimeError("JARVIS_DEEPGRAM_API_KEY is not set (.env)")
     from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
@@ -89,3 +88,29 @@ def build_stt():
         "— understands EN/FR/DE/RU; for Armenian/Ukrainian set STT provider to 'whisper'"
     )
     return DeepgramSTTService(api_key=settings.deepgram_api_key, live_options=opts)
+
+
+# provider -> builder. Moonshine isn't wired yet, so it maps to the local Whisper engine.
+_BUILDERS = {
+    STTProvider.deepgram: _build_deepgram,
+    STTProvider.whisper: _build_whisper,
+    STTProvider.moonshine: _build_whisper,
+}
+_CLOUD = {STTProvider.deepgram}
+
+
+def build_stt():
+    """Construct the configured STT service (honours ``JARVIS_STT_PROVIDER``).
+
+    Cloud (Deepgram) is the default for latency/accuracy; if it can't be built (missing key, etc.)
+    and ``voice_local_fallback`` is on, fall back to local Whisper so the pipeline always comes up.
+    """
+    prov = settings.stt_provider
+    try:
+        return _BUILDERS.get(prov, _build_deepgram)()
+    except Exception as e:  # noqa: BLE001
+        fb = settings.stt_fallback_provider
+        if prov in _CLOUD and settings.voice_local_fallback and fb not in _CLOUD:
+            logger.warning(f"cloud STT '{prov.value}' unavailable ({e}); falling back to local '{fb.value}'")
+            return _BUILDERS[fb]()
+        raise
