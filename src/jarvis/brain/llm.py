@@ -8,6 +8,7 @@ that answers. Supports both plain streaming and OpenAI-style tool-calling.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -19,6 +20,23 @@ from jarvis.config import settings
 
 # Errors that mean "this model is unavailable right now — try the next one".
 _FAILOVER = (RateLimitError, APITimeoutError, APIError)
+
+# A weaker model in the chain sometimes emits a tool call AS TEXT — '<function name="...">',
+# '<tool_code ...>', '<|python_tag|>…', 'print(default_api.x(...))' — instead of using the native
+# tool-calling API. If we accept that as a final answer the TOOL NEVER RUNS and the raw tag gets
+# spoken aloud. We detect it (in the message lead) and treat it as an empty response, so the chain
+# fails over to a model that calls tools natively. Behavioral suite found this; it was the single
+# biggest correctness drag (scrape/telegram/calendar/email all silently no-op'd).
+_TEXTUAL_TOOLCALL_RE = re.compile(
+    r"<\s*(function|tool_call|tool_code|tool_response|invoke)\b|</\s*function\b|"
+    r"\bdefault_api\s*\.\w|print\s*\(\s*default_api|<\|\s*(python_tag|tool)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_textual_toolcall(text: str | None) -> bool:
+    t = (text or "").lstrip()
+    return bool(t) and bool(_TEXTUAL_TOOLCALL_RE.search(t[:160]))
 
 
 class _EmptyResponse(Exception):
@@ -126,6 +144,12 @@ class LLMClient:
                 # over to the next model rather than muting Watari with "I didn't catch that".
                 if not (getattr(msg, "content", None) or getattr(msg, "tool_calls", None)):
                     raise _EmptyResponse("message had neither content nor tool_calls")
+                # A textual tool-call (not a native one) means the tool wouldn't run — fail over to a
+                # model that calls tools properly rather than speak the raw tag.
+                if not getattr(msg, "tool_calls", None) and _looks_like_textual_toolcall(
+                    getattr(msg, "content", None)
+                ):
+                    raise _EmptyResponse("textual tool-call instead of a native tool call")
                 if model != self._chain[0]:
                     logger.warning(f"LLM primary unavailable; answered via fallback '{model}'")
                 return msg
@@ -157,6 +181,11 @@ class LLMClient:
             client, model_name = self._resolve(model)
             tool_acc: dict[int, dict[str, str]] = {}
             got_any = False
+            # Lead-buffer classification: hold the first chunk of CONTENT until we can tell prose
+            # from a textual tool-call. Prose flushes and streams normally; a textual tool-call is
+            # withheld (never spoken) so got_any stays False -> the no-content failover kicks in.
+            lead = ""
+            lead_state = "buffering"  # buffering -> prose | toolcall
             try:
                 kwargs: dict[str, Any] = {
                     "model": model_name,
@@ -187,8 +216,18 @@ class LLMClient:
                         continue
                     delta = chunk.choices[0].delta
                     if getattr(delta, "content", None):
-                        got_any = True
-                        yield ("text", delta.content)
+                        if lead_state == "buffering":
+                            lead += delta.content
+                            if _looks_like_textual_toolcall(lead):
+                                lead_state = "toolcall"   # withhold; never speak the tag
+                            elif len(lead) >= 24:
+                                lead_state = "prose"
+                                got_any = True
+                                yield ("text", lead)
+                        elif lead_state == "prose":
+                            got_any = True
+                            yield ("text", delta.content)
+                        # lead_state == "toolcall": swallow content (no native call -> will fail over)
                     for tcd in getattr(delta, "tool_calls", None) or []:
                         got_any = True
                         slot = tool_acc.setdefault(tcd.index, {"id": "", "name": "", "arguments": ""})
@@ -199,6 +238,11 @@ class LLMClient:
                                 slot["name"] += tcd.function.name
                             if tcd.function.arguments:
                                 slot["arguments"] += tcd.function.arguments
+                # Stream ended mid-buffer: flush a short prose lead (e.g. "Yes, sir."). A withheld
+                # textual tool-call is intentionally NOT flushed -> stays unspoken, fails over.
+                if lead_state == "buffering" and lead and not _looks_like_textual_toolcall(lead):
+                    got_any = True
+                    yield ("text", lead)
                 if not got_any:
                     raise _EmptyResponse("stream produced no content")
                 if tool_acc:
@@ -208,6 +252,12 @@ class LLMClient:
                 return
             except (*_FAILOVER, _EmptyResponse) as e:
                 last_err = e
+                # A mid-stream break while still buffering committed PROSE: flush it and treat as
+                # already-speaking (don't fail over / double-speak). A withheld textual tool-call is
+                # NOT flushed, so it still fails over to a native-tool-calling model.
+                if lead_state == "buffering" and lead and not _looks_like_textual_toolcall(lead):
+                    got_any = True
+                    yield ("text", lead)
                 if got_any:
                     # Already speaking — don't fail over and repeat; end the utterance here.
                     logger.warning(f"LLM stream '{model}' broke mid-utterance ({type(e).__name__})")

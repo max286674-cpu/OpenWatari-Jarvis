@@ -61,3 +61,7 @@ logs/
 website/
 # Personal finish-line checklist (this instance, not the framework)
 MY-WATARI-CHECKLIST.md
+# Production-readiness recommendations + behavioral run artifacts (local working docs)
+WATARI-PRODUCTION-RECOMMENDATIONS.md
+bench/_behavioral_run.txt
+bench/_behavioral_scorecard.json

@@ -95,6 +95,15 @@ _ARTIFACT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Self-closing / parameterised textual tool-call forms a weak model may emit instead of a native
+# call — e.g. '<function name="x" parameters="{…}" />', '<tool_code …>', 'print(default_api.x(…))'.
+# The LLM layer fails over off these, but strip any that still reach a spoken reply (defence in depth).
+_TOOLCALL_TEXT_RE = re.compile(
+    r"<\s*function\b[^>]*/?>|<\s*tool_code\b[^>]*>.*?(?:</\s*tool_code\s*>|$)|"
+    r"\bprint\s*\(\s*default_api\.[^)]*\)|\bdefault_api\.\w+\([^)]*\)",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 # Weak models (e.g. llama-3.1-8b-instant) sometimes SPEAK a confirmation ("done, home is now X")
 # without actually emitting the tool call. For unambiguous *imperative* commands — where the right
@@ -149,6 +158,7 @@ def _clean_reply(text: str) -> str:
     text = (text or "")
     # Drop whole <tool_call>…</tool_call> blocks first, then any stray tags/tokens.
     text = re.sub(r"<tool_call>.*?</tool_call>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = _TOOLCALL_TEXT_RE.sub(" ", text)
     text = _ARTIFACT_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
