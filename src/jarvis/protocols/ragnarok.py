@@ -1,7 +1,7 @@
 """Protocol RAGNAROK — restart the laptop.
 
 Launched detached with: <parent_pid> <repo_root> <python_exe>. Schedules a Windows restart
-with a short grace period (and a visible reason) so Vazghen can still abort with
+with a short grace period (and a visible reason) so the owner can still abort with
 ``shutdown /a`` if needed.
 """
 

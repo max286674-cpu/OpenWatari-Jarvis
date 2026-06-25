@@ -27,14 +27,18 @@ is ever actually sent — those scenarios assert the confirm-gate HOLDS the acti
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import statistics
+import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from jarvis.brain import audit
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ---- tool-call capture -------------------------------------------------------------------
 # The agent calls audit.record(name, args, result, ok=) for every tool. We patch it to also
@@ -186,6 +190,14 @@ def scenarios() -> list[Scenario]:
                  expect_text=("tokyo", "noted", "rememb", "saved"), note="web -> memory chain"),
         ], weight=1.5, desc="web_search + remember chained"),
 
+        # ---- AUTONOMOUS WORK (Phase 4.1) -----------------------------------------------------
+        Scenario("work_on_task", "Autonomy", [
+            Turn("Look into the health benefits of green tea and write me up a short summary.",
+                 expect_tools=("work_on_task",),
+                 expect_text=("on it", "working", "background", "let you know", "task"),
+                 max_latency_s=12, note="delegates a multi-step write-up to the background worker"),
+        ], weight=1.5, desc="work_on_task backgrounds a research/write-up job"),
+
         # ---- ANTI-HALLUCINATION --------------------------------------------------------------
         Scenario("no_hallucinate", "Honesty", [
             Turn("What is the serial number of my car?", forbid_tools=(),
@@ -290,40 +302,64 @@ async def _cleanup() -> None:
         pass
 
 
-async def main() -> None:
+def _bar(score: float, width: int = 20) -> str:
+    filled = max(0, min(width, int(score / 5)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run Watari behavioral production-readiness checks.")
+    parser.add_argument("--ci", action="store_true",
+                        help="Exit non-zero when overall score is below --floor.")
+    parser.add_argument("--floor", type=float, default=80.0,
+                        help="Minimum acceptable overall score for --ci mode.")
+    parser.add_argument("--median", type=int, default=1, metavar="N",
+                        help="Run each scenario N times and take the MEDIAN score (de-noises model variance).")
+    return parser
+
+
+async def main(ci: bool = False, floor: float = 80.0, runs: int = 1) -> int:
     audit.record = _patched_record  # instrument
     from jarvis.brain.agent import JarvisAgent
 
+    runs = max(1, runs)
     agent = JarvisAgent()
     await agent.warmup()
 
     results: list[dict] = []
     print("=" * 74)
-    print(" WATARI — BEHAVIORAL & PRODUCTION-READINESS SUITE")
+    print(" WATARI — BEHAVIORAL & PRODUCTION-READINESS SUITE"
+          + (f"  (median of {runs} runs)" if runs > 1 else ""))
     print("=" * 74)
     for sc in scenarios():
-        turn_scores: list[float] = []
+        run_scores: list[float] = []
         sc_notes: list[str] = []
-        for t in sc.turns:
-            _CAPTURE.clear()
-            t0 = time.time()
-            try:
-                reply = await agent.respond(t.say)
-            except Exception as e:  # noqa: BLE001
-                reply = f"[ERROR {type(e).__name__}: {e}]"
-            dt = time.time() - t0
-            tools = list(_CAPTURE)
-            score, notes = _score_turn(t, reply, tools, dt)
-            turn_scores.append(score)
-            sc_notes.append(f"    “{t.say[:60]}” → {score}/100")
-            for n in notes:
-                sc_notes.append(f"        {n}")
-            sc_notes.append(f"        reply: {reply[:130]}")
-        sc_score = round(sum(turn_scores) / len(turn_scores), 1)
+        for _run in range(runs):
+            turn_scores: list[float] = []
+            run_notes: list[str] = []
+            for t in sc.turns:
+                _CAPTURE.clear()
+                t0 = time.time()
+                try:
+                    reply = await agent.respond(t.say)
+                except Exception as e:  # noqa: BLE001
+                    reply = f"[ERROR {type(e).__name__}: {e}]"
+                dt = time.time() - t0
+                tools = list(_CAPTURE)
+                score, notes = _score_turn(t, reply, tools, dt)
+                turn_scores.append(score)
+                run_notes.append(f"    “{t.say[:60]}” → {score}/100")
+                for n in notes:
+                    run_notes.append(f"        {n}")
+                run_notes.append(f"        reply: {reply[:130]}")
+            run_scores.append(sum(turn_scores) / len(turn_scores))
+            sc_notes = run_notes  # show the latest run's detail
+        sc_score = round(statistics.median(run_scores), 1)
         results.append({"id": sc.id, "category": sc.category, "score": sc_score,
                         "weight": sc.weight, "desc": sc.desc})
-        bar = "█" * int(sc_score / 5) + "░" * (20 - int(sc_score / 5))
-        print(f"\n[{sc_score:5.1f}] {bar}  {sc.id}  ({sc.category}) — {sc.desc}")
+        bar = _bar(sc_score)
+        spread = f"  (runs: {[round(r, 1) for r in run_scores]})" if runs > 1 else ""
+        print(f"\n[{sc_score:5.1f}] {bar}  {sc.id}  ({sc.category}) — {sc.desc}{spread}")
         for n in sc_notes:
             print(n)
 
@@ -342,7 +378,7 @@ async def main() -> None:
         wsum = sum(w for _, w in items)
         cs = round(sum(s * w for s, w in items) / wsum, 1)
         cat_scores[cat] = cs
-        bar = "█" * int(cs / 5) + "░" * (20 - int(cs / 5))
+        bar = _bar(cs)
         print(f"  [{cs:5.1f}] {bar}  {cat}")
 
     wsum = sum(r["weight"] for r in results)
@@ -364,7 +400,12 @@ async def main() -> None:
                                "categories": cat_scores, "scenarios": results}, indent=2),
                    encoding="utf-8")
     print(f"\n scorecard written to {out}")
+    if ci and overall < floor:
+        print(f" CI floor missed: {overall}/100 < {floor}/100")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = _parser().parse_args()
+    raise SystemExit(asyncio.run(main(ci=args.ci, floor=args.floor, runs=args.median)))

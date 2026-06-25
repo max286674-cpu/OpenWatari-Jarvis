@@ -266,7 +266,7 @@ async def mark_telegram(args: dict) -> str:
 
 
 async def telegram_music(args: dict) -> str:
-    """Play from Vazghen's personal Telegram playlist by delivering a track to his phone.
+    """Play from the owner's personal Telegram playlist by delivering a track to his phone.
 
     Telegram has no API to remote-press-play on a specific device, so the realistic, honest
     behaviour is: find the track in his playlist chat and SEND it to ``telegram_music_target``
@@ -391,7 +391,7 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "check_telegram",
-            "description": "Read Vazghen's unread Telegram direct messages and summarize them aloud.",
+            "description": "Read the owner's unread Telegram direct messages and summarize them aloud.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -427,7 +427,7 @@ SCHEMAS = [
             "name": "mark_telegram",
             "description": (
                 "Change a chat's read state. seen=true sends a read receipt (sender sees 'seen'); "
-                "seen=false restores the unread badge on Vazghen's side only. Note: a read receipt "
+                "seen=false restores the unread badge on the owner's side only. Note: a read receipt "
                 "the sender already saw cannot be reversed by Telegram."
             ),
             "parameters": {
@@ -447,7 +447,7 @@ SCHEMAS = [
             "description": (
                 "Send a Telegram message, a GIF, or a file. Can send to 'Saved Messages' (use "
                 "to='saved'), a username, or a chat id. Outward-facing — confirm recipient and "
-                "content with Vazghen first."
+                "content with the owner first."
             ),
             "parameters": {
                 "type": "object",
@@ -466,7 +466,7 @@ SCHEMAS = [
         "function": {
             "name": "telegram_music",
             "description": (
-                "Play from Vazghen's personal Telegram music playlist. 'play' finds a track (by "
+                "Play from the owner's personal Telegram music playlist. 'play' finds a track (by "
                 "name, or random if none given) and delivers it to his phone Telegram to tap and "
                 "play; 'list' reports what's in the playlist. Use this when he says 'play from my "
                 "Telegram playlist' / 'play my saved music'."

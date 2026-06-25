@@ -1,7 +1,7 @@
 # Gmail & Google Calendar
 
 One Google OAuth app (a long-lived refresh token) covers both, exchanged silently for access tokens.
-Account: iamvazghen@gmail.com.
+Account: your-account@gmail.com.
 
 ## Gmail (`read_email`, `send_email`, draft/label tools per their schemas)
 - Reading is not confirm-gated; **sending IS** — confirm recipient + gist aloud before you send.

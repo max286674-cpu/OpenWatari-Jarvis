@@ -1,6 +1,6 @@
 """Phase 10 — the proactive engine: Jarvis decides when to speak *unprompted*.
 
-Vazghen's ask, verbatim: proactivity means Jarvis can remind, pause, ask for context, re-ask /
+The owner's ask, verbatim: proactivity means Jarvis can remind, pause, ask for context, re-ask /
 confirm, interrupt, and *start speaking on his own* when he judges it helpful. This module is the
 "start speaking on his own" brain: a background **tick** that, on an interval, gathers signals,
 asks "is anything worth saying right now, and how urgent?", and acts — but inside a strict
@@ -34,7 +34,7 @@ from loguru import logger
 
 from jarvis.config import settings
 
-USER_TZ = ZoneInfo("Europe/Berlin")
+USER_TZ = ZoneInfo(settings.user_tz)
 
 
 @dataclass
@@ -96,12 +96,31 @@ CONFIRM_TIER = {
     "create_event",
     # Phase 13 — self-improvement writes are reversible via git, but still consequential.
     "write_source", "git_commit", "git_push", "git_revert",
-    # Notion writes modify Vazghen's shared docs.
+    # Notion writes modify the owner's shared docs.
     "notion_append", "notion_comment", "notion_create_page",
     # Deleting a task is destructive (archives the row) — confirm. Creating/updating/completing a
     # task is frictionless by design (capture-by-voice), so those are intentionally NOT gated.
     "notion_delete_task",
+    # Composio app actions: gated only when the slug is a WRITE (see _composio_write below).
+    "composio_run_tool",
 }
+
+# Composio tool slugs encode the verb (GITHUB_CREATE_AN_ISSUE, SLACKBOT_CHAT_POST_MESSAGE). Reads run
+# freely; anything that writes/sends/changes the owner's external apps is confirm-gated. Unknown = gate.
+_COMPOSIO_READ = ("GET", "LIST", "FETCH", "SEARCH", "RETRIEVE", "FIND", "READ", "VIEW", "COUNT")
+_COMPOSIO_WRITE = ("CREATE", "SEND", "POST", "UPDATE", "DELETE", "ADD", "REMOVE", "CHARGE", "REFUND",
+                   "MERGE", "CLOSE", "SET", "EDIT", "UPLOAD", "INVITE", "ARCHIVE", "CANCEL", "ASSIGN",
+                   "MOVE", "RENAME", "REPLY", "COMMENT", "WRITE", "INSERT", "APPEND", "PUT", "PATCH")
+
+
+def _composio_write(slug: str) -> bool:
+    """True (confirm) if a Composio tool slug writes/changes an app; False for clear reads."""
+    s = (slug or "").upper()
+    if any(w in s for w in _COMPOSIO_WRITE):
+        return True
+    if any(r in s for r in _COMPOSIO_READ):
+        return False
+    return True  # unknown verb -> gate (safe default)
 
 _PRONOUN_ONLY = {"it", "that", "this", "them", "those", "these", "him", "her", "they"}
 
@@ -109,7 +128,7 @@ _PRONOUN_ONLY = {"it", "that", "this", "them", "those", "these", "him", "her", "
 def confirm_required(tool_name: str, args: dict | None = None) -> bool:
     """True if Jarvis should re-ask for confirmation before running this tool.
 
-    file_op deletes and ha_call locks are the dangerous edges; sends spend Vazghen's voice to
+    file_op deletes and ha_call locks are the dangerous edges; sends spend the owner's voice to
     third parties. Reads (recall, web_search, get_time, list_*) are never gated.
     """
     name = (tool_name or "").strip()
@@ -120,6 +139,8 @@ def confirm_required(tool_name: str, args: dict | None = None) -> bool:
         return str(action).startswith("delete")     # create/list need no confirm
     if name == "process_op":
         return (args or {}).get("action") in {"kill", "start"}
+    if name == "composio_run_tool":
+        return _composio_write(str((args or {}).get("tool_slug", "")))
     return True
 
 

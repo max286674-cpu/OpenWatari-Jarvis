@@ -14,8 +14,6 @@ from __future__ import annotations
 
 print("Watari: loading audio stack (first start can take ~15-30s)…", flush=True)
 
-import asyncio  # noqa: E402
-
 from loguru import logger  # noqa: E402
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.worker import PipelineWorker  # noqa: E402
@@ -103,14 +101,14 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
 
     stages.append(stt)
 
-    # Phase 5 — speaker biometrics: after STT, drop transcripts that aren't Vazghen's voice.
+    # Phase 5 — speaker biometrics: after STT, drop transcripts that aren't the owner's voice.
     # No-op (graceful) until a voiceprint is enrolled and JARVIS_SPEAKER_ID_ENABLED=true.
     if settings.speaker_id_enabled:
         from jarvis.edge.speaker_gate import SpeakerGate
 
         gate = SpeakerGate()
         if gate._verifier.has_profile:
-            logger.info("speaker-id: ON — only Vazghen's enrolled voice will be obeyed")
+            logger.info("speaker-id: ON — only the owner's enrolled voice will be obeyed")
         else:
             logger.warning("speaker-id enabled but no voiceprint — run bench/enroll_voice.py "
                            "(gate is a no-op until enrolled)")

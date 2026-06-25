@@ -57,7 +57,7 @@ async def test_plain_answer() -> None:
 
 
 async def test_tool_then_stream() -> None:
-    print("\n[2] a tool call is resolved, then the final answer streams")
+    print("\n[2] a NON-speakable tool call is resolved, then the final answer streams (two-pass)")
     from jarvis.brain.agent import JarvisAgent
 
     agent = JarvisAgent()
@@ -65,18 +65,19 @@ async def test_tool_then_stream() -> None:
 
     async def fake_tool(_args: dict) -> str:
         ran["n"] += 1
-        return "12:00"
+        return "note: the rabbit farm charter is in 30-Projects"
 
-    agent._registry["get_time"] = fake_tool
+    # search_vault is NOT in _SPEAKABLE_DIRECT, so the model still does its summary pass.
+    agent._registry["search_vault"] = fake_tool
     agent._llm = FakeLLM([
-        [("tools", [{"id": "c1", "name": "get_time", "arguments": "{}"}])],
-        [("text", "It is noon, Sir.")],
+        [("tools", [{"id": "c1", "name": "search_vault", "arguments": "{}"}])],
+        [("text", "Found it, Sir.")],
     ])
-    out = [s async for s in agent.respond_stream("what time is it")]
+    out = [s async for s in agent.respond_stream("search my vault for the rabbit farm")]
     check("the tool ran exactly once", ran["n"] == 1, str(ran))
-    check("the post-tool answer streamed", out == ["It is noon, Sir."], repr(out))
+    check("the post-tool answer streamed", out == ["Found it, Sir."], repr(out))
     check("history holds user + tool turn + final assistant",
-          agent._history[-1]["content"] == "It is noon, Sir.")
+          agent._history[-1]["content"] == "Found it, Sir.")
 
 
 async def test_no_double_failover_midstream() -> None:
@@ -113,10 +114,28 @@ def _chunk(content):
         delta=SimpleNamespace(content=content, tool_calls=None))])
 
 
+async def test_cancelled_stream_no_dangling_user() -> None:
+    print("\n[4] a cancelled stream still records an assistant turn (no dangling user msg, AUDIT #7)")
+    from jarvis.brain.agent import JarvisAgent
+
+    agent = JarvisAgent()
+    agent._llm = FakeLLM([[("text", "First sentence. "), ("text", "Second. "), ("text", "Third.")]])
+    gen = agent.respond_stream("tell me a long story")
+    first = await gen.__anext__()      # consume one chunk…
+    await gen.aclose()                 # …then a barge-in / supersede closes the stream mid-turn
+    check("first chunk streamed", first == "First sentence.", repr(first))
+    check("history ends on an assistant turn (not a dangling user msg)",
+          agent._history[-1]["role"] == "assistant", repr(agent._history[-1]))
+    check("no two consecutive user turns",
+          not (len(agent._history) >= 2
+               and agent._history[-1]["role"] == "user" and agent._history[-2]["role"] == "user"))
+
+
 async def main() -> None:
     await test_plain_answer()
     await test_tool_then_stream()
     await test_no_double_failover_midstream()
+    await test_cancelled_stream_no_dangling_user()
     print(f"\n=== {passed}/{passed + failed} checks passed ===")
     if failed:
         sys.exit(1)

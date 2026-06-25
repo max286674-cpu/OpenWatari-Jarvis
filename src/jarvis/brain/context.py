@@ -68,7 +68,7 @@ def _apply_identity(text: str) -> str:
     return text
 
 # Always-on context: injected into EVERY turn, so it is kept deliberately lean (see
-# fine-tuning.md, Item 1). Order matters: who Vazghen is, the proactive mandate, his ventures,
+# fine-tuning.md, Item 1). Order matters: who the owner is, the proactive mandate, his ventures,
 # then the environment. Two files are intentionally NOT here:
 #   * tools.md       — duplicated the tool schemas the model already receives every turn.
 #   * openclaw-fleet.md — its actionable rule (delegate to ispir only) is already in the persona.
@@ -193,11 +193,10 @@ def build_system_prompt() -> str:
     # Operating rules (persona covers the rest — kept terse to spare per-turn tokens).
     parts.append(
         "# Clarify, confirm, speak\n"
-        "If a request is too thin to act on safely (a bare 'do it', an unclear target), ask one "
-        "short clarifying question first. Confirm before anything outward-facing or hard to undo "
-        "(send/delete/kill/PowerShell/calendar write/lock/protocol); reads and lookups need none. "
-        "Output is spoken: no markdown or emoji, one or two sentences unless asked for more, numbers "
-        "and dates said the way you'd speak them. If you ever speak unprompted, lead with why."
+        "If a request is too thin to act on safely, ask one short clarifying question. Confirm before "
+        "anything outward-facing or hard to undo (send/delete/kill/PowerShell/calendar/protocol). "
+        "Spoken output: no markdown or emoji; one or two sentences unless asked for more. If you speak "
+        "unprompted, lead with why."
     )
     return "\n\n".join(parts)
 

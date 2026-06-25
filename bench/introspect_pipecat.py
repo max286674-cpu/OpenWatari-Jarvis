@@ -2,6 +2,8 @@
 
 import importlib
 
+import pipecat
+
 probes = [
     "pipecat.pipeline.pipeline:Pipeline",
     "pipecat.pipeline.task:PipelineTask",
@@ -15,8 +17,6 @@ probes = [
     "pipecat.processors.frame_processor:FrameProcessor",
     "pipecat.processors.frame_processor:FrameDirection",
 ]
-
-import pipecat
 
 print("pipecat version:", getattr(pipecat, "__version__", "?"))
 for p in probes:

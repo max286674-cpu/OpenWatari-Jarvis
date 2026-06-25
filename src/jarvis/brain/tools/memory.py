@@ -1,6 +1,6 @@
 """Memory tools — Jarvis remembers and recalls across sessions (Phase 9, L1/L2).
 
-`remember` writes a durable fact (he calls it when Vazghen says "remember that…", or on his own
+`remember` writes a durable fact (he calls it when the owner says "remember that…", or on his own
 when something is clearly worth keeping). `recall` searches what he's learned. `forget` removes a
 fact. `read_journal` reads a day's continuity log. All back onto `brain/memory.py` (plain Markdown),
 so they work offline and never crash the brain.
@@ -76,7 +76,7 @@ SCHEMAS = [
             "name": "remember",
             "description": (
                 "Save a durable fact to long-term memory so you recall it in future sessions. "
-                "Use when Vazghen says 'remember that…/note that…/for future', or proactively when "
+                "Use when the owner says 'remember that…/note that…/for future', or proactively when "
                 "you learn something clearly worth keeping (a preference, a person, a decision, an "
                 "ongoing thread). Keep each fact short and self-contained."
             ),

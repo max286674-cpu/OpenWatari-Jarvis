@@ -20,7 +20,7 @@ from loguru import logger
 
 from jarvis.config import settings
 
-USER_TZ = ZoneInfo("Europe/Berlin")
+USER_TZ = ZoneInfo(settings.user_tz)
 
 # Set by SCHEDULER.start(): how to SPEAK a fired reminder on the live edge (push a TTS frame).
 _LIVE_SPEAK: Callable[[str], None] | None = None
@@ -28,6 +28,9 @@ _LIVE_SPEAK: Callable[[str], None] | None = None
 # Set by the brain server: richest proactive delivery (voice -> Telegram voice note -> ntfy push).
 # Signature mirrors BrainServer.proactive_emit(message, urgency, speak) -> awaitable[str].
 _BRIEFING_EMIT: Callable | None = None
+
+# Set by the brain server to the agent's autonomous backlog pass (agent.run_backlog) — Phase 3.1.
+_BACKLOG_RUNNER: Callable | None = None
 
 
 async def _fire_briefing() -> None:
@@ -70,6 +73,23 @@ async def _fire_briefing() -> None:
         await push(msg, title="Watari — today")
     except Exception:  # noqa: BLE001
         pass
+
+
+async def _fire_backlog() -> None:
+    """Top-level job target: the daily autonomous backlog pass (Phase 3.1).
+
+    Calls the runner the brain wired to ``agent.run_backlog`` — it pulls overdue/inbox Notion tasks,
+    has the bounded worker attempt the safe work, and comments the results. Safe by construction (the
+    worker defers every outward step). No runner wired -> no-op; any error is logged, never raised."""
+    if _BACKLOG_RUNNER is None:
+        return
+    logger.info("firing daily backlog pass")
+    try:
+        res = _BACKLOG_RUNNER()
+        done = await res if hasattr(res, "__await__") else res
+        logger.info(f"daily backlog pass attempted {len(done) if done else 0} task(s)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"daily backlog pass failed: {e}")
 
 
 async def _fire(message: str, push_phone: bool = True) -> None:
@@ -151,6 +171,26 @@ class Scheduler:
                       misfire_grace_time=3600, coalesce=True, replace_existing=True)
         logger.info(f"daily task briefing scheduled for {hh:02d}:{mm:02d}")
         return "daily-task-briefing"
+
+    def set_backlog_runner(self, runner: Callable | None) -> None:
+        """Register the async callable the daily backlog job runs (server wires agent.run_backlog)."""
+        global _BACKLOG_RUNNER
+        _BACKLOG_RUNNER = runner
+
+    def schedule_daily_backlog(self, hhmm: str) -> str | None:
+        """(Re)register the daily autonomous backlog pass at HH:MM. Fixed id so restarts refresh,
+        not duplicate. Returns the job id, or None if disabled/invalid."""
+        if not (hhmm or "").strip():
+            return None
+        from apscheduler.triggers.cron import CronTrigger
+
+        hh, mm = _parse_hhmm(hhmm)
+        sched = self._ensure()
+        sched.add_job(_fire_backlog, trigger=CronTrigger(hour=hh, minute=mm, timezone=USER_TZ),
+                      id="daily-backlog", name="daily backlog pass",
+                      misfire_grace_time=3600, coalesce=True, replace_existing=True)
+        logger.info(f"daily backlog pass scheduled for {hh:02d}:{mm:02d}")
+        return "daily-backlog"
 
     def run_briefing_now(self) -> None:
         """Fire the briefing immediately (for a 'brief me now' voice command or a test)."""

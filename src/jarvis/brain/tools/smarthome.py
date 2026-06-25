@@ -1,6 +1,6 @@
 """Home Assistant tools — local-first smart-home control (Phase 11).
 
-Vazghen asked for smart-home; Home Assistant is the privacy-respecting, local choice. Talks to his
+The owner asked for smart-home; Home Assistant is the privacy-respecting, local choice. Talks to his
 HA instance's REST API with a long-lived token (``JARVIS_HA_URL`` / ``JARVIS_HA_TOKEN``).
 ``ha_state`` reads ("is the front door locked?"); ``ha_call`` actuates (lights, scenes, climate,
 locks). Locks / alarms / covers are security-sensitive, so the persona confirms before those.
@@ -92,7 +92,7 @@ SCHEMAS = [
             "description": (
                 "Call a Home Assistant service to control a device: domain + service (+ optional "
                 "entity). Examples: light/turn_on, climate/set_temperature, lock/lock, scene/turn_on. "
-                "For locks, alarms, covers and garage doors, confirm with Vazghen before calling."
+                "For locks, alarms, covers and garage doors, confirm with the owner before calling."
             ),
             "parameters": {
                 "type": "object",

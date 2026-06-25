@@ -1,6 +1,6 @@
 """Utilities belt — small, high-frequency, mostly no-key lookups (Phase 12).
 
-Vazghen asked for "minor tools — weather, news, economy, stock prices, crypto prices, and the like":
+The owner asked for "minor tools — weather, news, economy, stock prices, crypto prices, and the like":
 quick one-shot answers Jarvis should serve himself without troubling the fleet. The belt favours
 **no-key, EU-friendly** providers so most of it works out of the box:
 

@@ -153,7 +153,7 @@ SCHEMAS = [
         "function": {
             "name": "search_vault",
             "description": (
-                "Search Vazghen's Obsidian knowledge vault (his notes, project charters, "
+                "Search the owner's Obsidian knowledge vault (his notes, project charters, "
                 "agent docs, decisions) for a topic and get the top matching notes with "
                 "snippets. Use for 'search my vault/notes for X' or to ground an answer in "
                 "his own documents."
@@ -189,7 +189,7 @@ SCHEMAS = [
         "function": {
             "name": "write_vault",
             "description": (
-                "Save a note INTO Vazghen's Obsidian vault — append to (default) or create a note. "
+                "Save a note INTO the owner's Obsidian vault — append to (default) or create a note. "
                 "Use to record a decision, a durable fact, or a session summary worth keeping in "
                 "the knowledge base. Only works on the host that owns the vault."
             ),

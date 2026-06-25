@@ -1,4 +1,4 @@
-"""SpeakerGate — drop transcripts that aren't in Vazghen's voice (Phase 5).
+"""SpeakerGate — drop transcripts that aren't in the owner's voice (Phase 5).
 
 Sits AFTER the STT. It keeps a short rolling buffer of recent mic audio; when the STT produces a
 ``TranscriptionFrame``, it embeds that buffered audio and compares it to the enrolled voiceprint
@@ -51,7 +51,7 @@ class SpeakerGate(FrameProcessor):
                 audio = b"".join(self._buf)
                 accept, score = self._verifier.verify(audio, self._sample_rate)
                 if not accept:
-                    logger.info(f"speaker gate: ignored ({score:.2f}) — not Vazghen's voice: "
+                    logger.info(f"speaker gate: ignored ({score:.2f}) — not the owner's voice: "
                                 f"{frame.text!r}")
                     return  # drop: brain never sees it
                 logger.debug(f"speaker gate: accepted ({score:.2f})")

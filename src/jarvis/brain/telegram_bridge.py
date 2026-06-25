@@ -146,7 +146,7 @@ class TelegramBridge:
                         logger.exception("telegram bridge: respond failed")
                         reply = "Sorry sir, I hit an error handling that."
                     reply = reply or "Sorry sir, I didn't catch that."
-                    # VOICE-ONLY replies (per Vazghen's preference): always answer with a voice note,
+                    # VOICE-ONLY replies (per the owner's preference): always answer with a voice note,
                     # whether the input was a voice note or text. Fall back to a text message ONLY if
                     # synthesis/transcode fails, so Watari is never silent.
                     await self._api("sendChatAction", chat_id=chat_id, action="record_voice")

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 from jarvis.brain.llm import LLMClient
 from jarvis.config import settings
@@ -41,6 +42,11 @@ def test_resolve() -> None:
           c_groq is not llm._default and mg == "llama-3.3-70b-versatile")
     c_groq2, _ = llm._resolve("groq:other")
     check("groq client is cached/reused", c_groq2 is c_groq)
+    c_oll, mo = llm._resolve("ollama:llama3.2")
+    check("ollama: entry -> separate local client, prefix stripped",
+          c_oll is not llm._default and c_oll is not c_groq and mo == "llama3.2")
+    c_oll2, _ = llm._resolve("ollama:other")
+    check("ollama client is cached/reused", c_oll2 is c_oll)
 
 
 def test_fast_tier() -> None:
@@ -155,12 +161,51 @@ async def test_warmup_never_raises_when_a_provider_is_down() -> None:
     check("warmup swallows a provider error (never blocks startup)", ok)
 
 
+async def test_health_cooldown_skips_recent_failure() -> None:
+    class _ModelAwareClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            outer = self
+
+            class _Completions:
+                async def create(self, **kw):
+                    model = kw["model"]
+                    outer.calls.append(model)
+                    if model == "m1":
+                        return SimpleNamespace(choices=[])
+                    msg = SimpleNamespace(content="ok", tool_calls=None)
+                    return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+            class _Chat:
+                completions = _Completions()
+
+            self.chat = _Chat()
+
+    llm = LLMClient()
+    fake = _ModelAwareClient()
+    llm._default = fake             # type: ignore[assignment]
+    llm._clients = {}
+    llm._chain = ["m1", "m2"]
+    llm._cooldown = 60.0
+    llm._unhealthy_until = {}
+
+    msg = await llm.complete([{"role": "user", "content": "hi"}])
+    check("first call fails over to m2", msg.content == "ok" and fake.calls == ["m1", "m2"])
+    check("route telemetry records fallback", llm.last_route.get("answered_by") == "m2")
+    check("route telemetry counts one failed model", llm.last_route.get("failed_over_count") == 1)
+
+    fake.calls.clear()
+    await llm.complete([{"role": "user", "content": "hi again"}])
+    check("recently failed m1 is skipped on next turn", fake.calls == ["m2"])
+
+
 def main() -> None:
     test_resolve()
     test_fast_tier()
     asyncio.run(test_first_token_deadline())
     asyncio.run(test_warmup_primes_every_distinct_provider())
     asyncio.run(test_warmup_never_raises_when_a_provider_is_down())
+    asyncio.run(test_health_cooldown_skips_recent_failure())
     print(f"\n=== {PASS}/{PASS + FAIL} checks passed ===")
     raise SystemExit(0 if FAIL == 0 else 1)
 

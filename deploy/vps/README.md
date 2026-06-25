@@ -34,7 +34,7 @@ cd ~/jarvis/deploy/vps && bash install-brain.sh
 
 ### Reachability + auth
 - **Loopback (default):** `JARVIS_BRAIN_HOST=127.0.0.1`. Clients reach it over the same tunnel you
-  use for the gateway (Tailscale `100.107.141.83` / an SSH tunnel). No auth needed on loopback.
+  use for the gateway (Tailscale `<your-vps-host>` / an SSH tunnel). No auth needed on loopback.
 - **Exposed:** set `JARVIS_BRAIN_HOST=0.0.0.0` **and** a non-empty `JARVIS_API_AUTH_TOKEN` in `.env`.
   The server rejects any client without `Authorization: Bearer <token>` (see `server._authorized`).
 
@@ -60,7 +60,7 @@ time (window: ~10s to 3 days out). No VPS needed for those.
 
 **Recurring** reminders ("every day at 08:00") are the one case ntfy can't hold — a repeating
 schedule needs a process that is itself always on. This tiny daemon is that process. It runs on
-the VPS you already have (`openclaw@100.107.141.83`), owns the daily jobs, and pushes them to the
+the VPS you already have (`openclaw@<your-vps-host>`), owns the daily jobs, and pushes them to the
 **same ntfy topic** the edge uses. It's fully decoupled from the OpenClaw fleet/gateway — it only
 knows ntfy + a local JSON file.
 
@@ -92,7 +92,7 @@ If `JARVIS_TICKER_URL` is unset/unreachable, nothing breaks — the local schedu
 when the PC is on (graceful degradation).
 
 > The ticker binds `127.0.0.1` by default. The edge must reach it over the same host/tunnel you
-> use for the gateway (e.g. Tailscale `100.107.141.83`, or an SSH tunnel). Bind `0.0.0.0` only
+> use for the gateway (e.g. Tailscale `<your-vps-host>`, or an SSH tunnel). Bind `0.0.0.0` only
 > behind a firewall, and set `JARVIS_TICKER_TOKEN` if you do.
 
 ## Verify

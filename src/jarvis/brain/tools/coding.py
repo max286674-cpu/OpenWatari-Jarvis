@@ -320,7 +320,7 @@ SCHEMAS = [
     {"type": "function", "function": {
         "name": "git_commit",
         "description": "Commit your changes (reversible). Stages the named paths, or all changes if "
-                       "none given. Confirm with Vazghen first; only commit green code.",
+                       "none given. Confirm with the owner first; only commit green code.",
         "parameters": {"type": "object", "properties": {
             "message": {"type": "string", "description": "Commit message (what changed and why)."},
             "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional specific paths."}},

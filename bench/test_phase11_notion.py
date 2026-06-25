@@ -68,6 +68,56 @@ def main() -> None:
     check("notion_read_page NOT gated", not confirm_required("notion_read_page"))
     check("notion_search NOT gated", not confirm_required("notion_search"))
 
+    print("\n[5] task briefing buckets: overdue / today / this week / recurring / undated inbox (3.6)")
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+
+    def _title(s: str) -> dict:
+        return {"type": "title", "title": [{"plain_text": s}]}
+
+    def _date(d) -> dict:
+        return {"type": "date", "date": {"start": d.isoformat()}}
+
+    def _page(title: str, d=None, status="To do") -> dict:
+        props = {"Name": _title(title), "Status": {"type": "status", "status": {"name": status}}}
+        props["Deadline"] = _date(d) if d else {"type": "date", "date": None}
+        return {"properties": props}
+
+    fake_schema = {"properties": {"Name": {"type": "title"}, "Deadline": {"type": "date"},
+                                  "Status": {"type": "status"}}}
+    fake_query = {"results": [
+        _page("File tax return", today - timedelta(days=2)),          # overdue
+        _page("Call the vet", today),                                  # due today
+        _page("Dentist", today + timedelta(days=3)),                   # this week
+        _page("Water the plants daily"),                               # recurring (undated)
+        _page("Refactor the parser"),                                  # undated inbox
+        _page("Old finished thing", today - timedelta(days=9), status="Done"),  # done -> skipped
+    ]}
+
+    settings.notion_token = "fake-token"          # pass _configured()
+    settings.notion_tasks_db_id = "fakedb"
+    orig_get, orig_post = notion._get, notion._post
+
+    async def fake_get(_path):
+        return fake_schema
+
+    async def fake_post(_path, _json):
+        return fake_query
+
+    notion._get, notion._post = fake_get, fake_post
+    try:
+        out = asyncio.run(notion.notion_tasks({"scope": "open"}))
+    finally:
+        notion._get, notion._post = orig_get, orig_post
+        settings.notion_token = None
+    check("overdue surfaced", "overdue" in out and "File tax return" in out, out)
+    check("due today surfaced", "due today" in out and "Call the vet" in out, out)
+    check("this week surfaced", "this week" in out and "Dentist" in out, out)
+    check("recurring surfaced", "recurring" in out and "Water the plants daily" in out, out)
+    check("undated inbox surfaced", "inbox" in out and "Refactor the parser" in out, out)
+    check("completed task excluded", "Old finished thing" not in out, out)
+
     print(f"\n=== {passed}/{passed + failed} checks passed ===")
     if failed:
         sys.exit(1)

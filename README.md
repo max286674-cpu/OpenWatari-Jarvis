@@ -116,19 +116,19 @@ Two cooperating processes over one streaming WebSocket protocol:
 ```
 ┌──────────────── EDGE — laptop / phone / glasses (where you are) ────────────┐
 │  Mic → wake word (openWakeWord) → VAD (Silero) → STT (Deepgram/Whisper)     │
-│      → [BrainBridge] ──WebSocket──┐                                          │
-│  Speaker ← TTS (ElevenLabs/Piper) ←┘   (barge-in, smart turn-taking, AEC)    │
+│      → [BrainBridge] ──WebSocket──┐                                         │
+│  Speaker ← TTS (ElevenLabs/Piper) ←┘   (barge-in, smart turn-taking, AEC)   │
 └────────────────────────────────────────────┬────────────────────────────────┘
                           streaming StreamEvents │   (Tailnet + Bearer-token auth)
 ┌──────────────── BRAIN — always-on host / VPS (24/7) ───────────▼─────────────┐
-│  Agent loop: own LLM (+fallback chain) · tool-calling · session + memory      │
-│  Confirmation tier ENFORCED in code · smart idle session reset                 │
-│  Tools: vault(r/w) · web · telegram · gmail · calendar · notion · smart-home   │
-│         · utilities · system/PC-control · browser · reminders · coding/git · …  │
-│  Memory L0–L5 · proactive tick (durably logged) · scheduler · audit · health    │
-│  HTTP sidecar: /talk (iPhone Siri voice) · /control (remote PC executor)        │
-│  Optionally consults an external multi-agent fleet as ONE tool                 │
-└────────────────────────────────────────────────────────────────────────────────┘
+│  Agent loop: own LLM (+fallback chain) · tool-calling · session + memory     │
+│  Confirmation tier ENFORCED in code · smart idle session reset               │
+│  Tools: vault(r/w) · web · telegram · gmail · calendar · notion · smart-home │
+│         · utilities · system/PC-control · browser · reminders · coding/git · │
+│  Memory L0–L5 · proactive tick (durably logged) · scheduler · audit · health │
+│  HTTP sidecar: /talk (iPhone Siri voice) · /control (remote PC executor)     │
+│  Optionally consults an external multi-agent fleet as ONE tool               │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Edge** (`src/jarvis/edge/`) keeps audio + STT/TTS **local** (privacy, low mic latency).

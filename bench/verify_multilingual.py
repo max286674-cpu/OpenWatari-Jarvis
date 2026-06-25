@@ -31,4 +31,5 @@ async def main():
         print(f"[{lang}] -> {'EN' if looks_english(reply) else 'NON-EN'} | {reply[:90]}")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

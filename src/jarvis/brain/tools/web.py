@@ -15,21 +15,19 @@ These are Jarvis's OWN web reach. Heavy multi-step domain research still goes to
 
 from __future__ import annotations
 
+from loguru import logger
+
 from jarvis.brain.cache import CACHE
 from jarvis.brain.tools.base import clip, http_get, http_post, not_configured, tool_error
 from jarvis.config import settings
 
 
-async def _do_web_search(query: str) -> str:
+# ---- web search: Tavily -> Brave -> Jina Search (keyless) --------------------------------
+async def _search_tavily(query: str) -> str:
     r = await http_post(
         "https://api.tavily.com/search",
-        json={
-            "api_key": settings.tavily_api_key,
-            "query": query,
-            "search_depth": "basic",
-            "include_answer": True,
-            "max_results": 5,
-        },
+        json={"api_key": settings.tavily_api_key, "query": query,
+              "search_depth": "basic", "include_answer": True, "max_results": 5},
     )
     data = r.json()
     parts: list[str] = []
@@ -37,33 +35,112 @@ async def _do_web_search(query: str) -> str:
         parts.append(f"Answer: {data['answer']}")
     for res in (data.get("results") or [])[:5]:
         parts.append(f"- {res.get('title', '')}: {clip(res.get('content', ''), 200)} ({res.get('url', '')})")
-    return "\n".join(parts) if parts else f"No web results for '{query}', sir."
+    return "\n".join(parts)
+
+
+async def _search_brave(query: str) -> str:
+    r = await http_get(
+        "https://api.search.brave.com/res/v1/web/search",
+        params={"q": query, "count": 5},
+        headers={"X-Subscription-Token": settings.brave_api_key, "Accept": "application/json"},
+    )
+    results = ((r.json() or {}).get("web") or {}).get("results") or []
+    parts = [f"- {x.get('title', '')}: {clip(x.get('description', ''), 200)} ({x.get('url', '')})"
+             for x in results[:5]]
+    return "\n".join(parts)
+
+
+async def _search_jina(query: str) -> str:
+    # s.jina.ai/<query> — Jina's KEYLESS web search, returns results as clean Markdown. The always-on
+    # last resort so search works even with no API keys configured at all.
+    headers = {"X-Return-Format": "markdown"}
+    if settings.jina_api_key:
+        headers["Authorization"] = f"Bearer {settings.jina_api_key}"
+    r = await http_get("https://s.jina.ai/" + query, headers=headers)
+    return clip((r.text or "").strip(), 2500)
+
+
+def _search_providers():
+    """Ordered (name, fn) of the search providers that are actually available this deployment."""
+    chain = []
+    if settings.tavily_api_key:
+        chain.append(("Tavily", _search_tavily))
+    if settings.brave_api_key:
+        chain.append(("Brave", _search_brave))
+    chain.append(("Jina", _search_jina))   # keyless — always present
+    return chain
+
+
+async def _search_chain(query: str) -> str:
+    last_err: Exception | None = None
+    for name, fn in _search_providers():
+        try:
+            out = (await fn(query) or "").strip()
+            if out:
+                return out
+            logger.info(f"web_search via {name} returned nothing; trying next provider")
+        except Exception as e:  # noqa: BLE001 — provider down/outage: fail over to the next
+            last_err = e
+            logger.warning(f"web_search provider {name} failed ({type(e).__name__}); trying next")
+    if last_err:
+        raise last_err
+    return f"No web results for '{query}', sir."
 
 
 async def web_search(args: dict) -> str:
     query = (args.get("query") or "").strip()
     if not query:
         return "What should I search the web for, sir?"
-    if not settings.tavily_api_key:
-        return not_configured("web search", "a Tavily API key (JARVIS_TAVILY_API_KEY)")
     try:
         # L4 cache: a repeated search inside the TTL window returns instantly (near-zero TTFW).
         return await CACHE.cached(
-            "web_search", key=query.lower(), ttl=600, factory=lambda: _do_web_search(query)
+            "web_search", key=query.lower(), ttl=600, factory=lambda: _search_chain(query)
         )
     except Exception as e:  # noqa: BLE001
         return tool_error("web search", e)
 
 
-async def _do_scrape(url: str) -> str:
-    # Jina Reader (r.jina.ai): prepend the reader origin and GET — it fetches, renders JS, and
-    # returns clean LLM-ready Markdown. Free and keyless; an optional JARVIS_JINA_API_KEY only
-    # raises rate limits. 'X-Return-Format: markdown' asks for Markdown explicitly.
+# ---- scrape: Jina Reader (keyless) -> Firecrawl ------------------------------------------
+async def _scrape_jina(url: str) -> str:
+    # Jina Reader (r.jina.ai): GET the reader origin — fetches, renders JS, returns clean Markdown.
+    # Free + keyless; an optional JARVIS_JINA_API_KEY only raises rate limits.
     headers = {"X-Return-Format": "markdown"}
     if settings.jina_api_key:
         headers["Authorization"] = f"Bearer {settings.jina_api_key}"
     r = await http_get("https://r.jina.ai/" + url, headers=headers)
     return (r.text or "").strip()
+
+
+async def _scrape_firecrawl(url: str) -> str:
+    r = await http_post(
+        "https://api.firecrawl.dev/v1/scrape",
+        headers={"Authorization": f"Bearer {settings.firecrawl_api_key}"},
+        json={"url": url, "formats": ["markdown"]},
+    )
+    return (((r.json() or {}).get("data") or {}).get("markdown") or "").strip()
+
+
+def _scrape_providers():
+    chain = [("Jina", _scrape_jina)]          # keyless primary
+    if settings.firecrawl_api_key:
+        chain.append(("Firecrawl", _scrape_firecrawl))
+    return chain
+
+
+async def _scrape_chain(url: str) -> str:
+    last_err: Exception | None = None
+    for name, fn in _scrape_providers():
+        try:
+            out = (await fn(url) or "").strip()
+            if out:
+                return out
+            logger.info(f"scrape via {name} returned nothing; trying next provider")
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            logger.warning(f"scrape provider {name} failed ({type(e).__name__}); trying next")
+    if last_err:
+        raise last_err
+    return ""
 
 
 async def scrape_url(args: dict) -> str:
@@ -74,7 +151,7 @@ async def scrape_url(args: dict) -> str:
         url = "https://" + url
     try:
         # Cache briefly so "read me that page" repeated in one session is instant.
-        md = await CACHE.cached("scrape", key=url, ttl=300, factory=lambda: _do_scrape(url))
+        md = await CACHE.cached("scrape", key=url, ttl=300, factory=lambda: _scrape_chain(url))
         return clip(md, 3500) if md else f"I opened {url} but found no readable text, sir."
     except Exception as e:  # noqa: BLE001
         return tool_error("page scrape", e)

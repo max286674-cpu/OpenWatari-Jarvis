@@ -27,4 +27,5 @@ async def main():
     assert "FLEET" not in r, "raw tool sentinel leaked into spoken reply!"
     print("OK: fleet sentinel not leaked; agent offered/handled gracefully.")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

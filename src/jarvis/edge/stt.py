@@ -1,6 +1,6 @@
 """STT builder — pick + configure the speech-to-text service for the voice pipeline.
 
-Multilingual by design: Vazghen may speak English, French, German, Armenian, Russian or
+Multilingual by design: the owner may speak English, French, German, Armenian, Russian or
 Ukrainian. Two engines, a clear trade-off:
 
 * **Deepgram** (default, low-latency cloud): nova-3 ``language='multi'`` code-switches across

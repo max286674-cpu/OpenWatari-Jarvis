@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     understood_languages: str = "English"  # comma-list of languages he can UNDERSTAND (STT side)
     reply_language: str = "English"        # the single language he always REPLIES in
     persona_file: str = "jarvis.md"        # which file in personality/ holds the persona template
+    # The owner's local timezone (IANA name, e.g. "America/New_York", "Asia/Tokyo"). Drives
+    # get_time, the proactive/scheduler clocks, and calendar event creation. Generic default = UTC;
+    # the personal instance sets JARVIS_USER_TZ in .env.
+    user_tz: str = "UTC"
 
     # --- Provider selection (the knobs that define a deployment) -------------------------
     # Cloud is the PRIMARY for quality/latency; if it can't be built (missing key, engine not
@@ -72,7 +76,7 @@ class Settings(BaseSettings):
     # --- Wake word ----------------------------------------------------------------------
     wake_word_enabled: bool = True
     wake_word_engine: str = "openwakeword"   # openwakeword (now) | porcupine (custom phrases)
-    # Vazghen's required wake set. Only phrases with a pretrained openWakeWord model load today
+    # The owner's required wake set. Only phrases with a pretrained openWakeWord model load today
     # (currently just "jarvis"); the rest are pending the Porcupine path (see README).
     wake_words: str = "jarvis,alfred,robbin,assist,time to work,wake up,six-one-nine"
     wake_word_threshold: float = 0.5
@@ -125,7 +129,7 @@ class Settings(BaseSettings):
     # 'multi' = nova-3 multilingual code-switching: understands English, French, German, Russian
     # (+ Spanish/Hindi/Portuguese/Italian/Dutch/Japanese). Deepgram does NOT support Armenian, and
     # Ukrainian isn't in 'multi' — for those use the Whisper provider (stt_provider=whisper), which
-    # auto-detects and transcribes ALL of Vazghen's six languages. Jarvis always replies in English.
+    # auto-detects and transcribes ALL of the owner's six languages. Jarvis always replies in English.
     deepgram_language: str = "multi"
 
     # --- Audio routing (speakers <-> headphones / AirPods) ------------------------------
@@ -156,7 +160,7 @@ class Settings(BaseSettings):
     api_auth_token: str | None = None                 # empty = loopback-only, no auth
 
     # Self-improvement loop (Hermes-style background_review): after every N turns a background pass
-    # extracts durable facts about Vazghen into L1 learned memory. Off the hot path; never slows a turn.
+    # extracts durable facts about the owner into L1 learned memory. Off the hot path; never slows a turn.
     self_improve_enabled: bool = True
     self_improve_every_turns: int = 6
 
@@ -210,9 +214,17 @@ class Settings(BaseSettings):
     #                           JARVIS_LLM_PRIMARY_MODEL=groq:llama-3.3-70b-versatile
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
+    #   * "ollama:<model>"   -> a LOCAL Ollama server (ollama_base_url, no key) for true local-first
+    #                           reasoning when cloud/proxy is down. e.g.
+    #                           JARVIS_LLM_FALLBACK_MODELS=...,ollama:llama3.2 keeps a fully-offline
+    #                           tail on the chain. Pull the model first (`ollama pull llama3.2`).
+    ollama_base_url: str = "http://localhost:11434/v1"
     # If no FIRST token arrives within this many seconds, cancel and fail over to the next model —
     # turns a slow/hung primary into a fast recovery instead of a full-timeout stall.
     llm_first_token_timeout_seconds: float = 4.0
+    # After a provider/model fails with a timeout, rate limit, API error, or unusable empty response,
+    # skip that chain entry briefly on later live turns while any healthy fallback exists.
+    llm_unhealthy_cooldown_seconds: float = 45.0
     # Optional two-tier: a fast model tried FIRST (prepended to the chain) for snappier first words;
     # the normal chain stays as the quality fallback. Blank = single-tier. e.g. "llama-3.1-8b-instant".
     llm_fast_model: str | None = None
@@ -222,6 +234,9 @@ class Settings(BaseSettings):
     telegram_allowed_users: str | None = None
     vault_path: str | None = None
     audit_log_dir: str | None = None
+    # Local contact book (Phase 4.3) — resolve a NAME to an email/Telegram/phone before a send/draft.
+    # Plain-text, one contact per line; blank = <repo>/contacts.md. Optional + gitignored.
+    contacts_path: str | None = None
 
     # --- Phase 3: knowledge & channel tools ---------------------------------------------
     # Every Phase 3 tool degrades gracefully: when its credentials are absent it returns a
@@ -245,6 +260,11 @@ class Settings(BaseSettings):
     ack_before_tools: bool = True
     tool_slow_warn_seconds: float = 8.0
     tool_long_update_seconds: float = 120.0
+    # Speed vs polish (A/B): when ON, a SHORT channel/task read (calendar/email/Notion-tasks/Telegram)
+    # is spoken verbatim, skipping the summary LLM pass (~1-3s faster on those turns). OFF by default so
+    # the summary keeps polishing a raw multi-item dump into a clean spoken sentence. Long results always
+    # summarise even when ON (see _CHANNEL_DIRECT_MAX in agent.py).
+    direct_speak_channel_reads: bool = False
 
     # --- Background task queue (status-keeping) -------------------------------------------------
     # Long work (a fleet delegation) runs in the background and is tracked here so Watari can answer
@@ -283,6 +303,24 @@ class Settings(BaseSettings):
     # Page scraping uses Jina Reader (https://r.jina.ai) — free and KEYLESS. This optional key only
     # raises rate limits; leave blank and scraping still works.
     jina_api_key: str | None = None
+    # Fallback providers (Phase 4.5) so a single provider outage never removes the capability:
+    #   * web_search: Tavily -> Brave (JARVIS_BRAVE_API_KEY) -> Jina Search (s.jina.ai, KEYLESS).
+    #     The keyless Jina tail means search works even with NO keys at all.
+    #   * scrape_url: Jina Reader (keyless) -> Firecrawl (JARVIS_FIRECRAWL_API_KEY).
+    brave_api_key: str | None = None
+    firecrawl_api_key: str | None = None
+    # MCP servers (Phase 4.6) — expose external Model Context Protocol tools through the normal
+    # registry. A JSON object (inline or a path to a .json file) mapping name -> {command, args, env}.
+    # ONLY listed servers are launched (no default); blank = no MCP tools. e.g.
+    #   {"filesystem": {"command": "npx", "args": ["-y","@modelcontextprotocol/server-filesystem","/dir"]}}
+    mcp_servers: str | None = None
+    # Composio (breadth layer): API key for the 250+ OAuth-managed app integrations. Used by the
+    # accounts health-check (bench/test_composio_accounts.py) and, once an MCP server URL is added to
+    # mcp_servers, by the live tool path. Blank = no Composio.
+    composio_api_key: str | None = None
+    # The Composio entity/user the connected accounts live under. Blank = auto-detect from the first
+    # connected account at first use (cached).
+    composio_user_id: str | None = None
     browserbase_api_key: str | None = None
     browserbase_project_id: str | None = None
 
@@ -308,7 +346,7 @@ class Settings(BaseSettings):
     music_source: str = "ytmusic"
 
     # --- Phase 11: Gmail + Calendar (one Google OAuth app) + Home Assistant -------------
-    # Vazghen runs the one-time consent (bench/google_login.py) -> a refresh token below. The same
+    # The owner runs the one-time consent (bench/google_login.py) -> a refresh token below. The same
     # app/token serves Gmail (read/draft/send) and Calendar (list/create). All degrade to a spoken
     # "not configured" note until set. send_email + create_event are confirm-gated (outward-facing).
     google_client_id: str | None = None
@@ -334,6 +372,13 @@ class Settings(BaseSettings):
     # listening device, else sends a Telegram voice note, else an ntfy push. Only scheduled when a
     # tasks DB is configured. Blank ("") disables the automatic briefing (on-demand still works).
     task_briefing_time: str = "08:30"
+    # Autonomous daily BACKLOG pass (Phase 3.1): pull overdue + undated-inbox Notion tasks and have the
+    # bounded worker attempt the SAFE work (research/draft/summarise), posting its result as a Notion
+    # comment. Outward/destructive steps are always DEFERRED by the worker. OFF by default (it acts
+    # unattended); only scheduled when enabled AND a tasks DB is configured.
+    backlog_enabled: bool = False
+    backlog_time: str = "09:30"            # HH:MM, user timezone
+    backlog_max_tasks: int = 2            # how many tasks to attempt per daily pass
 
     # --- System control (files / processes / PowerShell) --------------------------------
     # Jarvis can manage the local machine: create/delete files & folders, list/kill/start
@@ -402,7 +447,7 @@ class Settings(BaseSettings):
     # Where "what's the weather" and the morning briefing default to when no place is named.
     home_location: str | None = None
 
-    # --- Phase 5: speaker biometrics (respond only to Vazghen's voice) ------------------
+    # --- Phase 5: speaker biometrics (respond only to the owner's voice) ------------------
     speaker_id_enabled: bool = False      # gate commands by speaker match (off until enrolled)
     speaker_profile_path: str | None = None  # default: <repo>/voiceprint.json
     speaker_threshold: float = 0.25       # ECAPA cosine-similarity accept threshold (~EER point)

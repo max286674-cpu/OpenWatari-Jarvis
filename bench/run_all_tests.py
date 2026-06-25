@@ -29,6 +29,8 @@ PY = sys.executable
 # required substring appears in its output (empty list = exit code only).
 TESTS = [
     ("config loads + secrets present", "check_config.py", "offline", ["elevenlabs_api_key  : set"]),
+    ("Aggregate runner: network skip classification", "test_run_all_tests_classifier.py", "offline",
+     ["checks passed ==="]),
     ("Phase 1: VAD + barge-in", "test_phase1_vad_bargein.py", "offline", ["checks passed ==="]),
     ("Phase 3: knowledge & channel tools + ispir-only", "test_phase3_tools.py", "offline",
      ["checks passed ==="]),
@@ -75,6 +77,22 @@ TESTS = [
      "test_llm_routing.py", "offline", ["checks passed ==="]),
     ("Background task queue: fire long work, live status, voice completion",
      "test_background_tasks.py", "offline", ["checks passed ==="]),
+    ("Voice-grade brain: single-tool short-circuit + read-intent forcing + parallel tools",
+     "test_brain_voice_grade.py", "offline", ["checks passed ==="]),
+    ("Autonomous work_on_task: bounded worker, defers outward actions, backgrounds",
+     "test_work_on_task.py", "offline", ["checks passed ==="]),
+    ("Safety+Autonomy levers: catastrophic refusal + work_on_task intent routing",
+     "test_safety_autonomy.py", "offline", ["checks passed ==="]),
+    ("Contacts: resolve name -> target, clarify ambiguous/unknown, degrade",
+     "test_contacts.py", "offline", ["checks passed ==="]),
+    ("Document RAG: ingest/query/close a temp local-doc index, graceful edges",
+     "test_documents.py", "offline", ["checks passed ==="]),
+    ("Search/scrape fallback: Tavily->Brave->Jina (keyless), Jina->Firecrawl",
+     "test_web_fallback.py", "offline", ["checks passed ==="]),
+    ("MCP client: local stdio server exposes a callable tool, degrades cleanly",
+     "test_mcp_client.py", "offline", ["checks passed ==="]),
+    ("Public-surface clean: no secrets/private hosts/personal email in tracked files",
+     "check_public_clean.py", "offline", ["clean:"]),
     ("Local voice: build_tts honours provider (ElevenLabs/Piper/Kokoro)",
      "test_local_voice.py", "offline", ["checks passed ==="]),
     ("Identity layer: one persona template personalises from config (framework)",
@@ -92,8 +110,38 @@ TESTS = [
 ]
 
 # Markers that mean "the proxy/brain wasn't reachable" -> SKIP a [network] test, not FAIL.
-NETWORK_DOWN = ("Connection", "ConnectError", "Timeout", "Max retries", "getaddrinfo",
-                "Failed to establish", "APIConnectionError", "11001", "actively refused")
+# Keep these narrow: provider rejections and model/tool behavior errors must stay red.
+NETWORK_DOWN = (
+    "ConnectError",
+    "Connection refused",
+    "Failed to establish",
+    "Max retries",
+    "NameResolutionError",
+    "No connection could be made",
+    "Temporary failure in name resolution",
+    "Timeout",
+    "WinError 10061",
+    "WinError 11001",
+    "actively refused",
+    "getaddrinfo",
+    "nodename nor servname provided",
+)
+
+# These indicate the dependency was reachable enough to reject the request, or the model/tool
+# behavior was wrong. They are real runnable failures even if earlier failover logs mention
+# connection errors from other providers.
+RUNNABLE_FAILURE = (
+    "400 -",
+    "401 -",
+    "403 -",
+    "429 -",
+    "BadRequestError",
+    "RateLimitError",
+    "invalid_request_error",
+    "rate_limit_exceeded",
+    "tool call validation failed",
+    "tool_use_failed",
+)
 
 
 def run(script: str, timeout: int) -> tuple[int, str]:
@@ -114,6 +162,18 @@ def run(script: str, timeout: int) -> tuple[int, str]:
         return 124, f"TIMEOUT after {timeout}s"
 
 
+def classify_result(tag: str, code: int, out: str, needles: list[str]) -> str:
+    """Classify a child test result as PASS, FAIL, or SKIP."""
+    if code == 0 and all(n in out for n in needles):
+        return "PASS"
+    if tag == "network" and code != 0:
+        if any(n in out for n in RUNNABLE_FAILURE):
+            return "FAIL"
+        if any(n in out for n in NETWORK_DOWN):
+            return "SKIP"
+    return "FAIL"
+
+
 def main() -> int:
     print("=" * 60)
     print(" JARVIS — full verification")
@@ -126,13 +186,9 @@ def main() -> int:
         tail = "\n".join(line for line in out.splitlines() if line.strip())[-1500:]
         print("    " + tail.replace("\n", "\n    "))
 
-        if tag == "network" and (code != 0 and any(n in out for n in NETWORK_DOWN)):
-            status = "SKIP"
+        status = classify_result(tag, code, out, needles)
+        if status == "SKIP":
             print("    -> SKIP (freellmapi proxy unreachable — start the VPS tunnel to run this)")
-        elif code == 0 and all(n in out for n in needles):
-            status = "PASS"
-        else:
-            status = "FAIL"
         results.append((status, label))
 
     # The gated fleet test is informational only.

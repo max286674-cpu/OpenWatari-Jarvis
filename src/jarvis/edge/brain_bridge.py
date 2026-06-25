@@ -79,11 +79,11 @@ class JarvisBrain(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _start_or_supersede_turn(self, text: str) -> None:
-        """Start a turn, or let Vazghen interrupt a long/stuck turn with a new instruction.
+        """Start a turn, or let the owner interrupt a long/stuck turn with a new instruction.
 
         The old behaviour ignored transcripts while a tool was running, which made a stuck browser
         action feel like a loop. Once speech reaches the brain it is already wake-gated and
-        speaker-verified, so a new utterance from Vazghen should be able to cancel or replace the
+        speaker-verified, so a new utterance from the owner should be able to cancel or replace the
         current task.
         """
         if self._turn_task and not self._turn_task.done():

@@ -1,8 +1,8 @@
 """System-control tools — files, folders, processes, and PowerShell.
 
-Jarvis manages Vazghen's own machine: create/delete files & folders, list/kill/start
+Jarvis manages the owner's own machine: create/delete files & folders, list/kill/start
 processes, and run PowerShell (optionally **elevated**, which raises a Windows UAC prompt
-Vazghen accepts). These are powerful and partly irreversible, so:
+the owner accepts). These are powerful and partly irreversible, so:
 
 * destructive deletes refuse anything under ``settings.system_protected_paths`` or a drive root;
 * the persona rule is to **confirm before anything destructive or outward-facing**;
@@ -299,7 +299,7 @@ SCHEMAS = [
         "function": {
             "name": "file_op",
             "description": (
-                "Create or delete files and folders on Vazghen's PC, or list a folder. "
+                "Create or delete files and folders on the owner's PC, or list a folder. "
                 "Deleting is irreversible — confirm with him first."
             ),
             "parameters": {
@@ -342,7 +342,7 @@ SCHEMAS = [
         "function": {
             "name": "run_powershell",
             "description": (
-                "Run a PowerShell command on Vazghen's PC and get the output. Set as_admin=true to "
+                "Run a PowerShell command on the owner's PC and get the output. Set as_admin=true to "
                 "run elevated (raises a Windows UAC prompt he must accept). Use for system tasks, "
                 "settings, installs. Confirm anything destructive first."
             ),
@@ -360,7 +360,7 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "open_url",
-            "description": "Open a URL in Vazghen's default browser on his PC (e.g. open YouTube, a "
+            "description": "Open a URL in the owner's default browser on his PC (e.g. open YouTube, a "
                            "website, a search). Use this to 'open the browser' / 'open YouTube'.",
             "parameters": {
                 "type": "object",
@@ -373,7 +373,7 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "open_app",
-            "description": "Launch an application or executable on Vazghen's PC by name or path "
+            "description": "Launch an application or executable on the owner's PC by name or path "
                            "(e.g. 'notepad', 'spotify', 'code', 'explorer').",
             "parameters": {
                 "type": "object",

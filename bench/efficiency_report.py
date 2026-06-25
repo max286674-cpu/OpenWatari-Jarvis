@@ -109,8 +109,12 @@ async def main() -> None:
         from jarvis.brain.llm import LLMClient
 
         llm = LLMClient()
+        # Production warms every provider connection at startup (agent.warmup -> llm.warmup), so a
+        # real first turn never pays cold TLS/DNS setup. Warm here too, else we'd measure a cold-
+        # connect artifact (~1.5s) that the live assistant never sees.
+        await llm.warmup()
         ttfts: list[float] = []
-        for _ in range(2):
+        for _ in range(3):
             t0 = time.perf_counter()
             got = False
             async for _delta in llm.stream(
@@ -131,6 +135,7 @@ async def main() -> None:
         from jarvis.brain.agent import JarvisAgent
 
         agent = JarvisAgent()
+        await agent.warmup()        # match production: connections primed before the first turn
         t0 = time.perf_counter()
         await agent.respond("What is two plus two?")
         turn_ms = (time.perf_counter() - t0) * 1000

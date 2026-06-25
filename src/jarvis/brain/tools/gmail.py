@@ -1,4 +1,4 @@
-"""Gmail tools — read, draft, and send mail through Vazghen's Google app (Phase 11).
+"""Gmail tools — read, draft, and send mail through the owner's Google app (Phase 11).
 
 Backed by ``brain/google.py`` (one OAuth app, shared with Calendar). ``read_email`` summarises
 unread or searched mail; ``draft_email`` saves a draft; ``send_email`` actually sends and is
@@ -97,7 +97,7 @@ SCHEMAS = [
         "function": {
             "name": "read_email",
             "description": (
-                "Read Vazghen's Gmail — unread by default, or a Gmail search query "
+                "Read the owner's Gmail — unread by default, or a Gmail search query "
                 "(e.g. 'from:bank', 'is:unread newer_than:2d'). Summarises sender, subject, snippet."
             ),
             "parameters": {
@@ -132,7 +132,7 @@ SCHEMAS = [
             "name": "send_email",
             "description": (
                 "Send an email via Gmail. OUTWARD-FACING: first read the recipient, subject, and "
-                "gist back to Vazghen and get a clear yes — only then call this."
+                "gist back to the owner and get a clear yes — only then call this."
             ),
             "parameters": {
                 "type": "object",

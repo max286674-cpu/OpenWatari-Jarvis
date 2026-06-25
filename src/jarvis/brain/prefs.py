@@ -1,6 +1,6 @@
 """Runtime preferences Jarvis can change on the fly, persisted to JSON.
 
-Some things shouldn't be frozen in ``.env``. Vazghen's **home location** is the clearest case: it's
+Some things shouldn't be frozen in ``.env``. The owner's **home location** is the clearest case: it's
 Cologne most of the year, but could be Armenia or France for a whole summer. So it's a *variable*,
 not a constant — Jarvis updates it at runtime (via the ``set_home_location`` tool), it persists
 across restarts in ``runtime_prefs.json``, and it overrides the ``.env`` default. Anything unset
@@ -44,5 +44,5 @@ def set(key: str, value) -> None:  # noqa: A001 — small, intentional get/set A
 
 
 def home_location() -> str | None:
-    """Vazghen's CURRENT home — the runtime override if set, else the ``.env`` default."""
+    """The owner's CURRENT home — the runtime override if set, else the ``.env`` default."""
     return get("home_location") or settings.home_location

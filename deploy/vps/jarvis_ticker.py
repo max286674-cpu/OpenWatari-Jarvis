@@ -6,7 +6,7 @@ Why this exists
 One-shot / `at` reminders already reach the phone with the PC off, because ntfy.sh holds them
 server-side until their fire time (see ``brain/tools/notify.py``). But ntfy cannot hold a
 *recurring* schedule ("every day at 08:00"). For that you need a process that is itself always
-on. Vazghen already has a VPS (``openclaw@100.107.141.83``); this tiny daemon runs there.
+on. You run this on your own VPS (e.g. ``user@your-vps-host``); this tiny daemon runs there.
 
 What it is
 ----------

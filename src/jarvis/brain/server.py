@@ -93,7 +93,7 @@ class BrainServer:
         Interrupts any in-flight turn first so an unprompted line (proactive nudge or a fired
         reminder) can be heard immediately.
         """
-        # Record what Watari says unprompted into the shared history, so when Vazghen replies to a
+        # Record what Watari says unprompted into the shared history, so when the owner replies to a
         # proactive nudge or a fired reminder the brain knows what he's responding to.
         try:
             self._agent.note_proactive(message)
@@ -371,6 +371,14 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
     # note, else ntfy push. Wired after _tg_bridge below via set_briefing_emit.
     if settings.notion_tasks_db_id and settings.task_briefing_time:
         SCHEDULER.schedule_daily_briefing(settings.task_briefing_time)
+
+    # Phase 3.1 — autonomous daily BACKLOG pass (opt-in: JARVIS_BACKLOG_ENABLED). When on and a tasks
+    # DB is set, a daily job has the bounded worker attempt overdue/inbox tasks (safe work only;
+    # outward steps deferred) and comments the results back onto each Notion task.
+    if settings.backlog_enabled and settings.notion_tasks_db_id:
+        SCHEDULER.set_backlog_runner(server._agent.run_backlog)
+        SCHEDULER.schedule_daily_backlog(settings.backlog_time)
+        logger.info("autonomous daily backlog pass scheduled")
 
     # P1 #6 — memory hygiene. A daily job dedups near-identical learned facts, caps the active set,
     # and rotates old journals so 24/7 accumulation doesn't dull recall or re-bloat the prompt.

@@ -26,7 +26,7 @@ SCHEMAS = [
         "function": {
             "name": "run_protocol",
             "description": (
-                "Run a named protocol — a privileged routine that requires Vazghen's password. "
+                "Run a named protocol — a privileged routine that requires the owner's password. "
                 "Available: 'goodnight' (stop Jarvis), 'phoenix' (restart Jarvis), 'ragnarok' "
                 "(restart the laptop), 'backup' (archive memory), 'ping' (phone push test), "
                 "'diagnostics' (write health report), 'auditpack' (archive audit logs), and "
@@ -39,7 +39,7 @@ SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Protocol name."},
-                    "password": {"type": "string", "description": "The password Vazghen provided."},
+                    "password": {"type": "string", "description": "The password the owner provided."},
                 },
                 "required": ["name", "password"],
             },

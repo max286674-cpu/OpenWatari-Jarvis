@@ -3,7 +3,7 @@
 Hermes, after a turn, forks the agent to replay the conversation and ask itself "should anything be
 saved to memory?", writing straight to its memory store while the main conversation + prompt cache
 stay untouched. We apply the same idea to Watari's brain: a background pass replays the recent
-conversation and asks the model what DURABLE facts about Vazghen are worth remembering long-term,
+conversation and asks the model what DURABLE facts about the owner are worth remembering long-term,
 then writes them to **L1 learned memory** (``STORE.remember``, which dedups).
 
 Why it matters here: Watari's 5-layer memory was elaborate but EMPTY (L1 = 0 facts) because nothing
@@ -27,12 +27,12 @@ from jarvis.brain.memory import STORE
 # Adapted from Hermes' _MEMORY_REVIEW_PROMPT, tightened to return machine-parseable output.
 _EXTRACT_PROMPT = (
     "You are Watari's private memory reviewer. Read the conversation and extract DURABLE facts about "
-    "Vazghen that are worth remembering for months: his stable preferences and persona, decisions he "
+    "the owner that are worth remembering for months: his stable preferences and persona, decisions he "
     "made, people/projects/places he mentioned, and expectations about how Watari should behave. "
     "IGNORE transient chit-chat, one-off task mechanics, the current time/date, and anything already "
     "obvious. Each fact must be a short, self-contained third-person sentence. "
-    'Return ONLY a compact JSON array (max 8), e.g. ["Vazghen prefers replies under two sentences.", '
-    '"Vazghen renamed his assistant to Watari."]. If nothing is worth saving, return [].'
+    'Return ONLY a compact JSON array (max 8), e.g. ["the owner prefers replies under two sentences.", '
+    '"the owner renamed his assistant to Watari."]. If nothing is worth saving, return [].'
 )
 
 

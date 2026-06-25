@@ -1,6 +1,6 @@
-"""Speaker biometrics — "respond only to Vazghen's voice" (Phase 5).
+"""Speaker biometrics — "respond only to the owner's voice" (Phase 5).
 
-Identity gate for the voice loop: after enrolling Vazghen's voice once, Jarvis compares each
+Identity gate for the voice loop: after enrolling the owner's voice once, Jarvis compares each
 spoken utterance's voiceprint to the enrolled one and **ignores commands from other voices**
 (the TV, a guest). This is layered on top of the wake word + half-duplex gate as a final check.
 
@@ -11,7 +11,7 @@ Design
   ``identity`` extra and is imported **lazily**. If it isn't installed (or no profile is enrolled,
   or the feature is off), the verifier **degrades to "accept everything"** — the pipeline never
   breaks, matching the rest of Jarvis's graceful-degradation contract.
-- Enrollment (``bench/enroll_voice.py``) records a few seconds of Vazghen, averages the embeddings,
+- Enrollment (``bench/enroll_voice.py``) records a few seconds of the owner, averages the embeddings,
   L2-normalises, and saves a small JSON voiceprint to ``JARVIS_SPEAKER_PROFILE``.
 - At runtime, ``SpeakerGate`` (a Pipecat processor) buffers recent mic audio and, when a transcript
   is produced, embeds that audio and accepts the turn only if cosine-similarity ≥ threshold.
@@ -136,7 +136,7 @@ class SpeakerVerifier:
             return True, 1.0
         emb = self.embed(pcm16, sample_rate)
         if emb is None:
-            return True, 1.0  # backend missing -> don't lock Vazghen out
+            return True, 1.0  # backend missing -> don't lock the owner out
         score = cosine(emb, self._profile)
         accept = should_accept(score, settings.speaker_threshold, self.has_profile, True)
         return accept, score

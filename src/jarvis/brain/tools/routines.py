@@ -22,9 +22,9 @@ from zoneinfo import ZoneInfo
 
 from jarvis.brain.modes import MODES
 from jarvis.brain.tools.base import tool_error
-from jarvis.config import settings
+from jarvis.config import settings  # noqa: F401 - bench monkeypatches this module attribute.
 
-USER_TZ = ZoneInfo("Europe/Berlin")
+USER_TZ = ZoneInfo(settings.user_tz)
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -109,7 +109,7 @@ async def routine(args: dict) -> str:
 
 
 async def set_home_location(args: dict) -> str:
-    """Change (or report) Vazghen's current home location — a runtime variable, not a constant."""
+    """Change (or report) the owner's current home location — a runtime variable, not a constant."""
     from jarvis.brain import prefs
 
     loc = (args.get("location") or "").strip()
@@ -160,7 +160,7 @@ SCHEMAS = [
         "function": {
             "name": "set_home_location",
             "description": (
-                "Set or report Vazghen's CURRENT home location (a changeable variable — e.g. Cologne "
+                "Set or report the owner's CURRENT home location (a changeable variable — e.g. Cologne "
                 "normally, but Armenia or France for a summer). With no location, reports the current "
                 "one. This is what 'what's the weather' and the daily briefing default to. Use when he "
                 "says 'I'm in X now' / 'set home to X' / 'I'm spending the summer in X'."

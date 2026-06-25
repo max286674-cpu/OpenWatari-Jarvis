@@ -140,7 +140,7 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_reminders",
-            "description": "List Vazghen's pending reminders with their next fire time and id.",
+            "description": "List the owner's pending reminders with their next fire time and id.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },

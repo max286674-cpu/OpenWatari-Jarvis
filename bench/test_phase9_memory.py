@@ -93,6 +93,23 @@ def main() -> None:
     ok_v, msg_v = validate_vault()
     check("validate_vault returns (bool, message)", isinstance(ok_v, bool) and isinstance(msg_v, str), msg_v)
 
+    print("\n[10] parse cache: hot reads served from memory, but edits/deletes still seen")
+    import time as _time
+    cstore = MemoryStore(base_dir=tmp / "cache-test")
+    cstore.remember("The rabbit farm has forty does.", tags=["rabbit-farm"])
+    _ = cstore.recall("rabbit farm")                       # warms the parse cache
+    check("a fact file is cached after first read", len(cstore._note_cache) == 1, str(len(cstore._note_cache)))
+    # An external edit (new mtime) must invalidate the cache, not serve stale text.
+    note_path = next((tmp / "cache-test" / "learned").glob("*.md"))
+    _time.sleep(0.01)
+    note_path.write_text(note_path.read_text(encoding="utf-8").replace("forty", "sixty"), encoding="utf-8")
+    check("an external edit is picked up (cache invalidated by mtime)",
+          any("sixty" in h for h in cstore.recall("rabbit farm")), str(cstore.recall("rabbit farm")))
+    # A deleted file must drop out of the cache (no ghosts, no unbounded growth).
+    note_path.unlink()
+    _ = cstore.recall("rabbit farm")
+    check("a deleted fact drops from the cache", len(cstore._note_cache) == 0, str(len(cstore._note_cache)))
+
     print(f"\n=== {passed}/{passed + failed} checks passed ===")
     if failed:
         sys.exit(1)

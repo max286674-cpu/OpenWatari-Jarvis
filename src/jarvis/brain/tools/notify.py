@@ -1,4 +1,4 @@
-"""Push notifications via ntfy — reach Vazghen when voice isn't available.
+"""Push notifications via ntfy — reach the owner when voice isn't available.
 
 When Jarvis can't speak (PC asleep, he's away from the mic), a reminder or alert is pushed to
 his phone via an ntfy topic (https://ntfy.sh or a self-hosted server). Configure
@@ -74,7 +74,7 @@ SCHEMAS = [
         "function": {
             "name": "send_push",
             "description": (
-                "Send a push notification to Vazghen's phone (ntfy). Use when something needs to "
+                "Send a push notification to the owner's phone (ntfy). Use when something needs to "
                 "reach him and speaking isn't enough, or he asks you to ping his phone."
             ),
             "parameters": {

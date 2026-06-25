@@ -55,6 +55,9 @@ class LLMClient:
     def __init__(self) -> None:
         self._timeout = settings.llm_request_timeout_seconds
         self._first_token_timeout = max(0.5, settings.llm_first_token_timeout_seconds)
+        self._cooldown = max(0.0, settings.llm_unhealthy_cooldown_seconds)
+        self._unhealthy_until: dict[str, float] = {}
+        self.last_route: dict[str, Any] = {}
         self._clients: dict[str, AsyncOpenAI] = {}
         self._default = self._make_client(
             settings.freellmapi_base_url, settings.freellmapi_api_key or "freellmapi"
@@ -65,19 +68,70 @@ class LLMClient:
         return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=self._timeout, max_retries=0)
 
     def _resolve(self, entry: str) -> tuple[AsyncOpenAI, str]:
-        """Map a chain entry to (client, model_name), honouring a ``provider:`` prefix."""
-        if entry.startswith("groq:"):
-            client = self._clients.get("groq")
-            if client is None:
-                client = self._clients["groq"] = self._make_client(
-                    settings.groq_base_url, settings.groq_api_key or "missing-groq-key"
-                )
-            return client, entry[len("groq:"):]
+        """Map a chain entry to (client, model_name), honouring a ``provider:`` prefix.
+
+        ``groq:<model>`` hits Groq directly; ``ollama:<model>`` hits a LOCAL Ollama server (no key,
+        true offline fallback); unprefixed goes to the freellmapi proxy. Each provider's client is
+        built once and cached."""
+        for prefix, base_url, api_key in (
+            ("groq:", settings.groq_base_url, settings.groq_api_key or "missing-groq-key"),
+            ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key
+        ):
+            if entry.startswith(prefix):
+                name = prefix[:-1]
+                client = self._clients.get(name)
+                if client is None:
+                    client = self._clients[name] = self._make_client(base_url, api_key)
+                return client, entry[len(prefix):]
         return self._default, entry
 
     @property
     def chain(self) -> list[str]:
         return self._chain
+
+    def _candidate_chain(self) -> list[str]:
+        """Return healthy entries first; if every entry is cooling down, try the full chain anyway."""
+        if not self._cooldown:
+            return list(self._chain)
+        now = asyncio.get_running_loop().time()
+        healthy = [m for m in self._chain if self._unhealthy_until.get(m, 0.0) <= now]
+        if healthy:
+            skipped = [m for m in self._chain if m not in healthy]
+            if skipped:
+                logger.debug(f"LLM skipping cooling-down models: {skipped}")
+            return healthy
+        return list(self._chain)
+
+    def _mark_failure(self, model: str, err: Exception) -> None:
+        if not self._cooldown:
+            return
+        self._unhealthy_until[model] = asyncio.get_running_loop().time() + self._cooldown
+        logger.debug(f"LLM marked '{model}' unhealthy for {self._cooldown:.1f}s ({type(err).__name__})")
+
+    def _mark_success(
+        self,
+        model: str,
+        failures: int,
+        mode: str,
+        latency_ms: float | None = None,
+        errors: list[dict[str, str]] | None = None,
+    ) -> None:
+        self._unhealthy_until.pop(model, None)
+        self.last_route = {
+            "mode": mode,
+            "answered_by": model,
+            "failed_over_count": failures,
+            "latency_ms": latency_ms,
+            "errors": errors or [],
+        }
+        logger.info(
+            "LLM route: mode={} answered_by={} failed_over_count={} latency_ms={} errors={}",
+            mode,
+            model,
+            failures,
+            f"{latency_ms:.0f}" if latency_ms is not None else "n/a",
+            errors or [],
+        )
 
     async def warmup(self) -> None:
         """Pre-open a connection to EVERY distinct provider in the chain, so neither the first turn
@@ -123,7 +177,10 @@ class LLMClient:
         ``{"type":"function","function":{"name": ...}}`` dict to force one specific tool.
         """
         last_err: Exception | None = None
-        for model in self._chain:
+        route_started = asyncio.get_running_loop().time()
+        errors: list[dict[str, str]] = []
+        failures = 0
+        for model in self._candidate_chain():
             client, model_name = self._resolve(model)
             try:
                 kwargs: dict[str, Any] = {
@@ -152,9 +209,14 @@ class LLMClient:
                     raise _EmptyResponse("textual tool-call instead of a native tool call")
                 if model != self._chain[0]:
                     logger.warning(f"LLM primary unavailable; answered via fallback '{model}'")
+                latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
+                self._mark_success(model, failures, "complete", latency_ms, errors)
                 return msg
             except (*_FAILOVER, _EmptyResponse) as e:
                 last_err = e
+                failures += 1
+                errors.append({"model": model, "error": type(e).__name__})
+                self._mark_failure(model, e)
                 logger.warning(f"LLM model '{model}' failed ({type(e).__name__}); trying next")
                 continue
         raise RuntimeError(f"all LLM models failed; last error: {last_err}")
@@ -177,7 +239,10 @@ class LLMClient:
         yielding we never silently switch mid-utterance (that would double-speak).
         """
         last_err: Exception | None = None
-        for model in self._chain:
+        route_started = asyncio.get_running_loop().time()
+        errors: list[dict[str, str]] = []
+        failures = 0
+        for model in self._candidate_chain():
             client, model_name = self._resolve(model)
             tool_acc: dict[int, dict[str, str]] = {}
             got_any = False
@@ -249,6 +314,8 @@ class LLMClient:
                     yield ("tools", [tool_acc[i] for i in sorted(tool_acc)])
                 if model != self._chain[0]:
                     logger.warning(f"LLM streaming via fallback '{model}'")
+                latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
+                self._mark_success(model, failures, "stream_with_tools", latency_ms, errors)
                 return
             except (*_FAILOVER, _EmptyResponse) as e:
                 last_err = e
@@ -261,7 +328,12 @@ class LLMClient:
                 if got_any:
                     # Already speaking — don't fail over and repeat; end the utterance here.
                     logger.warning(f"LLM stream '{model}' broke mid-utterance ({type(e).__name__})")
+                    latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
+                    self._mark_success(model, failures, "stream_with_tools", latency_ms, errors)
                     return
+                failures += 1
+                errors.append({"model": model, "error": type(e).__name__})
+                self._mark_failure(model, e)
                 logger.warning(f"LLM stream '{model}' failed ({type(e).__name__}); trying next")
                 continue
         raise RuntimeError(f"all LLM models failed; last error: {last_err}")
@@ -273,7 +345,10 @@ class LLMClient:
     ) -> AsyncIterator[str]:
         """Stream text deltas from the first model that responds (no tools)."""
         last_err: Exception | None = None
-        for model in self._chain:
+        route_started = asyncio.get_running_loop().time()
+        errors: list[dict[str, str]] = []
+        failures = 0
+        for model in self._candidate_chain():
             client, model_name = self._resolve(model)
             try:
                 stream = await client.chat.completions.create(
@@ -292,9 +367,14 @@ class LLMClient:
                         yield delta
                 if not got_any:
                     raise _EmptyResponse("stream produced no content")
+                latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
+                self._mark_success(model, failures, "stream", latency_ms, errors)
                 return
             except (*_FAILOVER, _EmptyResponse) as e:
                 last_err = e
+                failures += 1
+                errors.append({"model": model, "error": type(e).__name__})
+                self._mark_failure(model, e)
                 logger.warning(f"LLM stream '{model}' failed ({type(e).__name__}); trying next")
                 continue
         raise RuntimeError(f"all LLM models failed; last error: {last_err}")

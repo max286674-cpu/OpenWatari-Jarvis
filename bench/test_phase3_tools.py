@@ -69,8 +69,11 @@ async def main() -> None:
     for k in saved:
         setattr(settings, k, None)
     try:
-        r = await handlers["web_search"]({"query": "test"})
-        check("web_search w/o key -> friendly note", "isn't configured" in r and "Tavily" in r, r)
+        # web_search now has a KEYLESS tail (Jina Search), so it no longer has a 'not configured'
+        # state — with no keys the provider chain is just the keyless Jina provider (Phase 4.5).
+        import jarvis.brain.tools.web as webmod
+        chain = [n for n, _ in webmod._search_providers()]
+        check("web_search w/o keys -> keyless Jina fallback only", chain == ["Jina"], str(chain))
         # scrape_url uses Jina Reader (keyless) so it has no 'not configured' state — not exercised here.
         r = await handlers["browse_web"]({"url": "example.com"})
         check("browse_web w/o key -> friendly note", "isn't configured" in r, r)

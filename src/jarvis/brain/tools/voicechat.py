@@ -147,7 +147,7 @@ SCHEMAS = [
         "function": {
             "name": "play_in_music_room",
             "description": (
-                "Stream a song into Vazghen's 'Jarvis Music Room' Telegram voice chat so it plays "
+                "Stream a song into the owner's 'Jarvis Music Room' Telegram voice chat so it plays "
                 "live on his PHONE (he joins that voice chat to listen). Pick a track from his "
                 "playlist by name, 'latest' for the newest, or blank for a random one. Use this when "
                 "he says 'play X in the music room' / 'play it on my phone / in Telegram'."

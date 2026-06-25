@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 
-VPS_WS = "ws://100.107.141.83:8765/voice"
+# Your brain host. Set JARVIS_BRAIN_WS_URL (e.g. ws://<your-vps-or-tailscale-host>:8765/voice),
+# or it defaults to the local brain.
+VPS_WS = os.environ.get("JARVIS_BRAIN_WS_URL", "ws://127.0.0.1:8765/voice")
 
 
 async def main() -> None:

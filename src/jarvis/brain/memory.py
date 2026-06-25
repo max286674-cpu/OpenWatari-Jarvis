@@ -1,6 +1,6 @@
 """Jarvis's persistent memory — the learned (L1) + journal (L2) layers.
 
-The static `memory/*.md` files are who Vazghen *is*; this is what Jarvis *learns* as they talk:
+The static `memory/*.md` files are who the owner *is*; this is what Jarvis *learns* as they talk:
 one fact per note under `memory/learned/`, and a per-day journal under `memory/journal/` for
 continuity ("what did we do yesterday?"). Plain Markdown so it stays the source of truth, editable
 by hand, and later indexable by the Redis (L4) / vector (L5) accelerators without changing it.
@@ -12,6 +12,7 @@ missing dir is created on first write; reading an absent store just returns noth
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,13 +43,15 @@ def _terms(query: str) -> list[str]:
 
 
 class LearnedNote:
-    __slots__ = ("path", "text", "tags", "created")
+    __slots__ = ("path", "text", "tags", "created", "mtime")
 
-    def __init__(self, path: Path, text: str, tags: list[str], created: str) -> None:
+    def __init__(self, path: Path, text: str, tags: list[str], created: str,
+                 mtime: float = 0.0) -> None:
         self.path = path
         self.text = text
         self.tags = tags
         self.created = created
+        self.mtime = mtime   # cached at read time so hot-path callers needn't re-stat
 
 
 class MemoryStore:
@@ -58,6 +61,11 @@ class MemoryStore:
         self.base = Path(base_dir) if base_dir else DEFAULT_MEMORY_DIR
         self.learned_dir = self.base / "learned"
         self.journal_dir = self.base / "journal"
+        # Parse cache: path -> (mtime, LearnedNote). recall()/digest() run on the hot path and were
+        # re-reading + re-parsing every fact file on every call (~17ms for the corpus). We now read +
+        # parse a file only when it's new or its mtime changed; an unchanged corpus is served from
+        # memory (sub-millisecond). External edits/deletes are still picked up via the mtime/glob scan.
+        self._note_cache: dict[str, tuple[float, LearnedNote]] = {}
 
     # ---- L1: learned facts ------------------------------------------------------------
     def remember(self, text: str, tags: list[str] | None = None) -> Path | None:
@@ -82,27 +90,57 @@ class MemoryStore:
         logger.info(f"memory: learned {text[:60]!r}" + (f" [{tagline}]" if tags else ""))
         return path
 
+    def _parse_note(self, p: Path, raw: str) -> LearnedNote:
+        m = _FRONTMATTER_RE.match(raw)
+        if m:
+            meta, body = m.group(1), m.group(2).strip()
+            tags: list[str] = []
+            created = ""
+            for line in meta.splitlines():
+                if line.startswith("tags:"):
+                    tags = [t.strip().lower() for t in line[5:].split(",") if t.strip()]
+                elif line.startswith("created:"):
+                    created = line[8:].strip()
+        else:
+            body, tags, created = raw.strip(), [], ""
+        return LearnedNote(p, body, tags, created)
+
     def _iter_notes(self):
         if not self.learned_dir.is_dir():
             return
-        for p in self.learned_dir.glob("*.md"):
+        seen: set[str] = set()
+        # os.scandir hands back DirEntry objects whose .stat() is cached from the single directory
+        # read (especially cheap on Windows, where a separate Path.stat() is a full extra syscall) —
+        # so the freshness check costs ~one syscall for the whole directory, not one per file.
+        try:
+            entries = list(os.scandir(self.learned_dir))
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.name.endswith(".md"):
+                continue
+            key = entry.path
+            seen.add(key)
             try:
-                raw = p.read_text(encoding="utf-8", errors="ignore")
+                mtime = entry.stat().st_mtime
             except OSError:
                 continue
-            m = _FRONTMATTER_RE.match(raw)
-            if m:
-                meta, body = m.group(1), m.group(2).strip()
-                tags = []
-                created = ""
-                for line in meta.splitlines():
-                    if line.startswith("tags:"):
-                        tags = [t.strip().lower() for t in line[5:].split(",") if t.strip()]
-                    elif line.startswith("created:"):
-                        created = line[8:].strip()
-            else:
-                body, tags, created = raw.strip(), [], ""
-            yield LearnedNote(p, body, tags, created)
+            cached = self._note_cache.get(key)
+            if cached and cached[0] == mtime:
+                yield cached[1]
+                continue
+            try:
+                raw = Path(entry.path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            note = self._parse_note(Path(entry.path), raw)
+            note.mtime = mtime
+            self._note_cache[key] = (mtime, note)
+            yield note
+        # Forget files that have since been deleted, so the cache can't grow unbounded or serve ghosts.
+        if len(self._note_cache) > len(seen):
+            for stale in [k for k in self._note_cache if k not in seen]:
+                self._note_cache.pop(stale, None)
 
     def recall(self, query: str, limit: int = 5, semantic=None) -> list[str]:
         """Best matching learned facts for ``query``.
@@ -125,10 +163,7 @@ class MemoryStore:
         for note in notes:
             key = str(note.path)
             text_by_key[key] = note.text
-            try:
-                mtime_by_key[key] = note.path.stat().st_mtime
-            except OSError:
-                mtime_by_key[key] = 0.0
+            mtime_by_key[key] = note.mtime   # cached at read time (no re-stat on the hot path)
             low = note.text.lower()
             score = 0.0
             for t in terms:
@@ -158,7 +193,7 @@ class MemoryStore:
 
     def recent_digest(self, limit: int = 20) -> list[str]:
         """The most recently learned facts, newest first — injected into the system prompt."""
-        notes = sorted(self._iter_notes(), key=lambda n: n.path.stat().st_mtime, reverse=True)
+        notes = sorted(self._iter_notes(), key=lambda n: n.mtime, reverse=True)
         return [n.text for n in notes[:limit]]
 
     def forget(self, query: str) -> str | None:

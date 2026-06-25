@@ -17,17 +17,16 @@ Run:
 
 from __future__ import annotations
 
-import sys
-
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
 import asyncio
+import sys
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
 )
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 PASS = "✓"
 FAIL = "✗"
@@ -174,7 +173,7 @@ def test_brain_cancels_on_interruption() -> None:
         await started.wait()
 
         # Drive the real InterruptionFrame branch of process_frame directly.
-        frame = InterruptionFrame()
+        InterruptionFrame()
         if brain._turn_task and not brain._turn_task.done():
             brain._turn_task.cancel()
         brain._busy = False

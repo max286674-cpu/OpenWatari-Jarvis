@@ -16,6 +16,9 @@ from jarvis.brain.tools import (
     browser,
     calendar,
     coding,
+    composio,
+    contacts,
+    documents,
     gmail,
     localplay,
     memory,
@@ -38,7 +41,7 @@ from jarvis.brain.tools import (
 
 _MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, browser,
             protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
-            coding, skills, notion, tasks]
+            coding, skills, notion, tasks, contacts, documents, composio]
 
 Handler = Callable[[dict], Awaitable[str]]
 
@@ -51,6 +54,8 @@ _LAZY_GROUPS: dict[str, list] = {
     "coding": [coding],                  # read/write source, tests, lint, git — only for dev work
     "office": [notion, gmail, calendar],  # email, calendar, Notion — when he asks about them
     "home": [smarthome, voicechat],      # smart-home control + Telegram music-room streaming
+    "docs": [documents],                 # read a local document + answer questions grounded in it
+    "apps": [composio],                  # 250+ external apps via Composio (GitHub/Slack/Drive/…)
 }
 # Substring triggers (lowercased) that activate a group for a turn. Broad on purpose — a miss just
 # means a one-turn delay (the follow-up usually contains the word, and groups stay warm one turn).
@@ -66,6 +71,15 @@ LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
                "what needs", "dashboard", "overdue"),
     "home": ("smart home", "home assistant", "light", "lamp", "thermostat", "heating", "lock",
              "unlock", "music room", "voice chat", "stream music", "play in the room"),
+    "docs": ("document", "this file", "read this", "the pdf", "a pdf", "the doc", "this doc",
+             "in the file", "ask the document", "close the document", "read the file",
+             "this report", "the attachment"),
+    "apps": ("github", "gitlab", "slack", "discord", "google drive", "gdrive", "google doc",
+             "google sheet", "spreadsheet", "stripe", "linear", "jira", "trello", "asana",
+             "airtable", "reddit", "youtube", "linkedin", "instagram", "coinbase", "supabase",
+             "hubspot", "salesforce", "calendly", "an issue", "a pr", "pull request",
+             "post a message", "send a message to", "add a row", "create a channel", "in slack",
+             "on github", "to slack", "a repo", "my repos"),
 }
 
 _LAZY_MODULES = {m for mods in _LAZY_GROUPS.values() for m in mods}

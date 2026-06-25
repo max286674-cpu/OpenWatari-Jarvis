@@ -21,6 +21,7 @@ __pycache__/
 *.onnx
 *.bin
 models/
+.piper-voices/
 
 # --- Runtime / generated state (machine-local, not source) ---
 jarvis_jobs.sqlite
@@ -59,9 +60,13 @@ logs/
 
 # Docs site — deployed via Vercel CLI (vercel --cwd website --prod), kept out of the repo
 website/
+next-steps/
 # Personal finish-line checklist (this instance, not the framework)
 MY-WATARI-CHECKLIST.md
 # Production-readiness recommendations + behavioral run artifacts (local working docs)
 WATARI-PRODUCTION-RECOMMENDATIONS.md
 bench/_behavioral_run.txt
 bench/_behavioral_scorecard.json
+bench/_artifacts/
+# Personal contact book (Phase 4.3) — private, never tracked
+contacts.md

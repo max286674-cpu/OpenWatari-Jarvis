@@ -1,4 +1,4 @@
-"""PC-control link — lets the 24/7 VPS brain execute on Vazghen's laptop.
+"""PC-control link — lets the 24/7 VPS brain execute on the owner's laptop.
 
 The brain's system tools (files, processes, PowerShell, opening apps/URLs, the browser) run on
 whatever host the brain runs on. On the VPS that's the wrong machine. So the laptop runs a small

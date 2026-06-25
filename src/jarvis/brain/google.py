@@ -1,6 +1,6 @@
 """Shared Google OAuth for Gmail + Calendar — one app, one refresh token.
 
-Vazghen asked for Gmail "through an app": a real Google Cloud OAuth app. He runs the one-time
+The owner asked for Gmail "through an app": a real Google Cloud OAuth app. He runs the one-time
 consent once (``bench/google_login.py``) which yields a long-lived **refresh token**; Jarvis then
 silently exchanges it for short-lived access tokens as needed. The same app/token covers Gmail and
 Calendar (request both scopes at consent time).

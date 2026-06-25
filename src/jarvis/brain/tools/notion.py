@@ -1,4 +1,4 @@
-"""Notion tools — read, write, and comment on Vazghen's Notion pages (Phase 11+).
+"""Notion tools — read, write, and comment on the owner's Notion pages (Phase 11+).
 
 Uses a Notion **internal integration** token: create one at https://www.notion.so/my-integrations,
 then **share** the specific pages/databases you want Jarvis to touch with that integration (Notion is
@@ -237,7 +237,7 @@ async def notion_tasks(args: dict) -> str:
     scope = (args.get("scope") or "today").strip().lower()
     from datetime import date, datetime, timedelta
     from zoneinfo import ZoneInfo
-    today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    today = datetime.now(ZoneInfo(settings.user_tz)).date()
     try:
         schema = await _get(f"/databases/{db_id}")
         p = _detect_props(schema)
@@ -246,6 +246,7 @@ async def notion_tasks(args: dict) -> str:
         due_today: list[str] = []
         upcoming: list[tuple[date, str]] = []
         recurring: list[str] = []
+        inbox: list[str] = []   # undated, non-recurring, not-done = the backlog to triage
         for page in data.get("results") or []:
             props = page.get("properties") or {}
             title = _prop_value(props.get(p["title"], {})) or "(untitled)" if p["title"] else _title_of(page)
@@ -255,6 +256,8 @@ async def notion_tasks(args: dict) -> str:
                 recurring.append(title)
             dstr = _prop_value(props.get(p["date"], {})) if p["date"] else None
             if not dstr:
+                if not _is_recurring(title):
+                    inbox.append(title)  # no deadline and not a standing routine -> inbox backlog
                 continue
             try:
                 d = datetime.fromisoformat(dstr.replace("Z", "+00:00")).date()
@@ -279,11 +282,58 @@ async def notion_tasks(args: dict) -> str:
         if scope in ("week", "upcoming", "open", "all") and recurring:
             uniq = list(dict.fromkeys(recurring))  # de-dupe, keep order
             parts.append("recurring: " + "; ".join(uniq[:6]))
-        if not parts or (not overdue and not due_today and not upcoming and not recurring):
+        # Undated backlog — only on the broad scopes (and the morning briefing's 'open'), so the
+        # day view stays focused on what actually has a deadline.
+        if scope in ("open", "all") and inbox:
+            uniq_inbox = list(dict.fromkeys(inbox))
+            parts.append(f"{len(uniq_inbox)} undated in your inbox: " + "; ".join(uniq_inbox[:5]))
+        if not parts or (not overdue and not due_today and not upcoming and not recurring and not inbox):
             return "Nothing due, sir — you're clear for today."
         return ". ".join(parts) + "."
     except Exception as e:  # noqa: BLE001
         return tool_error("Notion tasks", e)
+
+
+async def fetch_backlog_tasks(limit: int = 5) -> list[dict]:
+    """Structured overdue + undated-inbox tasks (``{"id", "title"}``) for the autonomous backlog
+    worker (Phase 3.1). Overdue first (most pressing), then the undated inbox; completed and recurring
+    tasks are skipped (recurring = a standing routine, not one-off work). Returns ``[]`` when Notion or
+    the tasks DB isn't configured, or on any error — so the routine is always safe to call."""
+    if not _configured():
+        return []
+    db_id = (settings.notion_tasks_db_id or "").strip()
+    if not db_id:
+        return []
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo(settings.user_tz)).date()
+    try:
+        schema = await _get(f"/databases/{db_id}")
+        p = _detect_props(schema)
+        data = await _post(f"/databases/{db_id}/query", {"page_size": 100})
+    except Exception:  # noqa: BLE001 — never raise into the scheduler; a failed pass is a no-op
+        return []
+    overdue: list[dict] = []
+    inbox: list[dict] = []
+    for page in data.get("results") or []:
+        props = page.get("properties") or {}
+        title = _prop_value(props.get(p["title"], {})) or "(untitled)" if p["title"] else _title_of(page)
+        if p["status"] and _is_done(_prop_value(props.get(p["status"], {}))):
+            continue
+        if _is_recurring(title):
+            continue
+        item = {"id": page.get("id", ""), "title": title}
+        dstr = _prop_value(props.get(p["date"], {})) if p["date"] else None
+        if not dstr:
+            inbox.append(item)
+            continue
+        try:
+            d = datetime.fromisoformat(dstr.replace("Z", "+00:00")).date()
+        except ValueError:
+            continue
+        if d < today:
+            overdue.append(item)
+    return (overdue + inbox)[: max(0, limit)]
 
 
 def _schema_map(schema: dict) -> dict:
@@ -467,7 +517,7 @@ async def notion_delete_task(args: dict) -> str:
 SCHEMAS = [
     {"type": "function", "function": {
         "name": "notion_create_task",
-        "description": "Create a new task in Vazghen's Notion tasks dashboard. Use for 'add a task to "
+        "description": "Create a new task in the owner's Notion tasks dashboard. Use for 'add a task to "
                        "…', 'remind me to …', 'put X on my list'. Deadline must be an ISO date "
                        "(YYYY-MM-DD) — compute it yourself from today if he says 'tomorrow'/'Friday'.",
         "parameters": {"type": "object", "properties": {
@@ -501,14 +551,14 @@ SCHEMAS = [
     {"type": "function", "function": {
         "name": "notion_delete_task",
         "description": "Delete (archive) a task from the dashboard. Identify it by a word from its name "
-                       "(query) or page_id. Confirm with Vazghen first.",
+                       "(query) or page_id. Confirm with the owner first.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "A word from the task name."},
             "page_id": {"type": "string", "description": "Optional exact page id."}},
             "required": []}}},
     {"type": "function", "function": {
         "name": "notion_tasks",
-        "description": "Read Vazghen's Notion TASKS dashboard and report what needs doing: overdue, "
+        "description": "Read the owner's Notion TASKS dashboard and report what needs doing: overdue, "
                        "due today, upcoming this week (with deadlines), and recurring/standing tasks. "
                        "Use for 'what's on my plate today?', 'any deadlines?', 'what's due this "
                        "week?', 'what are my recurring tasks?'.",
@@ -519,7 +569,7 @@ SCHEMAS = [
             "required": []}}},
     {"type": "function", "function": {
         "name": "notion_search",
-        "description": "Search Vazghen's Notion (only pages shared with the integration) for a page "
+        "description": "Search the owner's Notion (only pages shared with the integration) for a page "
                        "or database. Returns titles + ids. Use first to find a page id.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "Search text; blank lists shared pages."}},
@@ -532,21 +582,21 @@ SCHEMAS = [
             "required": ["page_id"]}}},
     {"type": "function", "function": {
         "name": "notion_append",
-        "description": "Append a paragraph of text to a Notion page (a write). Confirm with Vazghen first.",
+        "description": "Append a paragraph of text to a Notion page (a write). Confirm with the owner first.",
         "parameters": {"type": "object", "properties": {
             "page_id": {"type": "string", "description": "Notion page id."},
             "text": {"type": "string", "description": "The text to add."}},
             "required": ["page_id", "text"]}}},
     {"type": "function", "function": {
         "name": "notion_comment",
-        "description": "Leave a comment on a Notion page. Confirm with Vazghen first.",
+        "description": "Leave a comment on a Notion page. Confirm with the owner first.",
         "parameters": {"type": "object", "properties": {
             "page_id": {"type": "string", "description": "Notion page id."},
             "text": {"type": "string", "description": "The comment text."}},
             "required": ["page_id", "text"]}}},
     {"type": "function", "function": {
         "name": "notion_create_page",
-        "description": "Create a new sub-page under a Notion parent page. Confirm with Vazghen first.",
+        "description": "Create a new sub-page under a Notion parent page. Confirm with the owner first.",
         "parameters": {"type": "object", "properties": {
             "parent_id": {"type": "string", "description": "Parent page id (must be shared with the integration)."},
             "title": {"type": "string", "description": "New page title."},

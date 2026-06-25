@@ -34,7 +34,7 @@ THEREFORE the intended, non-spoofing transport is one the user explicitly enable
   (b) the user allowlists a dedicated Jarvis client id / origin on their own gateway, or
   (c) a tiny authorized REST shim on the VPS that itself shells out to the CLI.
 Until one of those is chosen, ``delegate_to_fleet`` stays disabled; the brain answers
-on its own and tells Vazghen it can consult the fleet once the bridge is enabled.
+on its own and tells the owner it can consult the fleet once the bridge is enabled.
 """
 
 from __future__ import annotations

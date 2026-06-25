@@ -1,6 +1,6 @@
 """Audio device discovery + selection (speakers <-> headphones, incl. AirPods).
 
-Jarvis can play through whichever output device Vazghen prefers — built-in laptop
+Jarvis can play through whichever output device the owner prefers — built-in laptop
 speakers or Bluetooth headphones. On Windows, Apple AirPods Pro Max appear as a
 *generic* Bluetooth audio device once paired+connected (there is no Apple SDK):
 

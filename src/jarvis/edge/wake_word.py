@@ -1,11 +1,11 @@
 """WakeWordGate — true always-listening, directed-only, multi-wake-word.
 
 Audio is analysed **locally** by openWakeWord and is NOT forwarded to the (cloud) STT
-until one of Vazghen's wake words is heard. After a wake, a listening window opens so a
+until one of the owner's wake words is heard. After a wake, a listening window opens so a
 command — and short follow-ups after Jarvis replies — flow through. The window closes on
 silence, so ambient speech/media is ignored. Keeps Deepgram engaged only when addressed.
 
-Vazghen's required wake set (see README): jarvis, alfred, robbin, assist, time to work,
+The owner's required wake set (see README): jarvis, alfred, robbin, assist, time to work,
 wake up, six-one-nine. openWakeWord only ships pretrained models for a few phrases, so only
 the resolvable ones load here; the rest are reported as pending (Porcupine path). The engine
 is pluggable via ``JARVIS_WAKE_WORD_ENGINE``.
@@ -164,7 +164,7 @@ class WakeWordGate(FrameProcessor):
                     logger.info(f"wake: '{hit}' detected — listening")
                     if self._ack_choices and not self._acked:
                         # Speak a short acknowledgement ONCE (the first wake word of the session) so
-                        # Vazghen hears that the wake word landed and Watari is now listening. Later
+                        # The owner hears that the wake word landed and Watari is now listening. Later
                         # wakes stay silent so it doesn't preface every command.
                         self._acked = True
                         ack = random.choice(self._ack_choices)

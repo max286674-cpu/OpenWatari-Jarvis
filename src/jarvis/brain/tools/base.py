@@ -2,7 +2,7 @@
 
 Every tool follows one rule: **never crash the brain on a missing integration**. If a
 tool's credentials aren't set, its handler returns a short, plain-English note (via
-``not_configured``) that Jarvis simply re-voices to Vazghen ("Web search isn't wired up
+``not_configured``) that Jarvis simply re-voices to the owner ("Web search isn't wired up
 yet, sir — you'd need to add a Tavily key"). Errors are caught and returned the same way
 (``tool_error``). Handlers therefore always return a ``str`` the LLM can speak.
 """
@@ -19,12 +19,12 @@ from jarvis.config import settings
 
 def not_configured(what: str, needs: str) -> str:
     """A speakable note that a capability exists but isn't set up yet."""
-    return f"{what} isn't configured yet — it needs {needs}. Tell Vazghen and offer to help set it up."
+    return f"{what} isn't configured yet — it needs {needs}. Tell the owner and offer to help set it up."
 
 
 def tool_error(what: str, err: Exception) -> str:
     logger.warning(f"tool '{what}' failed: {type(err).__name__}: {err}")
-    return f"I couldn't complete the {what} just now ({type(err).__name__}). I'll let Vazghen know."
+    return f"I couldn't complete the {what} just now ({type(err).__name__}). I'll let the owner know."
 
 
 # A real User-Agent: some providers (e.g. Wikipedia) reject the default httpx UA with 403.

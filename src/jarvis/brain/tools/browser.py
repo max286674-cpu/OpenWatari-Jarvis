@@ -1,8 +1,8 @@
 """Local interactive browser — a real, visible Chromium Jarvis fully drives.
 
 Unlike ``web.browse_web`` (cloud Browserbase, for headless one-off extraction), this is a
-**persistent, visible** browser on Vazghen's own screen: Jarvis opens windows/tabs, clicks
-links and buttons, fills forms, and — when Vazghen asks him to log in — types the email and
+**persistent, visible** browser on the owner's own screen: Jarvis opens windows/tabs, clicks
+links and buttons, fills forms, and — when the owner asks him to log in — types the email and
 password into the page. The profile is persistent, so logins stick between sessions.
 
 One ``browser`` tool with an ``action`` so the LLM has a single clear verb:
@@ -216,7 +216,7 @@ SCHEMAS = [
         "function": {
             "name": "browser",
             "description": (
-                "Drive a real visible web browser on Vazghen's screen: open a URL or new tab, "
+                "Drive a real visible web browser on the owner's screen: open a URL or new tab, "
                 "click links/buttons (by visible text or CSS selector), fill form fields, type "
                 "text, press keys (e.g. Enter), go back, read the page, or screenshot it. Use "
                 "this for anything interactive — logging in (fill the email and password fields "

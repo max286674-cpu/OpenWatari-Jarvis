@@ -2,7 +2,7 @@
 
 Same Google OAuth app as Gmail (``brain/google.py``). ``list_events`` is the backbone of the
 proactive engine ("you have a standup in 10 minutes"); ``create_event`` is confirm-gated. Times are
-ISO-8601; the brain's timezone is Europe/Berlin. Degrades to a spoken note until the login is done.
+ISO-8601; the brain's timezone is the owner's configured timezone. Degrades to a spoken note until login.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from jarvis.brain.google import api_get, api_post, configured
 from jarvis.brain.tools.base import not_configured, tool_error
+from jarvis.config import settings
 
 _CAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 _NEEDS = "your Google login — run bench/google_login.py once (JARVIS_GOOGLE_* keys)"
@@ -72,8 +73,8 @@ async def create_event(args: dict) -> str:
     try:
         body = {
             "summary": summary,
-            "start": {"dateTime": start, "timeZone": "Europe/Berlin"},
-            "end": {"dateTime": end, "timeZone": "Europe/Berlin"},
+            "start": {"dateTime": start, "timeZone": settings.user_tz},
+            "end": {"dateTime": end, "timeZone": settings.user_tz},
         }
         await api_post(_CAL, body)
         return f"Added '{summary}' to your calendar, sir, starting {start.replace('T', ' at ')}."
@@ -105,7 +106,7 @@ SCHEMAS = [
         "function": {
             "name": "create_event",
             "description": (
-                "Create a Google Calendar event. Confirm the title and time with Vazghen first. "
+                "Create a Google Calendar event. Confirm the title and time with the owner first. "
                 "start/end are ISO-8601 local times (e.g. '2026-06-12T15:00'); end defaults to +1h."
             ),
             "parameters": {

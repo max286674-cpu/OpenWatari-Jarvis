@@ -65,7 +65,7 @@ async def play_music(args: dict) -> str:
     source = (args.get("source") or settings.music_source or "ytmusic").strip().lower()
 
     if source == "telegram":
-        # Preferred: STREAM the track live into the Music Room voice chat (videochat) that Vazghen
+        # Preferred: STREAM the track live into the Music Room voice chat (videochat) that the owner
         # joins to listen — not a file drop. Falls back to delivering the file only if no music room
         # is configured or he explicitly asked to play it OUT LOUD on the desktop (local=true).
         if settings.telegram_music_room_chat and not bool(args.get("local")):
@@ -123,7 +123,7 @@ SCHEMAS = [
             "name": "play_music",
             "description": (
                 "Play a song or artist. Default source 'ytmusic' (YouTube Music) is FREE and "
-                "music-tuned — no account, plays with sound. 'telegram' plays from Vazghen's "
+                "music-tuned — no account, plays with sound. 'telegram' plays from the owner's "
                 "personal Telegram playlist (delivered to his phone). 'youtube' is plain search."
             ),
             "parameters": {
