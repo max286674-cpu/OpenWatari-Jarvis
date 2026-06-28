@@ -437,7 +437,14 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
         asyncio.create_task(tg_bridge.run())
         logger.info("telegram bridge started — message the bot to reach Watari anywhere, 24/7")
 
-    async with websockets.serve(server.handler, host, port, max_size=4 * 1024 * 1024):
+    # Keepalive must tolerate a turn that briefly blocks the event loop (LLM inference + a sync tool).
+    # The default 20s ping_timeout dropped the link MID-REPLY whenever a turn ran long; 75s comfortably
+    # outlives any real turn while still recycling a genuinely dead socket.
+    # ponytail: timeout bump, not a fix for blocking-in-the-loop — make turns fully async if a turn can exceed 75s.
+    async with websockets.serve(
+        server.handler, host, port, max_size=4 * 1024 * 1024,
+        ping_interval=20, ping_timeout=75,
+    ):
         await asyncio.Future()  # run forever
 
 

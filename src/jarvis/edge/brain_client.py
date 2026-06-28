@@ -93,8 +93,10 @@ class BrainClient:
                 async with connect(
                     self._url,
                     additional_headers=headers,
-                    ping_interval=self._heartbeat_s,   # heartbeat: detect a half-open socket
-                    ping_timeout=self._heartbeat_s,
+                    ping_interval=self._heartbeat_s,   # heartbeat every 20s: detect a half-open socket
+                    # …but allow up to 75s for the pong: a brain turn (LLM + sync tool) can briefly block
+                    # the event loop, and a 20s timeout dropped the link MID-REPLY. Matches the server.
+                    ping_timeout=75.0,
                     max_size=4 * 1024 * 1024,
                 ) as ws:
                     self._ws = ws
