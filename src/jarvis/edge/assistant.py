@@ -120,10 +120,12 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     stages += [brain or JarvisBrain(), tts, TTSLeadInSilence(), TTFWMeter(), transport.output()]
 
     # An always-on wake-word assistant SITS idle waiting for "hey jarvis" — that is its normal state.
-    # Pipecat's default (idle_timeout_secs=300, cancel_on_idle_timeout=True) would cancel the whole
-    # pipeline after 5 min of silence, forcing a ~90s reboot during which the edge is deaf. Disable it.
+    # Pipecat's default (idle_timeout_secs=300) would otherwise cancel the whole pipeline after 5 min
+    # of silence, forcing a ~90s reboot during which the edge is deaf. idle_timeout_secs=None turns the
+    # idle machinery off entirely (no detection, no cancel); the cancel flags are belt-and-suspenders.
     worker = PipelineWorker(
         Pipeline(stages),
+        idle_timeout_secs=None,
         cancel_on_idle_timeout=False,
         cancel_runner_on_idle_timeout=False,
     )
