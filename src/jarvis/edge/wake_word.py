@@ -96,6 +96,11 @@ class WakeWordGate(FrameProcessor):
         self._listen_window_s = listen_window_s
         self._open_until = 0.0
         self._bot_speaking = False
+        self._speaking_since = 0.0
+        # Watchdog: if BotStoppedSpeaking never arrives (brain link drops mid-reply, TTS aborts), the
+        # gate would stay "speaking" forever and go permanently deaf. No real spoken reply lasts this
+        # long, so we force-recover after it — the single most important edge-liveness guarantee.
+        self._max_speak_s = 30.0
         self._suppress_during_tts = suppress_during_tts
         self._resume_after_tts = False
         logger.info(f"wake words active: {self._names} (threshold {threshold})")
@@ -135,6 +140,7 @@ class WakeWordGate(FrameProcessor):
         # Track playback so we can spare the CPU while Watari speaks (see below).
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            self._speaking_since = time.monotonic()
             if self._suppress_during_tts and self._awake:
                 self._resume_after_tts = True
                 self._open_until = 0.0
@@ -146,6 +152,13 @@ class WakeWordGate(FrameProcessor):
             self._resume_after_tts = False
 
         if isinstance(frame, InputAudioRawFrame):
+            # Liveness watchdog: a stuck "speaking" state (missed BotStoppedSpeaking) would mute wake
+            # detection forever. Recover so the gate can never go permanently deaf.
+            if self._bot_speaking and (time.monotonic() - self._speaking_since) > self._max_speak_s:
+                logger.warning(f"wake gate: bot-speaking stuck >{self._max_speak_s:.0f}s — "
+                               "force-clearing (lost BotStoppedSpeaking); resuming wake detection")
+                self._bot_speaking = False
+                self._resume_after_tts = False
             if self._bot_speaking and self._suppress_during_tts:
                 # Open speakers path: never run wake inference or forward mic audio while Watari is
                 # speaking. His own TTS can otherwise re-trigger wake/listening and leak into STT.

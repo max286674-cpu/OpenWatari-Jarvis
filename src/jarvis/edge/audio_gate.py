@@ -26,14 +26,19 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
 class HalfDuplexGate(FrameProcessor):
-    def __init__(self, cooldown_s: float = 0.4) -> None:
+    def __init__(self, cooldown_s: float = 0.4, max_speak_s: float = 30.0) -> None:
         super().__init__()
         self._bot_speaking = False
+        self._speaking_since = 0.0
+        self._max_speak_s = max_speak_s  # watchdog: clear a stuck "speaking" mute (missed Stopped frame)
         self._muted_until = 0.0
         self._cooldown_s = cooldown_s
 
     @property
     def _muted(self) -> bool:
+        # A stuck _bot_speaking (lost BotStoppedSpeaking) would mute the mic forever; auto-recover.
+        if self._bot_speaking and (time.monotonic() - self._speaking_since) > self._max_speak_s:
+            self._bot_speaking = False
         return self._bot_speaking or time.monotonic() < self._muted_until
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
@@ -41,6 +46,7 @@ class HalfDuplexGate(FrameProcessor):
 
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            self._speaking_since = time.monotonic()
             logger.debug("gate: muting mic (Jarvis speaking)")
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
