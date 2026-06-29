@@ -43,6 +43,15 @@ class _EmptyResponse(Exception):
     """A model returned 200 but with no usable choice (some proxies wrap errors in a 200)."""
 
 
+def _model_extra(model_name: str) -> dict[str, Any]:
+    """Per-model request params. gpt-oss reasoning models (e.g. Cerebras gpt-oss-120b) otherwise
+    spend the first ~2s 'thinking' with empty content — fatal for a voice turn. reasoning_effort=low
+    makes them emit the spoken answer immediately (~0.26s). Only set it for models that accept it."""
+    if "gpt-oss" in model_name:
+        return {"reasoning_effort": "low"}
+    return {}
+
+
 class LLMClient:
     """OpenAI-compatible client with model failover + per-model provider routing.
 
@@ -189,6 +198,7 @@ class LLMClient:
                     "model": model_name,
                     "messages": messages,
                     "temperature": temperature,
+                    **_model_extra(model_name),
                 }
                 if tools:
                     kwargs["tools"] = tools
@@ -259,6 +269,7 @@ class LLMClient:
                     "messages": messages,
                     "temperature": temperature,
                     "stream": True,
+                    **_model_extra(model_name),
                 }
                 if tools:
                     kwargs["tools"] = tools
@@ -358,6 +369,7 @@ class LLMClient:
                     messages=messages,
                     temperature=temperature,
                     stream=True,
+                    **_model_extra(model_name),
                 )
                 if model != self._chain[0]:
                     logger.warning(f"LLM streaming via fallback '{model}'")
