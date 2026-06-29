@@ -45,9 +45,17 @@ def _auto_whisper(model: str):
                 return
             await self.start_processing_metrics()
             audio_float = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
-            # language=None => faster-whisper detects the spoken language itself (all six).
+            # language: pin to settings.whisper_language ("en" default) — per-utterance auto-detect
+            #   mis-fires to Russian on short English speech. "auto" -> None (detect all six).
+            # condition_on_previous_text=False: the #1 fix for faster-whisper REPEAT LOOPS ("X. X. X…").
+            # vad_filter=True: drop silence/noise so it doesn't hallucinate phantom words from quiet.
+            lang = settings.whisper_language
+            lang = None if (not lang or lang.lower() == "auto") else lang
             segments, info = await asyncio.to_thread(
-                self._model.transcribe, audio_float, language=None
+                self._model.transcribe, audio_float,
+                language=lang,
+                condition_on_previous_text=False,
+                vad_filter=True,
             )
             detected = getattr(info, "language", None)
             text = ""

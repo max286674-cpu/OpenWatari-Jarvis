@@ -270,6 +270,10 @@ async def notion_tasks(args: dict) -> str:
             elif d <= today + timedelta(days=7):
                 upcoming.append((d, title))
         upcoming.sort()
+        # De-dupe (keep order): the Tasks DB can hold duplicate rows (e.g. leftover test artifacts),
+        # which otherwise made the morning briefing read the same task 3x ("X overdue; X overdue; …").
+        overdue = list(dict.fromkeys(overdue))
+        due_today = list(dict.fromkeys(due_today))
         parts: list[str] = []
         if scope in ("today", "open", "all") and overdue:
             parts.append(f"{len(overdue)} overdue, sir: " + "; ".join(overdue[:6]))

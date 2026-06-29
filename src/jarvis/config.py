@@ -145,6 +145,10 @@ class Settings(BaseSettings):
 
     # --- Local engine assets (used when provider == local) ------------------------------
     whisper_model: str = "base"           # faster-whisper size; "small" for more accuracy
+    # Language to transcribe. "en" (default) is far more reliable than auto-detect, which mis-fires
+    # to Russian/other on short English utterances. Set to your spoken language (e.g. "hy" Armenian,
+    # "ru", "fr") or "auto" for per-utterance detection across all six.
+    whisper_language: str = "en"
     piper_voice: str = "en_US-ryan-high"
     kokoro_voice: str = "am_adam"
 
