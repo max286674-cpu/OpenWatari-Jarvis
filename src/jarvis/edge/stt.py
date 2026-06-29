@@ -74,10 +74,9 @@ def _auto_whisper(model: str):
 
 
 def _build_whisper():
-    logger.info(
-        f"STT: Whisper local (multilingual AUTO-DETECT, model={settings.whisper_model}) "
-        "— understands EN/FR/DE/HY/RU/UK"
-    )
+    _lang = settings.whisper_language
+    _desc = "AUTO-DETECT EN/FR/DE/HY/RU/UK" if (not _lang or _lang.lower() == "auto") else f"language={_lang}"
+    logger.info(f"STT: Whisper local ({_desc}, model={settings.whisper_model})")
     return _auto_whisper(settings.whisper_model)
 
 
