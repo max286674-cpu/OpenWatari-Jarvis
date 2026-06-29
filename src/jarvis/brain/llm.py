@@ -39,6 +39,48 @@ def _looks_like_textual_toolcall(text: str | None) -> bool:
     return bool(t) and bool(_TEXTUAL_TOOLCALL_RE.search(t[:160]))
 
 
+# groq + llama-3.3-70b intermittently emits a tool call in Llama's TEXT format —
+# '<function=open_url{"url": "…"}</function>' — instead of the native JSON tool_calls, then returns
+# 400 tool_use_failed with that text in `failed_generation`. The model picked the right tool with the
+# right args; only the wire format is wrong. Parse it back so we keep the fast groq path instead of
+# burning a ~1.5s failover to gemini on every tool turn.
+_GROQ_FN_RE = re.compile(r"<\s*function\s*=\s*([\w.\-]+)\s*>?\s*(\{.*?\})\s*</\s*function\s*>", re.DOTALL)
+
+
+def _recover_textual_toolcall(err: Exception):
+    """Return a ChatCompletionMessage with native tool_calls recovered from a groq tool_use_failed
+    error, or None if there's nothing to recover."""
+    import json
+
+    body = getattr(err, "body", None)
+    gen = None
+    if isinstance(body, dict):
+        gen = body.get("failed_generation")
+        if not gen and isinstance(body.get("error"), dict):
+            gen = body["error"].get("failed_generation")
+    if not gen:
+        return None
+    calls = []
+    for m in _GROQ_FN_RE.finditer(gen):
+        name, raw = m.group(1), m.group(2)
+        try:
+            args = json.dumps(json.loads(raw))  # validate + normalise the JSON args
+        except (ValueError, TypeError):
+            continue
+        calls.append((name, args))
+    if not calls:
+        return None
+    from openai.types.chat import ChatCompletionMessage, ChatCompletionMessageToolCall
+    from openai.types.chat.chat_completion_message_tool_call import Function
+
+    tcs = [
+        ChatCompletionMessageToolCall(id=f"recovered_{i}", type="function",
+                                      function=Function(name=n, arguments=a))
+        for i, (n, a) in enumerate(calls)
+    ]
+    return ChatCompletionMessage(role="assistant", content=None, tool_calls=tcs)
+
+
 class _EmptyResponse(Exception):
     """A model returned 200 but with no usable choice (some proxies wrap errors in a 200)."""
 
@@ -225,6 +267,14 @@ class LLMClient:
                 self._mark_success(model, failures, "complete", latency_ms, errors)
                 return msg
             except (*_FAILOVER, _EmptyResponse) as e:
+                recovered = _recover_textual_toolcall(e)
+                if recovered is not None:
+                    names = [t.function.name for t in recovered.tool_calls]
+                    logger.warning(f"LLM '{model}' returned a textual tool-call; recovered {names} "
+                                   "from failed_generation (kept fast path, no failover)")
+                    latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
+                    self._mark_success(model, failures, "complete", latency_ms, errors)
+                    return recovered
                 last_err = e
                 failures += 1
                 errors.append({"model": model, "error": type(e).__name__})
@@ -341,6 +391,16 @@ class LLMClient:
                 if got_any:
                     # Already speaking — don't fail over and repeat; end the utterance here.
                     logger.warning(f"LLM stream '{model}' broke mid-utterance ({type(e).__name__})")
+                    latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
+                    self._mark_success(model, failures, "stream_with_tools", latency_ms, errors)
+                    return
+                recovered = _recover_textual_toolcall(e)
+                if recovered is not None:
+                    calls = [{"id": t.id, "name": t.function.name, "arguments": t.function.arguments}
+                             for t in recovered.tool_calls]
+                    logger.warning(f"LLM stream '{model}' returned a textual tool-call; recovered "
+                                   f"{[c['name'] for c in calls]} from failed_generation (no failover)")
+                    yield ("tools", calls)
                     latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000
                     self._mark_success(model, failures, "stream_with_tools", latency_ms, errors)
                     return
