@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     #                           JARVIS_LLM_PRIMARY_MODEL=groq:llama-3.3-70b-versatile
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
+    # Cerebras: the fastest inference provider (~2000 tok/s), OpenAI-compatible, free tier with a
+    # SEPARATE rate-limit pool from Groq — so "groq:…,cerebras:…" in the chain rarely both rate-limit
+    # at once. Get a free key at cloud.cerebras.ai. Use as e.g. "cerebras:llama-3.3-70b".
+    cerebras_api_key: str | None = None
+    cerebras_base_url: str = "https://api.cerebras.ai/v1"
     #   * "ollama:<model>"   -> a LOCAL Ollama server (ollama_base_url, no key) for true local-first
     #                           reasoning when cloud/proxy is down. e.g.
     #                           JARVIS_LLM_FALLBACK_MODELS=...,ollama:llama3.2 keeps a fully-offline

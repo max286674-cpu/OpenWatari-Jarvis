@@ -70,11 +70,13 @@ class LLMClient:
     def _resolve(self, entry: str) -> tuple[AsyncOpenAI, str]:
         """Map a chain entry to (client, model_name), honouring a ``provider:`` prefix.
 
-        ``groq:<model>`` hits Groq directly; ``ollama:<model>`` hits a LOCAL Ollama server (no key,
-        true offline fallback); unprefixed goes to the freellmapi proxy. Each provider's client is
-        built once and cached."""
+        ``groq:<model>`` hits Groq directly; ``cerebras:<model>`` hits Cerebras directly (the fastest
+        inference provider, ~2000 tok/s, separate rate-limit pool from Groq); ``ollama:<model>`` hits a
+        LOCAL Ollama server (no key, true offline fallback); unprefixed goes to the freellmapi proxy.
+        Each provider's client is built once and cached."""
         for prefix, base_url, api_key in (
             ("groq:", settings.groq_base_url, settings.groq_api_key or "missing-groq-key"),
+            ("cerebras:", settings.cerebras_base_url, settings.cerebras_api_key or "missing-cerebras-key"),
             ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key
         ):
             if entry.startswith(prefix):
