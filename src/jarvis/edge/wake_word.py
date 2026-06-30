@@ -83,9 +83,8 @@ class WakeWordGate(FrameProcessor):
         if not models:
             raise ValueError("WakeWordGate needs at least one loadable wake-word model")
         # Spoken "I heard you" acknowledgement choices (pipe-separated -> random for variety).
-        # Spoken only on the FIRST wake word of the session, then never again (self._acked).
+        # Spoken on EVERY wake so the owner always knows the wake word landed.
         self._ack_choices = [p.strip() for p in (ack_phrase or "").split("|") if p.strip()]
-        self._acked = False
         import openwakeword
         from openwakeword.model import Model
 
@@ -175,11 +174,10 @@ class WakeWordGate(FrameProcessor):
                 if hit:
                     self._wake()
                     logger.info(f"wake: '{hit}' detected — listening")
-                    if self._ack_choices and not self._acked:
-                        # Speak a short acknowledgement ONCE (the first wake word of the session) so
-                        # The owner hears that the wake word landed and Watari is now listening. Later
-                        # wakes stay silent so it doesn't preface every command.
-                        self._acked = True
+                    if self._ack_choices:
+                        # Speak a short acknowledgement on EVERY wake so the owner always hears that
+                        # the wake word landed and Watari is listening (a separate beat from the
+                        # command). Interaction is two-step: "Hey Jarvis" -> ack -> then the command.
                         ack = random.choice(self._ack_choices)
                         await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
                 # asleep: swallow audio so the STT never hears ambient speech
