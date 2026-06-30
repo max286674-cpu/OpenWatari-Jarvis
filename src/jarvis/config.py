@@ -145,6 +145,9 @@ class Settings(BaseSettings):
     # to Russian/other on short English utterances. Set to your spoken language (e.g. "hy" Armenian,
     # "ru", "fr") or "auto" for per-utterance detection across all six.
     whisper_language: str = "en"
+    # Moonshine (STT_PROVIDER=moonshine): English-only but ~3x faster than whisper base on CPU
+    # (~0.4s vs ~1.4s). 'moonshine/tiny' is fastest; 'moonshine/base' a touch more accurate, slower.
+    moonshine_model: str = "moonshine/tiny"
     piper_voice: str = "en_US-ryan-high"
     kokoro_voice: str = "am_adam"
 

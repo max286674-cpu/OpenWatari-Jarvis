@@ -33,11 +33,12 @@ cloud-voice = [
     "pipecat-ai[elevenlabs,deepgram]>=0.0.90",
 ]
 # Local CPU-friendly fallbacks (Phase 1): wake word + local STT/TTS.
-# NOTE: pipecat-ai 1.x dropped the `moonshine` extra; local STT uses `whisper` (faster-whisper).
+# Local STT: faster-whisper (multilingual) + moonshine-onnx (English, ~3x faster, STT_PROVIDER=moonshine).
 local-voice = [
     "openwakeword>=0.6",
     "pipecat-ai[whisper,piper]>=0.0.90",
     "kokoro-onnx>=0.4",
+    "useful-moonshine-onnx>=2025.11",
 ]
 # The 24/7 orchestrator (brain): own LLM + FastAPI + OpenClaw bridge + scheduler + channels.
 brain = [

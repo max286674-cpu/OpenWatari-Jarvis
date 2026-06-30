@@ -12,6 +12,17 @@ Run:
 
 from __future__ import annotations
 
+# MUST run before pipecat/huggingface_hub import: when STT=moonshine, force HF Hub offline so its
+# cached-model revision check can't make the network call that HANGS the windowless edge at startup.
+# huggingface_hub freezes the offline flag at import time, so setting it later (in the builder) is
+# too late. Scoped to moonshine so whisper's first-run model download still works.
+import os  # noqa: E402
+
+from jarvis.config import settings as _settings  # noqa: E402 — cheap, no HF import
+
+if _settings.stt_provider.value == "moonshine":
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 print("Watari: loading audio stack (first start can take ~15-30s)…", flush=True)
 
 from loguru import logger  # noqa: E402
