@@ -27,9 +27,11 @@ if (-not (Test-Path $pythonw)) {
 # pythonw.exe -m jarvis.edge.assistant, working dir = repo (so .env + the editable package load).
 $action  = New-ScheduledTaskAction -Execute $pythonw -Argument "-m jarvis.edge.assistant" -WorkingDirectory $RepoRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn
-# Survive crashes (3 restarts, 1 min apart), no run-time limit, start if it was missed.
+# Survive crashes (effectively unlimited restarts, 1 min apart), no run-time limit, start if missed.
+# 999 not 3: a 24/7 assistant must keep coming back even after a long run of hard crashes; the
+# in-process supervisor handles soft failures, this task is the backstop for total-process death.
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+    -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
 # Interactive principal: the task runs in YOUR session so it can reach the mic + speakers.
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited

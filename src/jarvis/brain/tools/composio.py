@@ -30,6 +30,16 @@ _NEEDS = "a Composio API key (JARVIS_COMPOSIO_API_KEY) and at least one connecte
 _user_id: str | None = None
 _active_toolkits: set[str] | None = None
 
+# Strong keyword -> toolkit slug. Only scopes when the toolkit is actually connected (checked at use);
+# a miss just falls through to the global search + fan-out. Keep short — obvious 1:1 signals only.
+_TOOLKIT_HINTS: dict[str, str] = {
+    "email": "gmail", "gmail": "gmail", "slack": "slack", "spreadsheet": "googlesheets",
+    "google sheet": "googlesheets", "google doc": "googledocs", "google drive": "googledrive",
+    "linear": "linear", "github": "github", "stripe": "stripe", "airtable": "airtable",
+    "youtube": "youtube", "reddit": "reddit", "linkedin": "linkedin", "instagram": "instagram",
+    "coinbase": "coinbase", "supabase": "supabase", "google calendar": "googlecalendar",
+}
+
 
 def _configured() -> bool:
     return bool(settings.composio_api_key)
@@ -90,6 +100,14 @@ async def composio_find_tools(args: dict) -> str:
     toolkit = (args.get("toolkit") or "").strip().lower()
     try:
         _uid, active = await _context()
+        # Strong keyword -> connected toolkit: scope the search server-side. One precise call instead
+        # of a 17-way fan-out, and it dodges Composio's global ranking burying the connected app.
+        if not toolkit and active:
+            ql = query.lower()
+            for kw, tk in _TOOLKIT_HINTS.items():
+                if kw in ql and tk in active:
+                    toolkit = tk
+                    break
         params: dict = {"search": query, "limit": 15}
         if toolkit:
             params["toolkit_slug"] = toolkit
