@@ -144,18 +144,25 @@ def _build_moonshine():
 def _build_deepgram():
     if not settings.deepgram_api_key:
         raise RuntimeError("JARVIS_DEEPGRAM_API_KEY is not set (.env)")
-    from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
+    from pipecat.services.deepgram.stt import DeepgramSTTService
 
-    opts = LiveOptions(
-        model=settings.deepgram_model,
-        language=settings.deepgram_language,  # 'multi' = EN/FR/DE/RU code-switch
-        smart_format=True,
-    )
     logger.info(
-        f"STT: Deepgram {settings.deepgram_model} (language={settings.deepgram_language}) "
+        f"STT: Deepgram {settings.deepgram_model} (language={settings.deepgram_language}, "
+        f"endpointing={settings.deepgram_endpointing_ms}ms) "
         "— understands EN/FR/DE/RU; for Armenian/Ukrainian set STT provider to 'whisper'"
     )
-    return DeepgramSTTService(api_key=settings.deepgram_api_key, live_options=opts)
+    return DeepgramSTTService(
+        api_key=settings.deepgram_api_key,
+        settings=DeepgramSTTService.Settings(
+            model=settings.deepgram_model,
+            language=settings.deepgram_language,  # 'multi' = EN/FR/DE/RU code-switch
+            smart_format=True,
+            # Finalise quickly after the user stops so the brain fires sooner (perceived latency).
+            endpointing=settings.deepgram_endpointing_ms,
+            # We act only on finals in a wake-gated turn; interim hypotheses would just be churn.
+            interim_results=False,
+        ),
+    )
 
 
 # provider -> builder. Moonshine isn't wired yet, so it maps to the local Whisper engine.

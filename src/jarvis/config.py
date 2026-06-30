@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     # Ukrainian isn't in 'multi' — for those use the Whisper provider (stt_provider=whisper), which
     # auto-detects and transcribes ALL of the owner's six languages. Jarvis always replies in English.
     deepgram_language: str = "multi"
+    # Endpointing: ms of trailing silence before Deepgram finalises an utterance and we hand it to the
+    # brain. Lower = snappier replies, higher = fewer mid-sentence cut-offs. 300ms is a good voice
+    # default; raise toward 500-800 if it cuts you off while you pause to think.
+    deepgram_endpointing_ms: int = 300
 
     # --- Audio routing (speakers <-> headphones / AirPods) ------------------------------
     # Output target: a name fragment or alias ("speakers", "headphones", "airpods") or a
@@ -143,7 +147,9 @@ class Settings(BaseSettings):
     # in HFP mode (mic active) where the A2DP "Headphones" output is unavailable and the auto-route
     # can't find the raw HFP endpoint. audio_out_sample_rate must match the device (HFP = 16000).
     audio_output_device_index: int | None = None
-    audio_out_sample_rate: int = 22050   # Piper en_US-ryan-high native rate; 16000 for a BT HFP headset
+    # Output playback rate. 22050 is a valid ElevenLabs pcm format (TTS negotiates pcm_22050 to match,
+    # so playback is clean). 16000 for a BT HFP headset. Must be a rate the output device supports.
+    audio_out_sample_rate: int = 22050
     # Auto-route to a connected private endpoint (AirPods Pro Max / headphones) when no explicit
     # output is set: "if they're connected to the laptop, send everything to my headphones".
     auto_route_headphones: bool = True
