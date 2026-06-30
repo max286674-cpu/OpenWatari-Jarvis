@@ -151,6 +151,30 @@ def main() -> None:
     check("bare 'that' -> clarify", needs_clarification("that"))
     check("a real request -> act", not needs_clarification("what's the weather in Yerevan"))
 
+    print("\n[12] calendar signal source — imminent timed events nudge, all-day skipped")
+    from datetime import timedelta, timezone
+
+    from jarvis.brain.tools import calendar as cal
+
+    now = datetime.now(timezone.utc)
+    soon = (now + timedelta(minutes=10)).isoformat()
+    fake = {"items": [
+        {"id": "e1", "summary": "Standup", "start": {"dateTime": soon}},
+        {"id": "e2", "summary": "A birthday", "start": {"date": "2026-06-30"}},  # all-day -> skip
+    ]}
+    cal.configured = lambda: True
+
+    async def _fake_get(url, params=None):
+        return fake
+
+    cal.api_get = _fake_get
+    sigs = asyncio.run(cal.calendar_signals())
+    check("one signal (all-day skipped)", len(sigs) == 1, f"got {len(sigs)}")
+    check("timed calendar event", bool(sigs) and sigs[0].kind == "calendar" and "Standup" in sigs[0].message)
+    check("urgency clears threshold", bool(sigs) and sigs[0].urgency >= 0.6)
+    cal.configured = lambda: False
+    check("unconfigured -> fail-quiet []", asyncio.run(cal.calendar_signals()) == [])
+
     print(f"\n=== {passed}/{passed + failed} checks passed ===")
     if failed:
         sys.exit(1)
