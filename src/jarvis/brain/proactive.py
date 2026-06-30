@@ -326,4 +326,10 @@ def default_signal_sources() -> list[SignalSource]:
         sources.append(health_signals)
     except Exception:  # noqa: BLE001 — health module optional until Phase X
         pass
+    try:
+        from jarvis.brain.tools.calendar import calendar_signals
+
+        sources.append(calendar_signals)  # imminent-event heads-up (the proactive 'backbone')
+    except Exception:  # noqa: BLE001 — fail-quiet if calendar/login isn't available
+        pass
     return sources

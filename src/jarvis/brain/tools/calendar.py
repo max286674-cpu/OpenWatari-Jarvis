@@ -82,6 +82,42 @@ async def create_event(args: dict) -> str:
         return tool_error("calendar create", e)
 
 
+async def calendar_signals():
+    """Proactive signal source: a heads-up for each timed event starting in the next ~15 min.
+
+    This is the calendar 'backbone' the proactive engine was always meant to tick over (it had only
+    health signals wired, so it stayed silent whenever the system was healthy). Fail-quiet: not
+    logged in, no events, or any API error -> no signals. Repeat-suppression (by event id, in the
+    engine) keeps it to one nudge per event even though the 5-min tick re-sees the 15-min window."""
+    from jarvis.brain.proactive import Signal  # lazy: avoid a calendar<->proactive import cycle
+
+    if not configured():
+        return []
+    now = datetime.now(timezone.utc)
+    try:
+        data = await api_get(_CAL, params={
+            "timeMin": now.isoformat(),
+            "timeMax": (now + timedelta(minutes=15)).isoformat(),
+            "singleEvents": "true", "orderBy": "startTime", "maxResults": 5,
+        })
+    except Exception:  # noqa: BLE001 — a broken source must never throw into the tick loop
+        return []
+    out = []
+    for ev in data.get("items") or []:
+        start = (ev.get("start") or {}).get("dateTime")  # timed events only; skip all-day
+        if not start:
+            continue
+        try:
+            when = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        mins = max(0, round((when - now).total_seconds() / 60))
+        title = ev.get("summary", "an event")
+        msg = f"Sir, {title} is starting now." if mins == 0 else f"Sir, {title} starts in {mins} minute(s)."
+        out.append(Signal(key=f"cal-{ev.get('id', start)}", kind="calendar", urgency=0.75, message=msg))
+    return out
+
+
 SCHEMAS = [
     {
         "type": "function",

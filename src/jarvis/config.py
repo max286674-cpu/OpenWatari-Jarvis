@@ -300,10 +300,11 @@ class Settings(BaseSettings):
     memory_digest_max: int = 12         # recent learned facts injected into the system prompt
     #                                     (capped so a full digest keeps the prompt <=2000 tok)
     redis_url: str | None = None        # L4 hot-cache (Phase 9b); blank = no cache (graceful)
-    # L5 semantic recall (Phase 9c): rank learned facts by meaning, not just keywords. Only takes
-    # effect if a local embedder (`sentence-transformers`) is installed; otherwise recall stays
-    # keyword-only (graceful no-op). semantic_weight scales the cosine score blended into recall.
-    memory_semantic_enabled: bool = True
+    # L5 semantic recall (Phase 9c): rank learned facts by meaning, not just keywords. Needs a local
+    # embedder (`sentence-transformers` + torch, ~1GB). OFF by default: keyword recall over the L1
+    # fact set (tens of facts) + the L3 vault is already strong, and the torch install isn't worth it
+    # on a small VPS. Flip True AFTER `uv pip install sentence-transformers` or it's a silent no-op.
+    memory_semantic_enabled: bool = False
     memory_semantic_model: str = "all-MiniLM-L6-v2"
     memory_semantic_weight: float = 4.0
 
@@ -463,7 +464,8 @@ class Settings(BaseSettings):
 
     # --- Latency / behaviour ------------------------------------------------------------
     directed_only: bool = True            # ignore ambient speech & own playback
-    aec_enabled: bool = True              # acoustic echo cancellation (don't hear self)
+    # NB: no aec flag — AEC (Krisp) isn't implemented; echo is handled by the half-duplex gate
+    # (mic muted while speaking) on shared speakers, and by physical isolation on headphones/glasses.
     ttfw_target_ms: int = 1200            # Time-To-First-Word goal, surfaced in the TUI
 
     @property
