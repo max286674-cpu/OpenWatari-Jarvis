@@ -10,8 +10,17 @@ Priority: **P0** = blocks "production-grade complete assistant" · **P1** = clea
 
 ---
 
-## Done this session (context, not TODO)
-Edge deafness watchdog · whisper small→base (4s→1.4s) · groq textual-toolcall recovery · L5 honest-off · proactive calendar source · dead `aec_enabled` + 10 dead config flags removed · daily memory backup · gated `deploy_vps.sh` · `dump_tools.py` · Composio fan-out search (all 17 connected apps reachable) · **ispir reachable + brain auto-delegates** (CLI path fixed, fleet armed, verified end-to-end). VPS disk 89%→79%.
+## Done (context, not TODO)
+Edge deafness watchdog · whisper small→base (4s→1.4s) · groq textual-toolcall recovery · L5 honest-off · proactive calendar source · dead `aec_enabled` + 10 dead config flags removed · daily memory backup · gated `deploy_vps.sh` · `dump_tools.py` · Composio fan-out search (all 17 connected apps reachable) · **ispir reachable + brain auto-delegates** (CLI path fixed, fleet armed, verified). VPS disk 89%→79%.
+
+**2026-06-30 implementation pass (verified live):**
+- ✅ **24/7 auto-start audited:** edge + pc_agent run on logon triggers (correct — edge needs the audio session); brain `Restart=always` + `Linger=yes`. Edge crash-restart **3→999** in `install_edge_service.ps1` (live task needs ONE elevated re-register — see below).
+- ✅ **pc_agent keepalive live** (`ping_timeout=75`, task restarted).
+- ✅ **Composio toolkit-hint:** keyword→connected-toolkit scopes the search (1 call, precise) — "send an email"→gmail in 0.57s.
+- ✅ **LLM primary benchmarked** (groq-70b/8b/cerebras/gemini on native tool-calling) → **kept groq+recovery** (swap was a lateral move with new rate-limit risk; data-driven decision).
+- ✅ **End-to-end reachability verified live:** brain `/healthz` ok · edge connected · pc_agent connected · **WS round-trip edge→brain→tool→reply 1.10s** ("what time is it" → real answer) · suite **51/0**.
+
+> ⚠️ **One elevated step for you:** the live `JarvisEdge` task still shows RestartCount=3 (modifying it needs admin). Run as admin, or via `!`: `powershell -File scripts\install_edge_service.ps1` to re-register with 999.
 
 ---
 
