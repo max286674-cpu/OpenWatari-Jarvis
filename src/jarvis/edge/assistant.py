@@ -79,6 +79,13 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     stages: list = [transport.input()]
     wake_gate = None  # set below if wake-word gating is enabled; drives the idle listening pulse
 
+    # Boost a quiet mic BEFORE anything analyses it (VAD/wake/STT), so a far-field/low-gain array
+    # mic still triggers the wake word. No-op at gain 1.0.
+    if settings.mic_gain != 1.0:
+        from jarvis.edge.audio_gate import MicGain
+        stages.append(MicGain(settings.mic_gain))
+        logger.info(f"mic gain: x{settings.mic_gain}")
+
     # Silero VAD first, so every later stage sees speech-start/stop frames (used for
     # barge-in now, endpointing later). It runs on raw mic audio regardless of wake state.
     if settings.vad_enabled:

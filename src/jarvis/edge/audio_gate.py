@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
 from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -23,6 +24,24 @@ from pipecat.frames.frames import (
     InputAudioRawFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+
+class MicGain(FrameProcessor):
+    """Amplify quiet mic input so wake/VAD/STT see a usable level. Laptop array mics (e.g. Intel
+    Smart Sound) often capture at ~3% full-scale when forced to mono 16 kHz — far too quiet for
+    openWakeWord to fire. Fixed gain + hard clip; placed first, before VAD/wake.
+    ponytail: fixed gain, not AGC — also raise the Windows mic level for better SNR; lower this then."""
+
+    def __init__(self, gain: float = 1.0) -> None:
+        super().__init__()
+        self._gain = gain
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if self._gain != 1.0 and isinstance(frame, InputAudioRawFrame):
+            a = np.frombuffer(frame.audio, dtype=np.int16).astype(np.float32) * self._gain
+            frame.audio = np.clip(a, -32768, 32767).astype(np.int16).tobytes()
+        await self.push_frame(frame, direction)
 
 
 class HalfDuplexGate(FrameProcessor):

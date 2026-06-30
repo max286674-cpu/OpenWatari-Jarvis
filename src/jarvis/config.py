@@ -148,6 +148,9 @@ class Settings(BaseSettings):
     # Moonshine (STT_PROVIDER=moonshine): English-only but ~3x faster than whisper base on CPU
     # (~0.4s vs ~1.4s). 'moonshine/tiny' is fastest; 'moonshine/base' a touch more accurate, slower.
     moonshine_model: str = "moonshine/tiny"
+    # Software boost for quiet mics (Intel Smart Sound arrays capture ~3% full-scale at mono 16k,
+    # too quiet for openWakeWord). 1.0 = off. Raise the Windows mic level too, then lower this.
+    mic_gain: float = 1.0
     piper_voice: str = "en_US-ryan-high"
     kokoro_voice: str = "am_adam"
 
