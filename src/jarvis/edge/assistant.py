@@ -64,13 +64,14 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
         audio_in_enabled=True,
         audio_out_enabled=True,
         audio_in_sample_rate=16000,   # 16k for openWakeWord + Deepgram
-        # MUST be set: left None, pipecat opens the output stream at the device's native rate (44.1k)
-        # but writes Piper's 22.05k samples without resampling -> playback is shredded into fragments.
-        # 22050 = Piper en_US-ryan-high's native rate, so there's no resample at all (verified clean).
-        # ponytail: matches the Piper voice; if you switch TTS/voice, set this to that voice's rate.
-        audio_out_sample_rate=22050,
+        # MUST be set: left None, pipecat opens the output at the device's native rate but writes
+        # Piper's 22.05k samples without resampling -> shredded playback. Match the device's rate.
+        audio_out_sample_rate=settings.audio_out_sample_rate,
     )
-    if out_index is not None:
+    if settings.audio_output_device_index is not None:
+        params.output_device_index = settings.audio_output_device_index
+        logger.info(f"speaker: pinned output device index {settings.audio_output_device_index}")
+    elif out_index is not None:
         params.output_device_index = out_index
     if settings.audio_input_device_index is not None:
         params.input_device_index = settings.audio_input_device_index

@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     # Smart Sound array can deliver garbled audio; set this to a USB mic/headset's index. List them:
     # uv run python bench/list_audio_devices.py
     audio_input_device_index: int | None = None
+    # Pin a specific OUTPUT device by PyAudio index (None = auto-route). Needed for a Bluetooth headset
+    # in HFP mode (mic active) where the A2DP "Headphones" output is unavailable and the auto-route
+    # can't find the raw HFP endpoint. audio_out_sample_rate must match the device (HFP = 16000).
+    audio_output_device_index: int | None = None
+    audio_out_sample_rate: int = 22050   # Piper en_US-ryan-high native rate; 16000 for a BT HFP headset
     # Auto-route to a connected private endpoint (AirPods Pro Max / headphones) when no explicit
     # output is set: "if they're connected to the laptop, send everything to my headphones".
     auto_route_headphones: bool = True
