@@ -380,6 +380,9 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
         SCHEDULER.schedule_daily_backlog(settings.backlog_time)
         logger.info("autonomous daily backlog pass scheduled")
 
+    # Daily backup of Watari's L1/L2 memory (the one durable store with no other automated backup).
+    SCHEDULER.schedule_daily_backup()
+
     # P1 #6 — memory hygiene. A daily job dedups near-identical learned facts, caps the active set,
     # and rotates old journals so 24/7 accumulation doesn't dull recall or re-bloat the prompt.
     try:

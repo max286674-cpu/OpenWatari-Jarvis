@@ -91,8 +91,6 @@ class Settings(BaseSettings):
     listening_pulse: bool = True
     listening_pulse_period_s: float = 2.5   # seconds between pulses while idle
     porcupine_access_key: str | None = None  # Picovoice key, for the custom-phrase engine
-    half_duplex: bool = True              # mute mic while Jarvis speaks (no self-hearing);
-    #                                       set false only with AEC (Krisp) or headphones
 
     # --- VAD & barge-in (Phase 1) -------------------------------------------------------
     # Silero VAD (CPU, bundled) detects speech start/stop. Barge-in lets you interrupt
@@ -121,7 +119,6 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str | None = None
     elevenlabs_voice_id: str | None = None          # the specific voice you want Jarvis to have
     elevenlabs_model: str = "eleven_flash_v2_5"     # lowest-latency streaming model
-    elevenlabs_streaming: bool = True               # WebSocket streaming on by default
 
     # --- Deepgram (cloud STT for accurate, streaming recognition) -----------------------
     deepgram_api_key: str | None = None
@@ -138,7 +135,6 @@ class Settings(BaseSettings):
     # this at startup (see edge/audio_devices.py). Input stays on the laptop mic by default
     # so Bluetooth stays in high-quality A2DP output mode (using AirPods as mic forces HFP).
     audio_output_device: str | None = None
-    audio_input_device: str | None = None
     # Auto-route to a connected private endpoint (AirPods Pro Max / headphones) when no explicit
     # output is set: "if they're connected to the laptop, send everything to my headphones".
     auto_route_headphones: bool = True
@@ -190,8 +186,6 @@ class Settings(BaseSettings):
     # delegate_to_fleet tool simply tells you the bridge isn't configured.
     openclaw_gateway_url: str = ""        # e.g. http://<your-gateway-host>:3200
     openclaw_token: str | None = None
-    openclaw_remote_token: str | None = None
-    openclaw_gateway_password: str | None = None
     openclaw_router_agent: str = "ispir"
     openclaw_request_timeout_seconds: int = 30
     openclaw_cli_path: str = "openclaw"   # path to the OpenClaw CLI on the gateway host
@@ -240,7 +234,6 @@ class Settings(BaseSettings):
 
     # --- Channels & knowledge -----------------------------------------------------------
     telegram_bot_token: str | None = None
-    telegram_allowed_users: str | None = None
     vault_path: str | None = None
     audit_log_dir: str | None = None
     # Local contact book (Phase 4.3) — resolve a NAME to an email/Telegram/phone before a send/draft.
@@ -363,7 +356,6 @@ class Settings(BaseSettings):
     google_client_secret: str | None = None
     google_refresh_token: str | None = None
     google_oauth_redirect: str = "http://127.0.0.1:8585/oauth2callback"  # must match the Google app
-    gmail_address: str = "me"            # 'me' = the authorized account; or an explicit address
     # Home Assistant — local-first smart home. A long-lived access token from your HA profile, and
     # the base URL of your HA instance (e.g. http://homeassistant.local:8123). Locks/alarms confirm.
     ha_url: str | None = None
@@ -404,8 +396,6 @@ class Settings(BaseSettings):
     # audit/, backups/) are hard-blocked from read/write. Commits + pushes are confirm-gated.
     coding_tools_enabled: bool = True
     skills_enabled: bool = True
-    github_token: str | None = None              # a fine-grained PAT (Contents: read/write on the repo)
-    github_repo: str | None = None               # "owner/name" — used for push guidance + status
     git_author_name: str = "Watari"              # the author on Watari's own (self-improvement) commits
     git_author_email: str = "watari@vazghen.local"
 
@@ -463,8 +453,9 @@ class Settings(BaseSettings):
     speaker_threshold: float = 0.25       # ECAPA cosine-similarity accept threshold (~EER point)
 
     # --- Latency / behaviour ------------------------------------------------------------
-    directed_only: bool = True            # ignore ambient speech & own playback
-    # NB: no aec flag — AEC (Krisp) isn't implemented; echo is handled by the half-duplex gate
+    # NB: "directed only" (ignore ambient speech & own playback) is enforced by the wake-word gate,
+    # not a flag; and there's no aec flag — AEC (Krisp) isn't implemented, echo is handled by the
+    # half-duplex gate (mic muted while speaking) on shared speakers.
     # (mic muted while speaking) on shared speakers, and by physical isolation on headphones/glasses.
     ttfw_target_ms: int = 1200            # Time-To-First-Word goal, surfaced in the TUI
 

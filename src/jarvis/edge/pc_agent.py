@@ -50,8 +50,10 @@ async def _session(url: str, token: str | None) -> None:
     from websockets.asyncio.client import connect
 
     headers = {"Authorization": f"Bearer {token}"} if token else None
+    # ping_timeout 75s (not 20): a brief network blip on a 24/7 idle link shouldn't drop the
+    # control channel. Matches the brain<->edge keepalive; stops the ~15-min reconnect churn.
     async with connect(url, additional_headers=headers, ping_interval=20,
-                       ping_timeout=20, max_size=8 * 1024 * 1024) as ws:
+                       ping_timeout=75, max_size=8 * 1024 * 1024) as ws:
         await ws.send(json.dumps({"type": "pc_hello", "host": platform.node(), "ver": CODE_VERSION}))
         logger.info(f"pc-agent: connected to {url} as '{platform.node()}' — ready for commands")
         async for raw in ws:

@@ -92,6 +92,31 @@ async def _fire_backlog() -> None:
         logger.warning(f"daily backlog pass failed: {e}")
 
 
+async def _fire_backup() -> None:
+    """Top-level job target: zip Watari's learned facts + journal (L1/L2) into ``backups/`` and keep
+    the most recent 14. The memory dir is the one durable store with no other automated backup (the
+    OpenClaw vault sync only covers the Obsidian vault). Fail-quiet — never raises into the loop."""
+    import shutil
+    from pathlib import Path
+
+    try:
+        from jarvis.brain.memory import STORE
+
+        src = STORE.base
+        if not src.is_dir():
+            return
+        backups = Path(__file__).resolve().parents[3] / "backups"
+        backups.mkdir(exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.make_archive(str(backups / f"jarvis-memory-{stamp}"), "zip", root_dir=str(src))
+        keep = sorted(backups.glob("jarvis-memory-*.zip"))[:-14]
+        for old in keep:
+            old.unlink(missing_ok=True)
+        logger.info(f"memory backup written ({stamp}); pruned {len(keep)} old archive(s)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"memory backup failed: {e}")
+
+
 async def _fire(message: str, push_phone: bool = True) -> None:
     """Top-level job target (must be importable for the SQLite jobstore). Delivers a reminder.
 
@@ -191,6 +216,19 @@ class Scheduler:
                       misfire_grace_time=3600, coalesce=True, replace_existing=True)
         logger.info(f"daily backlog pass scheduled for {hh:02d}:{mm:02d}")
         return "daily-backlog"
+
+    def schedule_daily_backup(self, hhmm: str = "03:30") -> str | None:
+        """(Re)register the daily memory backup at HH:MM. Fixed id so restarts refresh, not
+        duplicate. Returns the job id."""
+        from apscheduler.triggers.cron import CronTrigger
+
+        hh, mm = _parse_hhmm(hhmm)
+        sched = self._ensure()
+        sched.add_job(_fire_backup, trigger=CronTrigger(hour=hh, minute=mm, timezone=USER_TZ),
+                      id="daily-memory-backup", name="daily memory backup",
+                      misfire_grace_time=3600, coalesce=True, replace_existing=True)
+        logger.info(f"daily memory backup scheduled for {hh:02d}:{mm:02d}")
+        return "daily-memory-backup"
 
     def run_briefing_now(self) -> None:
         """Fire the briefing immediately (for a 'brief me now' voice command or a test)."""

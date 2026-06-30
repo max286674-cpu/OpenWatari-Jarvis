@@ -221,7 +221,9 @@ SCHEMAS = [
                 "text, press keys (e.g. Enter), go back, read the page, or screenshot it. Use "
                 "this for anything interactive — logging in (fill the email and password fields "
                 "when he asks you to), clicking through a site, submitting forms. Confirm before "
-                "submitting anything that sends data or money."
+                "submitting anything that sends data or money. For simply OPENING a site or "
+                "search (e.g. 'open YouTube') with no clicking/typing, use open_url instead — it's "
+                "faster and uses his normal browser."
             ),
             "parameters": {
                 "type": "object",
