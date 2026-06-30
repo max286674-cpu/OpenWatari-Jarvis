@@ -15,6 +15,7 @@ owner's ACTIVE connected toolkits so it never offers an app that isn't connected
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -95,16 +96,46 @@ async def composio_find_tools(args: dict) -> str:
         items = (await _get("/tools", params)).get("items", [])
     except Exception as e:  # noqa: BLE001
         return tool_error("Composio search", e)
+    def _pick(t: dict) -> dict:
+        return {"slug": t.get("slug"), "app": (t.get("toolkit") or {}).get("slug"),
+                "desc": (t.get("description") or "").strip()[:140], "required": _required_params(t)}
+
     out: list[dict] = []
     for t in items:
         tk = (t.get("toolkit") or {}).get("slug")
         if active and not toolkit and tk not in active:
             continue  # only offer tools from the owner's CONNECTED apps
-        out.append({"slug": t.get("slug"), "app": tk,
-                    "desc": (t.get("description") or "").strip()[:140],
-                    "required": _required_params(t)})
+        out.append(_pick(t))
         if len(out) >= 5:
             break
+    # The global search ranks across ALL 250+ apps, so for a broad query ('send an email') the
+    # connected apps get crowded out by unconnected ones and the filter leaves nothing — even
+    # though the app IS connected. Fan out: search each connected toolkit directly (in parallel)
+    # and merge. This is what makes EVERY connected app reachable, not just the high-ranking ones.
+    if not out and active and not toolkit:
+        async def _scoped(tk: str) -> list[dict]:
+            try:
+                r = await _get("/tools", {"search": query, "toolkit_slug": tk, "limit": 5})
+                return r.get("items", [])
+            except Exception:  # noqa: BLE001
+                return []
+
+        per = await asyncio.gather(*[_scoped(tk) for tk in sorted(active)])
+        # Round-robin merge: each connected app's BEST match first, then second-best, etc. — so no
+        # app is truncated just for sorting late alphabetically, and Composio's brittle per-app
+        # ranking (it buries SEND_EMAIL under LIST_DRAFTS) still surfaces the right tool in the list.
+        seen: set[str] = set()
+        for rank in range(5):
+            for lst in per:
+                if rank < len(lst):
+                    t = lst[rank]
+                    slug = t.get("slug")
+                    if slug and slug not in seen:
+                        seen.add(slug)
+                        out.append(_pick(t))
+            if len(out) >= 12:
+                break
+        out = out[:12]
     if not out:
         return (f"I couldn't find a connected-app tool for '{query}', sir — connect the app in "
                 "Composio if you haven't.")
