@@ -122,7 +122,14 @@ class SpeakerVerifier:
         if emb_fn is None:
             return None
         wav = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-        if wav.size < sample_rate // 2:  # <0.5s is too short to be reliable
+        # ECAPA expects 16 kHz. The live mic often delivers 44.1/48 kHz; feeding that raw makes the
+        # waveform ~3x too fast -> a garbage embedding (~0.07 vs the 16 kHz-enrolled profile, the cause
+        # of "Watari ignores me"). Resample so live matches enrollment (which is already 16 kHz).
+        if sample_rate and sample_rate != 16000:
+            import soxr
+
+            wav = soxr.resample(wav, sample_rate, 16000)
+        if wav.size < 8000:  # < 0.5s at 16 kHz is too short to be reliable
             return None
         try:
             return emb_fn(wav)

@@ -73,6 +73,20 @@ async def main() -> None:
         a, s = sv_other.verify(b"\x01\x02" * 16000)
         check("stranger rejected", a is False, f"score={s}")
 
+        # Resample regression: a 48 kHz mic must reach ECAPA at 16 kHz (else the embedding is garbage
+        # and the OWNER is wrongly rejected — the real bug). The stub records the wav length it gets.
+        seen: dict = {}
+
+        def _spy(wav):
+            seen["n"] = len(wav)
+            return ref.copy()
+
+        sv_rs = SpeakerVerifier(embedder=_spy)
+        sv_rs.embed(b"\x01\x02" * 48000, sample_rate=48000)  # 1s @ 48k -> must arrive ~16k samples
+        check("48k resampled to ~16k", abs(seen.get("n", 0) - 16000) < 800, f"got {seen.get('n')}")
+        sv_rs.embed(b"\x01\x02" * 16000, sample_rate=16000)  # 16k passes through unchanged
+        check("16k passes through", seen["n"] == 16000, f"got {seen['n']}")
+
     print("\n[3] SpeakerGate processor (drop stranger / pass Vazghen)")
     from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
     from pipecat.processors.frame_processor import FrameDirection
