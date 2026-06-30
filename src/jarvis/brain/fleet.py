@@ -188,6 +188,16 @@ async def _delegate_via_cli(task: str, timeout_s: int) -> str:
         )
         argv = ["ssh", settings.openclaw_cli_ssh_target, remote]
     else:
+        # The CLI often isn't on a systemd service's minimal PATH (npm installs to ~/.npm-global/bin).
+        # Self-heal: resolve on PATH, else fall back to the standard npm-global location.
+        import os
+        import shutil
+
+        resolved = shutil.which(cli)
+        if not resolved and cli == "openclaw":
+            cand = os.path.expanduser("~/.npm-global/bin/openclaw")
+            resolved = cand if os.path.isfile(cand) else cli
+        cli = resolved or cli
         argv = [cli, "agent", "--agent", agent, "--message", task, "--json", "--timeout", timeout_arg]
 
     def _run_cli() -> subprocess.CompletedProcess[str]:
