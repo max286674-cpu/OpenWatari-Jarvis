@@ -72,6 +72,9 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
     )
     if out_index is not None:
         params.output_device_index = out_index
+    if settings.audio_input_device_index is not None:
+        params.input_device_index = settings.audio_input_device_index
+        logger.info(f"mic: pinned input device index {settings.audio_input_device_index}")
     transport = LocalAudioTransport(params)
     stt = build_stt()  # Deepgram-multi (EN/FR/DE/RU) or Whisper (all six incl. Armenian)
     tts = build_tts()  # ElevenLabs (cloud) | Piper | Kokoro (both fully local) per JARVIS_TTS_PROVIDER

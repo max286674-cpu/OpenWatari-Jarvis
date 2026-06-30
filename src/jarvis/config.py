@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     # this at startup (see edge/audio_devices.py). Input stays on the laptop mic by default
     # so Bluetooth stays in high-quality A2DP output mode (using AirPods as mic forces HFP).
     audio_output_device: str | None = None
+    # Pin a specific INPUT mic by PyAudio device index (None = system default). The built-in Intel
+    # Smart Sound array can deliver garbled audio; set this to a USB mic/headset's index. List them:
+    # uv run python bench/list_audio_devices.py
+    audio_input_device_index: int | None = None
     # Auto-route to a connected private endpoint (AirPods Pro Max / headphones) when no explicit
     # output is set: "if they're connected to the laptop, send everything to my headphones".
     auto_route_headphones: bool = True
