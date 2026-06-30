@@ -332,4 +332,16 @@ def default_signal_sources() -> list[SignalSource]:
         sources.append(calendar_signals)  # imminent-event heads-up (the proactive 'backbone')
     except Exception:  # noqa: BLE001 — fail-quiet if calendar/login isn't available
         pass
+    try:
+        from jarvis.brain.tools.notion import task_signals
+
+        sources.append(task_signals)      # daily nudge on overdue / due-today tasks
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from jarvis.brain.tools.gmail import email_signals
+
+        sources.append(email_signals)     # daily nudge on important unread mail
+    except Exception:  # noqa: BLE001
+        pass
     return sources
