@@ -14,7 +14,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from jarvis.brain.tools import CORE_MODULES, _LAZY_GROUPS, tool_schemas  # noqa: E402
 
 
+def dump_json() -> None:
+    """--json: [{name, description, module, group}] for the docs site's generated tool page."""
+    import json
+
+    from jarvis.brain.tools import _MODULES
+
+    module_group = {m.__name__.split(".")[-1]: g for g, mods in _LAZY_GROUPS.items() for m in mods}
+    rows = []
+    for mod in _MODULES:
+        short = mod.__name__.split(".")[-1]
+        for s in mod.SCHEMAS:
+            fn = s["function"]
+            rows.append({
+                "name": fn["name"],
+                "description": fn.get("description", "").split(". ")[0].rstrip(".") + ".",
+                "module": short,
+                "group": module_group.get(short, "core"),
+            })
+    rows.sort(key=lambda r: (r["group"] != "core", r["group"], r["name"]))
+    print(json.dumps({"count": len(rows), "tools": rows}, indent=1))
+
+
 def main() -> None:
+    if "--json" in sys.argv:
+        dump_json()
+        return
     schemas = tool_schemas()
     core = {m.__name__.split(".")[-1] for m in CORE_MODULES}
     groups = {m.__name__.split(".")[-1]: g for g, mods in _LAZY_GROUPS.items() for m in mods}
