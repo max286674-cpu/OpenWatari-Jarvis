@@ -69,6 +69,29 @@ def main() -> None:
         missing = Path(d) / "nope.example.md"
         check("no-op when source missing", w.seed_if_missing(missing, Path(d) / "x.md") is False)
 
+    # Idempotent re-run: parse_env reads an existing .env, and rendering over that .env (not the
+    # template) preserves keys/comments the user never revisited.
+    existing = (
+        "# my hand-written note\n"
+        "JARVIS_ASSISTANT_NAME=Aria\n"
+        "JARVIS_EXTRA_HAND_EDIT=custom-value\n"
+        "JARVIS_PROTOCOL_PING_PASSWORD=oldpass\n"
+    )
+    cur = w.parse_env(existing)
+    check("parse_env reads values", cur["JARVIS_ASSISTANT_NAME"] == "Aria")
+    check("parse_env keeps extras", cur["JARVIS_EXTRA_HAND_EDIT"] == "custom-value")
+    rerun = w.render_env(existing, {"JARVIS_ASSISTANT_NAME": "Nova",
+                                    "JARVIS_PROTOCOL_PING_PASSWORD": cur["JARVIS_PROTOCOL_PING_PASSWORD"]})
+    check("re-run updates revisited key", "JARVIS_ASSISTANT_NAME=Nova" in rerun)
+    check("re-run keeps hand edits", "JARVIS_EXTRA_HAND_EDIT=custom-value" in rerun)
+    check("re-run keeps hand comments", "# my hand-written note" in rerun)
+    check("protocol password NOT rotated", "JARVIS_PROTOCOL_PING_PASSWORD=oldpass" in rerun)
+
+    # Key probes exist for every provider the wizard collects a probeable secret for.
+    for p in ("deepgram", "elevenlabs", "notion", "telegram-bot"):
+        check(f"probe wired: {p}", callable(w.PROBES.get(p)))
+    check("bad key fails validation (live)", w.PROBES["deepgram"]("not-a-real-key") in (False, None))
+
     # The shipped templates the wizard seeds from actually exist.
     check("persona.example.md ships", w.PERSONA_EXAMPLE.exists())
     for src, _ in w.PROFILE_SEEDS:
