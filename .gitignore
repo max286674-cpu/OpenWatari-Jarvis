@@ -70,3 +70,6 @@ bench/_behavioral_scorecard.json
 bench/_artifacts/
 # Personal contact book (Phase 4.3) — private, never tracked
 contacts.md
+
+# wake-word training scratch (195MB model, 17GB data, synthetic clips) — never commit
+.wakeword-training/
