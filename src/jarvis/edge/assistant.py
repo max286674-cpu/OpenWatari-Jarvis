@@ -73,7 +73,18 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
         logger.info(f"speaker: pinned output device index {settings.audio_output_device_index}")
     elif out_index is not None:
         params.output_device_index = out_index
-    if settings.audio_input_device_index is not None:
+    in_dev = None
+    if settings.audio_input_device_name:
+        from jarvis.edge.audio_devices import find_input_device
+        in_dev = find_input_device(settings.audio_input_device_name)
+        if in_dev is None:
+            logger.warning(
+                f"mic: no input matches name '{settings.audio_input_device_name}' — falling back"
+            )
+    if in_dev is not None:
+        params.input_device_index = in_dev.index
+        logger.info(f"mic: pinned by name '{settings.audio_input_device_name}' -> [{in_dev.index}] {in_dev.name}")
+    elif settings.audio_input_device_index is not None:
         params.input_device_index = settings.audio_input_device_index
         logger.info(f"mic: pinned input device index {settings.audio_input_device_index}")
     transport = LocalAudioTransport(params)

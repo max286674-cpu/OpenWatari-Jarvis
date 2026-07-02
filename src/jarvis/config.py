@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     # Smart Sound array can deliver garbled audio; set this to a USB mic/headset's index. List them:
     # uv run python bench/list_audio_devices.py
     audio_input_device_index: int | None = None
+    # Pin the INPUT mic by NAME substring (e.g. "airpods", "usb"). Survives Bluetooth reconnects,
+    # which shuffle PyAudio indices. Takes precedence over audio_input_device_index when it matches;
+    # if no device matches at startup, falls back to the index, then the system default.
+    audio_input_device_name: str | None = None
     # Pin a specific OUTPUT device by PyAudio index (None = auto-route). Needed for a Bluetooth headset
     # in HFP mode (mic active) where the A2DP "Headphones" output is unavailable and the auto-route
     # can't find the raw HFP endpoint. audio_out_sample_rate must match the device (HFP = 16000).

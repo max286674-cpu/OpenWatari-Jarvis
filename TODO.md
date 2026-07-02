@@ -24,6 +24,31 @@ Edge deafness watchdog · whisper small→base (4s→1.4s) · groq textual-toolc
 
 ---
 
+## 2026-07-02 — Two-track plan (assistant + framework)
+
+Deltas since the audit below: **cloud voice pivot** (Deepgram nova-3 streaming STT + ElevenLabs flash TTS)
+**closed Edge P0 "STT blocking floor"** and the proper-noun item (nova-3 handles them); **custom wake
+words trained** (`watari`/`hey_watari` openWakeWord, no API key) closing Edge P2; Composio toolkit-hint
++ LLM-primary benchmark landed 2026-06-30. Remaining work, in execution order:
+
+**Track A — our assistant (Watari)**
+- **A1 · Mic pin-by-NAME** (index pins go stale on BT reconnect → live `-9998` crash). *(in progress)*
+- **A2 · Proactive depth**: task-deadline + routine-pattern + MyNews signal sources (the #1 JARVIS gap).
+- **A3 · Latency regression guard**: assert TTFW/STT budgets in the suite.
+- **A4 · Glasses stub**: park honestly (README, no implied capability) until a MentraOS account exists.
+- Needs-user: rotate Krisp+Cerebras keys · re-enroll speaker-ID voiceprint · elevated JarvisEdge re-register (RestartCount 999).
+
+**Track B — OpenWatari framework (other people's setups)**
+- **B1 · Wizard live key validation** + idempotent re-run (wrong key today = silent runtime failure).
+- **B2 · Docs generated from code**: `dump_tools.py` → tool-reference page + architecture page.
+- **B3 · Docs site top-tier UI/UX pass** (every subsystem described).
+- **B4 · CI gate**: hermetic/live test split + pre-push hook.
+- **B5 · Prune inert .env vars** from `.env.example` + wizard (config must reflect reality).
+
+Each item is verified in production before the next starts.
+
+---
+
 ## 1. Brain — `src/jarvis/brain/`
 Status: **strong core, proven live** (agent loop, LLM routing, L1–L4 memory, scheduler, self-improve, telegram all running with real output).
 
