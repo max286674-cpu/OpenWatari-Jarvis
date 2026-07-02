@@ -33,7 +33,12 @@ words trained** (`watari`/`hey_watari` openWakeWord, no API key) closing Edge P2
 
 **Track A — our assistant (Watari)**
 - **A1 · Mic pin-by-NAME** (index pins go stale on BT reconnect → live `-9998` crash). *(in progress)*
-- **A2 · Proactive depth**: task-deadline + routine-pattern + MyNews signal sources (the #1 JARVIS gap).
+- **A2 · Proactive depth**: MyNews morning-brief source added (`tools/mynews.py`, VPS-local
+  `JARVIS_MYNEWS_URL=http://127.0.0.1:3000` — untruncated titles, no Vercel hop). Audit correction:
+  notion `task_signals` + gmail `email_signals` were ALREADY wired, so 5 sources now tick.
+  Task-deadline from the brain's own store: N/A (tasks.py tracks background work, no due dates —
+  Notion covers todos). Routine-pattern: deferred — needs weeks of behavior history that no store
+  collects yet; revisit when L2 journal is dense enough to mine.
 - **A3 · Latency regression guard**: assert TTFW/STT budgets in the suite.
 - **A4 · Glasses stub**: park honestly (README, no implied capability) until a MentraOS account exists.
 - Needs-user: rotate Krisp+Cerebras keys · re-enroll speaker-ID voiceprint · elevated JarvisEdge re-register (RestartCount 999).

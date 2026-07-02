@@ -342,6 +342,9 @@ class Settings(BaseSettings):
     # ONLY listed servers are launched (no default); blank = no MCP tools. e.g.
     #   {"filesystem": {"command": "npx", "args": ["-y","@modelcontextprotocol/server-filesystem","/dir"]}}
     mcp_servers: str | None = None
+    # MyNews (the owner's RSS aggregator) — base URL for the proactive morning-brief signal
+    # (brain/tools/mynews.py). Blank = source off. On-demand news tools come via mcp_servers.
+    mynews_url: str | None = None
     # Composio (breadth layer): API key for the 250+ OAuth-managed app integrations. Used by the
     # accounts health-check (bench/test_composio_accounts.py) and, once an MCP server URL is added to
     # mcp_servers, by the live tool path. Blank = no Composio.

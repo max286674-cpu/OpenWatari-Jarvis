@@ -344,4 +344,10 @@ def default_signal_sources() -> list[SignalSource]:
         sources.append(email_signals)     # daily nudge on important unread mail
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from jarvis.brain.tools.mynews import news_signals
+
+        sources.append(news_signals)      # morning news-of-interest brief (MyNews)
+    except Exception:  # noqa: BLE001
+        pass
     return sources
