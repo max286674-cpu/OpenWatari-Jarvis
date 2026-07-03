@@ -84,4 +84,30 @@ async def _check_speaker_barge_in() -> bool:
     return bool(interrupted) and gate._awake and not gate._bot_speaking
 
 barge_ok = asyncio.run(_check_speaker_barge_in())
-print("OK — wake word ready" if (realtime_ok and ack_ok and barge_ok) else "WARN — wake word issue")
+
+
+async def _check_no_phantom_refire() -> bool:
+    """After a wake + listening window, the stale oww buffer must NOT re-fire the ack (the
+    observed every-9.5s phantom 'Sir?' loop). The first frame after resume resets the model."""
+    gate = WakeWordGate(models=["hey_jarvis"], threshold=0.6,
+                        ack_phrase="Sir?", suppress_during_tts=True)
+    pushed: list = []
+
+    async def _cap(f, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(f)
+
+    gate.push_frame = _cap
+    gate._detect = lambda f, threshold=None: "hey_jarvis"  # stale buffer would keep scoring high
+    mic = InputAudioRawFrame(audio=b"\x00\x00" * 320, sample_rate=16000, num_channels=1)
+
+    await gate.process_frame(mic, FrameDirection.DOWNSTREAM)      # real wake -> ack #1
+    await gate.process_frame(mic, FrameDirection.DOWNSTREAM)      # awake: forwarded, predict paused
+    gate._open_until = 0.0                                        # window expires
+    await gate.process_frame(mic, FrameDirection.DOWNSTREAM)      # resume: must RESET, not re-fire
+    acks = [f for f in pushed if isinstance(f, TTSSpeakFrame)]
+    print("acks after wake + window expiry:", len(acks), "(must be 1)")
+    return len(acks) == 1
+
+phantom_ok = asyncio.run(_check_no_phantom_refire())
+print("OK — wake word ready" if (realtime_ok and ack_ok and barge_ok and phantom_ok)
+      else "WARN — wake word issue")

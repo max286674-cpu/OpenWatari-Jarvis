@@ -290,7 +290,7 @@ class Settings(BaseSettings):
     # tool_long_update_seconds while it's still working (so a long fleet job never goes silent).
     ack_before_tools: bool = True
     tool_slow_warn_seconds: float = 8.0
-    tool_long_update_seconds: float = 120.0
+    tool_long_update_seconds: float = 45.0   # a 5-min stall = update at 8s, 53s, 98s… never silent
     # Speed vs polish (A/B): when ON, a SHORT channel/task read (calendar/email/Notion-tasks/Telegram)
     # is spoken verbatim, skipping the summary LLM pass (~1-3s faster on those turns). OFF by default so
     # the summary keeps polishing a raw multi-item dump into a clean spoken sentence. Long results always

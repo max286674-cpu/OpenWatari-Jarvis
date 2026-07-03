@@ -48,6 +48,8 @@ _TOOL_PROGRESS = {
     "stop_music_room": "Leaving the music room",
     "play_music": "Finding that song",
     "stop_music": "Stopping the music",
+    "open_url": "Opening that",
+    "open_app": "Opening that",
     "file_op": "Working on your files",
     "process_op": "On it",
     "run_powershell": "Running that",
@@ -68,7 +70,18 @@ _TOOL_PROGRESS = {
 }
 
 # Args whose value gives a natural tail for the acknowledgement ("Looking that up — <query>, sir.").
-_ACK_CONTEXT_KEYS = ("query", "task", "song", "title", "city", "location", "to", "name", "topic")
+_ACK_CONTEXT_KEYS = ("query", "task", "song", "title", "city", "location", "to", "name", "topic",
+                     "url", "app")
+
+
+# Spoken noun for a tool, used in "still working on <label>" long-task updates.
+_TOOL_LABELS = {
+    "open_url": "the browser", "open_app": "the app launch", "browser": "the browser",
+    "browse_web": "the browser", "web_search": "the search", "scrape_url": "the page",
+    "delegate_to_fleet": "the team's task", "work_on_task": "the research",
+    "run_powershell": "the command", "file_op": "the file work",
+    "send_email": "the email", "play_music": "the music", "composio_run_tool": "the app action",
+}
 
 
 def _ack_for(name: str, args: dict) -> str:
@@ -79,7 +92,10 @@ def _ack_for(name: str, args: dict) -> str:
     for k in _ACK_CONTEXT_KEYS:
         v = args.get(k) if isinstance(args, dict) else None
         if isinstance(v, str) and 0 < len(v) <= 60:
-            tail = f" — {v.strip()}"
+            spoken = v.strip()
+            if k == "url":  # "https://www.youtube.com/x" would be read out character by character
+                spoken = re.sub(r"^https?://(www\.)?", "", spoken).split("/")[0]
+            tail = f" — {spoken}"
             break
     line = f"{base}{tail}"
     return line if line.rstrip().endswith(("sir", "sir.")) else f"{line}, sir."
@@ -759,7 +775,7 @@ class JarvisAgent:
             result, ok = f"unknown tool {name}", False
         else:
             try:
-                result, ok = await self._await_with_progress(fn(args), on_progress), True
+                result, ok = await self._await_with_progress(fn(args), on_progress, name), True
             except Exception as e:  # noqa: BLE001 — degrade, don't die
                 logger.exception(f"tool {name} raised")
                 result = (f"That tool ({name}) hit an error: {type(e).__name__}. "
@@ -768,17 +784,19 @@ class JarvisAgent:
         logger.info(f"tool {name}({args}) -> {str(result)[:80]}")
         return {"name": name, "result": result, "ok": ok, "args": args}
 
-    async def _await_with_progress(self, coro, on_progress: Callable | None):
+    async def _await_with_progress(self, coro, on_progress: Callable | None, name: str = ""):
         """Await a tool coroutine but, if it runs long, speak periodic "still on it" updates so a
         slow tool (or a 20-minute fleet delegation) never goes silent. The tool keeps running; we
         only emit progress between checks. Re-raises the tool's exception unchanged."""
         task = asyncio.ensure_future(coro)
         interval = max(0.05, settings.tool_slow_warn_seconds)
         every = max(0.05, settings.tool_long_update_seconds)
+        # Name the work in the updates ("the browser is taking longer…"), not just "it".
+        label = _TOOL_LABELS.get(name, "that task")
         msgs = [
-            "This is taking a little longer than expected, sir — still on it.",
-            "Still working on it, sir.",
-            "Bear with me, sir, it's a big one — almost there.",
+            f"{label.capitalize()} is taking a little longer than expected, sir — still on it.",
+            f"Still working on {label}, sir.",
+            f"Bear with me, sir — {label} is almost there.",
         ]
         i = 0
         while True:

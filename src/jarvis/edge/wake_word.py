@@ -109,6 +109,11 @@ class WakeWordGate(FrameProcessor):
         # A raised threshold guards against TTS bleed scoring near the line.
         self._barge_in = barge_in
         self._barge_threshold = min(0.95, threshold + 0.15)
+        # openWakeWord keeps a sliding feature buffer. Whenever we STOP feeding it (listening
+        # window open, bot speaking), the buffer freezes with the wake phrase still inside — and
+        # the first prediction after resuming re-fires on that stale audio. Observed live: a
+        # phantom re-wake + spoken ack every ~9.5s (window + ack), forever. Reset on resume.
+        self._needs_reset = False
         logger.info(f"wake words active: {self._names} (threshold {threshold}"
                     + (", barge-in on wake word" if barge_in else "") + ")")
 
@@ -173,6 +178,10 @@ class WakeWordGate(FrameProcessor):
                 # word interrupts him. ponytail: ONNX predict per 20ms frame during playback can
                 # stutter on a starved CPU — if that shows up, score every 2nd frame.
                 if self._barge_in:
+                    if self._needs_reset:
+                        self._model.reset()
+                        self._needs_reset = False
+                        return
                     hit = self._detect(frame, self._barge_threshold)
                     if hit:
                         logger.info(f"barge-in: wake word '{hit}' over TTS — interrupting")
@@ -180,14 +189,20 @@ class WakeWordGate(FrameProcessor):
                         self._bot_speaking = False
                         self._resume_after_tts = False
                         self._wake()
+                        self._needs_reset = True
             elif self._awake:
+                self._needs_reset = True   # predict is paused; buffer will be stale on resume
                 await self.push_frame(frame, direction)  # forward command audio to STT
             elif self._bot_speaking:
                 # Asleep AND Watari is talking: skip wake inference entirely. Running an ONNX
                 # predict on every 20ms frame here starves the audio-output thread and makes
                 # playback stutter. We also never want to wake on our own TTS, so just swallow.
-                pass
+                self._needs_reset = True
             else:
+                if self._needs_reset:
+                    self._model.reset()
+                    self._needs_reset = False
+                    return
                 hit = self._detect(frame)
                 if hit:
                     self._wake()
