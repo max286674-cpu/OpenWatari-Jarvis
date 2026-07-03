@@ -11,9 +11,9 @@ cd "$ROOT"
 echo "==> running the test suite (deploy gate)"
 .venv/Scripts/python.exe -m pytest -q || { echo "TESTS FAILED — not deploying."; exit 1; }
 
-echo "==> syncing src/jarvis -> $VPS:$REMOTE (excludes pycache; never touches .env/secrets)"
-# scp the source tree only. .env, voiceprint, sessions live only on the target and are NOT sent.
-tar --exclude='__pycache__' -czf - src/jarvis | ssh "$VPS" "tar -xzf - -C '$REMOTE'"
+echo "==> syncing src/jarvis + skills -> $VPS:$REMOTE (excludes pycache; never touches .env/secrets)"
+# scp the source tree + skill playbooks. .env, voiceprint, sessions live only on the target.
+tar --exclude='__pycache__' -czf - src/jarvis skills | ssh "$VPS" "tar -xzf - -C '$REMOTE'"
 
 echo "==> restarting the brain + health check"
 ssh "$VPS" "systemctl --user restart jarvis-brain && sleep 5 && systemctl --user is-active jarvis-brain && curl -s localhost:8766/healthz"
