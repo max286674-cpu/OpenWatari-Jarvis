@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # (currently just "jarvis"); the rest are pending the Porcupine path (see README).
     wake_words: str = "jarvis,alfred,robbin,assist,time to work,wake up,six-one-nine"
     wake_word_threshold: float = 0.5
+    # Speakers barge-in: on a shared (half-duplex) endpoint, saying the wake word OVER Watari's
+    # speech interrupts him mid-sentence (detection stays hot at threshold+0.15; audio is still
+    # never forwarded to STT during TTS). VAD barge-in remains headphones-only.
+    wake_barge_in_enabled: bool = True
     wake_listen_window_s: float = 8.0     # how long the mic stays open after a wake/reply
     # Spoken acknowledgement the instant a wake word fires, so you KNOW Watari heard you and is
     # actively listening — before you say the command. Pipe-separated choices are picked at random

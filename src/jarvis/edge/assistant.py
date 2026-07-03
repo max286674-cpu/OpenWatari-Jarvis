@@ -119,6 +119,9 @@ def build_worker(brain: JarvisBrain | None = None) -> PipelineWorker:
                 listen_window_s=settings.wake_listen_window_s,
                 suppress_during_tts=not barge_in,
                 ack_phrase=settings.wake_ack_phrase,
+                # On shared speakers (half-duplex) the VAD can't barge in — Watari's own voice
+                # would trip it. The wake WORD can: saying it over TTS interrupts him.
+                barge_in=(not barge_in) and settings.wake_barge_in_enabled,
             )
             stages.append(wake_gate)
         else:

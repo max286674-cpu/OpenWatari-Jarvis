@@ -56,4 +56,32 @@ async def _check_wake_ack() -> bool:
     return bool(acks) and acks[0] in settings.wake_ack_phrase.split("|")
 
 ack_ok = asyncio.run(_check_wake_ack()) if settings.wake_ack_phrase.strip() else True
-print("OK — wake word ready" if (realtime_ok and ack_ok) else "WARN — wake word issue")
+
+
+async def _check_speaker_barge_in() -> bool:
+    """Saying the wake word OVER TTS on speakers must interrupt playback and open listening."""
+    from pipecat.frames.frames import BotStartedSpeakingFrame
+
+    gate = WakeWordGate(models=["hey_jarvis"], threshold=0.6,
+                        suppress_during_tts=True, barge_in=True)
+    interrupted: list = []
+
+    async def _cap(f, direction=FrameDirection.DOWNSTREAM):
+        pass
+
+    async def _int():
+        interrupted.append(True)
+
+    gate.push_frame = _cap
+    gate.broadcast_interruption = _int
+    gate._detect = lambda f, threshold=None: "hey_jarvis"
+    await gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    assert gate._bot_speaking
+    await gate.process_frame(
+        InputAudioRawFrame(audio=b"\x00\x00" * 320, sample_rate=16000, num_channels=1),
+        FrameDirection.DOWNSTREAM)
+    print("barge-in on wake word over TTS:", bool(interrupted), "| listening after:", gate._awake)
+    return bool(interrupted) and gate._awake and not gate._bot_speaking
+
+barge_ok = asyncio.run(_check_speaker_barge_in())
+print("OK — wake word ready" if (realtime_ok and ack_ok and barge_ok) else "WARN — wake word issue")

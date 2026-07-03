@@ -63,12 +63,30 @@ class SemanticIndex:
             logger.info(f"L5 semantic recall: loaded embedder '{self._model_name}'")
             return self._model_embed
         except Exception as e:  # noqa: BLE001
+            # No local model (~1GB torch) — fall back to the Jina embeddings API if its key is
+            # already configured (it powers the web reader too). No key = honest keyword-only.
+            if settings.jina_api_key:
+                logger.info("L5 semantic recall: using Jina embeddings API (no local model)")
+                return self._jina_embed
             self._load_failed = True
             logger.info(f"L5 semantic recall unavailable ({type(e).__name__}); keyword recall only")
             return None
 
     def _model_embed(self, texts: list[str]) -> list[Vector]:
         return [list(v) for v in self._model.encode(texts, normalize_embeddings=False)]
+
+    def _jina_embed(self, texts: list[str]) -> list[Vector]:
+        import httpx
+
+        r = httpx.post(
+            "https://api.jina.ai/v1/embeddings",
+            headers={"Authorization": f"Bearer {settings.jina_api_key}"},
+            json={"model": "jina-embeddings-v3", "task": "text-matching", "input": texts},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = sorted(r.json()["data"], key=lambda d: d["index"])
+        return [d["embedding"] for d in data]
 
     @property
     def available(self) -> bool:

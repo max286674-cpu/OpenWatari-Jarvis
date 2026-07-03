@@ -78,6 +78,7 @@ class WakeWordGate(FrameProcessor):
         listen_window_s: float = 8.0,
         suppress_during_tts: bool = True,
         ack_phrase: str = "",
+        barge_in: bool = False,
     ) -> None:
         super().__init__()
         if not models:
@@ -102,7 +103,14 @@ class WakeWordGate(FrameProcessor):
         self._max_speak_s = 30.0
         self._suppress_during_tts = suppress_during_tts
         self._resume_after_tts = False
-        logger.info(f"wake words active: {self._names} (threshold {threshold})")
+        # Speakers barge-in: keep wake DETECTION hot while Watari talks, so saying the wake word
+        # interrupts him mid-sentence (VAD barge-in stays headphones-only — on speakers his own
+        # voice trips the VAD, but it can't say his own wake word at wake-model confidence).
+        # A raised threshold guards against TTS bleed scoring near the line.
+        self._barge_in = barge_in
+        self._barge_threshold = min(0.95, threshold + 0.15)
+        logger.info(f"wake words active: {self._names} (threshold {threshold}"
+                    + (", barge-in on wake word" if barge_in else "") + ")")
 
     @property
     def _awake(self) -> bool:
@@ -117,7 +125,7 @@ class WakeWordGate(FrameProcessor):
     def _wake(self) -> None:
         self._open_until = time.monotonic() + self._listen_window_s
 
-    def _detect(self, frame: InputAudioRawFrame) -> str | None:
+    def _detect(self, frame: InputAudioRawFrame, threshold: float | None = None) -> str | None:
         samples = np.frombuffer(frame.audio, dtype=np.int16)
         if frame.num_channels and frame.num_channels > 1:
             samples = samples[:: frame.num_channels]  # first channel
@@ -128,8 +136,9 @@ class WakeWordGate(FrameProcessor):
                 samples.astype(np.float32), frame.sample_rate, 16000
             ).astype(np.int16)
         scores = self._model.predict(samples)
+        min_score = threshold if threshold is not None else self._threshold
         for name, score in scores.items():
-            if score >= self._threshold:
+            if score >= min_score:
                 return name
         return None
 
@@ -159,9 +168,18 @@ class WakeWordGate(FrameProcessor):
                 self._bot_speaking = False
                 self._resume_after_tts = False
             if self._bot_speaking and self._suppress_during_tts:
-                # Open speakers path: never run wake inference or forward mic audio while Watari is
-                # speaking. His own TTS can otherwise re-trigger wake/listening and leak into STT.
-                pass
+                # Open speakers path: mic audio is never FORWARDED while Watari speaks (his TTS
+                # would leak into STT). With barge-in, wake detection alone stays hot so the wake
+                # word interrupts him. ponytail: ONNX predict per 20ms frame during playback can
+                # stutter on a starved CPU — if that shows up, score every 2nd frame.
+                if self._barge_in:
+                    hit = self._detect(frame, self._barge_threshold)
+                    if hit:
+                        logger.info(f"barge-in: wake word '{hit}' over TTS — interrupting")
+                        await self.broadcast_interruption()
+                        self._bot_speaking = False
+                        self._resume_after_tts = False
+                        self._wake()
             elif self._awake:
                 await self.push_frame(frame, direction)  # forward command audio to STT
             elif self._bot_speaking:
