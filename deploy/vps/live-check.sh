@@ -9,14 +9,19 @@ STATUS=$?
 echo "$OUT" | tail -20
 
 if [ $STATUS -ne 0 ]; then
-  TOKEN=$(grep -oP '^JARVIS_TELEGRAM_BOT_TOKEN=\K.+' .env || true)
-  CHAT=$(grep -oP '^JARVIS_TELEGRAM_DEFAULT_CHAT=\K.+' .env || true)
-  if [ -n "$TOKEN" ] && [ -n "$CHAT" ]; then
-    SUMMARY=$(echo "$OUT" | tail -6 | head -c 800)
-    curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-      --data-urlencode "chat_id=${CHAT}" \
-      --data-urlencode "text=⚠️ Watari weekly live-integration check FAILED:
+  # All Watari->owner messages are VOICE. Speak the failure; text only if synthesis itself fails.
+  TALLY=$(echo "$OUT" | tail -1 | head -c 120)
+  SPOKEN="Sir, the weekly integration check failed. The tally: ${TALLY}. Details are in the VPS journal."
+  if ! .venv/bin/python -m jarvis.brain.voice_io "$SPOKEN"; then
+    TOKEN=$(grep -oP '^JARVIS_TELEGRAM_BOT_TOKEN=\K.+' .env || true)
+    CHAT=$(grep -oP '^JARVIS_TELEGRAM_DEFAULT_CHAT=\K.+' .env || true)
+    if [ -n "$TOKEN" ] && [ -n "$CHAT" ]; then
+      SUMMARY=$(echo "$OUT" | tail -6 | head -c 800)
+      curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${CHAT}" \
+        --data-urlencode "text=⚠️ Watari weekly live-integration check FAILED (voice synth also down):
 ${SUMMARY}" > /dev/null
+    fi
   fi
 fi
 exit $STATUS

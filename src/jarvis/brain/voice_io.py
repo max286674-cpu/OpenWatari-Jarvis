@@ -74,3 +74,36 @@ async def synthesize_voice_note(text: str) -> bytes | None:
     except Exception as e:  # noqa: BLE001 — ffmpeg missing/err -> caller falls back to text/audio
         logger.warning(f"voice-note transcode error ({type(e).__name__}: {e})")
     return None
+
+
+async def send_voice_note(text: str, chat_id: str | None = None) -> bool:
+    """The one-call "Watari says X to the owner's phone" primitive: synthesize a true Telegram
+    voice note and send it via the Watari bot. False = caller may fall back to text (the ONLY
+    time text is acceptable — a lost alert is worse than a typed one)."""
+    chat = chat_id or settings.telegram_default_chat
+    token = settings.telegram_bot_token
+    if not (chat and token and text.strip()):
+        return False
+    ogg = await synthesize_voice_note(text)
+    if not ogg:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"https://api.telegram.org/bot{token}/sendVoice",
+                data={"chat_id": chat},
+                files={"voice": ("watari.ogg", ogg, "audio/ogg")},
+            )
+        return bool(r.json().get("ok"))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"send_voice_note failed ({type(e).__name__}: {e})")
+        return False
+
+
+if __name__ == "__main__":  # shell-scriptable: python -m jarvis.brain.voice_io "<text>"
+    import sys
+
+    _text = " ".join(sys.argv[1:]).strip()
+    _ok = asyncio.run(send_voice_note(_text)) if _text else False
+    print("voice-note sent" if _ok else "voice-note FAILED")
+    raise SystemExit(0 if _ok else 1)

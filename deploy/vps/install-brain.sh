@@ -31,7 +31,7 @@ cd "$JARVIS_DIR"
 if command -v uv >/dev/null 2>&1; then
   UV_BIN="$(command -v uv)"
   echo "Syncing deps with uv ($UV_BIN)…"
-  "$UV_BIN" sync --extra brain --extra channels
+  "$UV_BIN" sync --extra brain --extra channels --extra browse
   EXEC="$UV_BIN run --no-sync python -m jarvis.brain.server"
 else
   echo "uv not found; using python venv…"
