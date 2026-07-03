@@ -92,6 +92,53 @@ def main() -> None:
         check(f"probe wired: {p}", callable(w.PROBES.get(p)))
     check("bad key fails validation (live)", w.PROBES["deepgram"]("not-a-real-key") in (False, None))
 
+    # Scripted END-TO-END run in a sandbox: the full flow writes a correct .env, and a re-run
+    # keeps the auth token + protocol passwords (idempotence at the flow level, not just render).
+    with tempfile.TemporaryDirectory() as d:
+        sandbox = Path(d)
+        (sandbox / "personality").mkdir()
+        (sandbox / "memory").mkdir()
+        real = {k: getattr(w, k) for k in
+                ("OUT", "TEMPLATE", "PERSONA", "PERSONA_EXAMPLE", "MEMORY_DIR",
+                 "ask", "yes", "ask_key")}
+        try:
+            w.OUT = sandbox / ".env"
+            w.TEMPLATE = Path(w.REPO_ROOT) / ".env.example"
+            w.PERSONA = sandbox / "personality" / "jarvis.md"
+            w.PERSONA_EXAMPLE = real["PERSONA_EXAMPLE"]
+            w.MEMORY_DIR = sandbox / "memory"
+
+            def scripted_ask(q, default=None, secret=False, choices=None):
+                if "Deployment" in q:
+                    return "vps"
+                if "host or IP" in q:
+                    return "100.1.2.3"
+                return default or "x"
+
+            w.ask = scripted_ask
+            w.yes = lambda q, default=False: ("already exists" in q) or ("proactive" in q.lower())
+            w.ask_key = lambda label, probe=None, keep="": keep or "test-key"
+
+            w.run()
+            env1 = w.parse_env(w.OUT.read_text(encoding="utf-8"))
+            check("e2e: STT provider written", env1["JARVIS_STT_PROVIDER"] == "deepgram")
+            check("e2e: brain URL from host answer",
+                  env1["JARVIS_BRAIN_WS_URL"] == "ws://100.1.2.3:8765/voice")
+            check("e2e: auth token generated", len(env1["JARVIS_API_AUTH_TOKEN"]) > 20)
+            check("e2e: protocol password generated",
+                  len(env1["JARVIS_PROTOCOL_PHOENIX_PASSWORD"]) > 8)
+            check("e2e: persona seeded", w.PERSONA.exists())
+
+            w.run()  # re-run: token + passwords must survive
+            env2 = w.parse_env(w.OUT.read_text(encoding="utf-8"))
+            check("e2e re-run: token stable",
+                  env2["JARVIS_API_AUTH_TOKEN"] == env1["JARVIS_API_AUTH_TOKEN"])
+            check("e2e re-run: protocol password stable",
+                  env2["JARVIS_PROTOCOL_PHOENIX_PASSWORD"] == env1["JARVIS_PROTOCOL_PHOENIX_PASSWORD"])
+        finally:
+            for k, v in real.items():
+                setattr(w, k, v)
+
     # The shipped templates the wizard seeds from actually exist.
     check("persona.example.md ships", w.PERSONA_EXAMPLE.exists())
     for src, _ in w.PROFILE_SEEDS:

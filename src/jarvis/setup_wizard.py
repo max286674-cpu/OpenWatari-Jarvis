@@ -58,6 +58,17 @@ PROTOCOL_KEYS = [
 # --------------------------------------------------------------------------------------------------
 # UI layer — rich if present, plain otherwise. Kept tiny so the wizard reads top-to-bottom.
 # --------------------------------------------------------------------------------------------------
+WATARI_ART = r"""
+ ██╗    ██╗ █████╗ ████████╗ █████╗ ██████╗ ██╗
+ ██║    ██║██╔══██╗╚══██╔══╝██╔══██╗██╔══██╗██║
+ ██║ █╗ ██║███████║   ██║   ███████║██████╔╝██║
+ ██║███╗██║██╔══██║   ██║   ██╔══██║██╔══██╗██║
+ ╚███╔███╔╝██║  ██║   ██║   ██║  ██║██║  ██║██║
+  ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝
+"""
+
+TOTAL_STEPS = 8
+
 try:
     from rich.console import Console
     from rich.panel import Panel
@@ -65,8 +76,20 @@ try:
 
     _c = Console()
 
+    def splash() -> None:
+        _c.print(f"[bold cyan]{WATARI_ART}[/bold cyan]", highlight=False)
+        _c.print("  [cyan]▂ ▄ ▆ █ ▆ ▄ ▂[/cyan]  [bold]your voice-first AI companion[/bold]  "
+                 "[dim]· OpenWatari setup[/dim]\n")
+
     def banner(title: str, body: str) -> None:
-        _c.print(Panel(body, title=title, border_style="cyan", expand=False))
+        _c.print(Panel(body, title=f"[bold cyan]{title}[/bold cyan]",
+                       border_style="cyan", expand=False, padding=(0, 2)))
+
+    def step(n: int, title: str, body: str) -> None:
+        _c.print()
+        _c.print(Panel(body, title=f"[bold cyan]step {n}/{TOTAL_STEPS} · {title}[/bold cyan]",
+                       title_align="left", border_style="bright_black", expand=False,
+                       padding=(0, 2)))
 
     def say(msg: str) -> None:
         _c.print(msg)
@@ -79,8 +102,15 @@ try:
         return Confirm.ask(q, default=default)
 
 except ImportError:  # bare install — no rich yet
+    def splash() -> None:
+        print(WATARI_ART)
+        print("  your voice-first AI companion · OpenWatari setup\n")
+
     def banner(title: str, body: str) -> None:
         print(f"\n=== {title} ===\n{body}\n")
+
+    def step(n: int, title: str, body: str) -> None:
+        print(f"\n--- step {n}/{TOTAL_STEPS} · {title} ---\n{body}\n")
 
     def say(msg: str) -> None:
         print(re.sub(r"\[/?[a-z0-9 ._-]+\]", "", msg))  # strip rich markup
@@ -150,6 +180,9 @@ PROBES = {
     "notion": lambda k: _http_ok("https://api.notion.com/v1/users/me",
                                  {"Authorization": f"Bearer {k}", "Notion-Version": "2022-06-28"}),
     "telegram-bot": lambda k: _http_ok(f"https://api.telegram.org/bot{k}/getMe"),
+    "groq": lambda k: _http_ok("https://api.groq.com/openai/v1/models",
+                               {"Authorization": f"Bearer {k}"}),
+    "tavily": lambda k: _http_ok("https://api.tavily.com/usage", {"Authorization": f"Bearer {k}"}),
 }
 
 
@@ -203,10 +236,12 @@ def run() -> None:
         say(f"[red]Could not find {TEMPLATE}. Run this from a Jarvis checkout.[/red]")
         raise SystemExit(1)
 
-    banner("Jarvis setup wizard", (
-        "This configures your own voice assistant and writes [bold].env[/bold].\n"
-        "Press Enter to accept the [dim][default][/dim] shown for any question.\n"
-        "Secrets are typed hidden and never printed back."
+    splash()
+    banner("how this works", (
+        "Eight short steps configure your own voice assistant and write [bold].env[/bold].\n"
+        "Press Enter to accept the [dim]\\[default][/dim] shown for any question.\n"
+        "Secrets are typed hidden, validated live against each provider, never printed back.\n"
+        "Re-run any time — your current values become the defaults."
     ))
 
     cur: dict[str, str] = {}
@@ -220,7 +255,7 @@ def run() -> None:
     ov: dict[str, str] = {}
 
     # 1) Identity ---------------------------------------------------------------------------------
-    banner("1 · Identity", "Make it YOUR assistant — these fill the persona template, no code edits.")
+    step(1, "identity", "Make it YOUR assistant — these fill the persona template, no code edits.")
     name = ask("What should your assistant call itself?",
                default=cur.get("JARVIS_ASSISTANT_NAME") or "Watari")
     ov["JARVIS_ASSISTANT_NAME"] = name
@@ -255,7 +290,11 @@ def run() -> None:
     ov["JARVIS_WAKE_WORDS"] = wake
 
     # 2) Voice providers --------------------------------------------------------------------------
-    banner("2 · Voice", "Cloud = best quality (needs keys). Local = private + free (CPU, heavier).")
+    step(2, "voice — STT & TTS", (
+        "The ears and the voice.  [bold]cloud[/bold] = best quality + lowest latency "
+        "(Deepgram STT + ElevenLabs TTS, two keys).\n[bold]local[/bold] = private + free "
+        "(Whisper STT + Piper TTS on CPU, no keys, heavier)."
+    ))
     voice_now = "local" if cur.get("JARVIS_STT_PROVIDER") in ("whisper", "moonshine") else "cloud"
     voice = ask("Voice stack", default=voice_now, choices=["cloud", "local"])
     if voice == "cloud":
@@ -275,7 +314,10 @@ def run() -> None:
         say("  No voice keys needed. Models download on first use.")
 
     # 3) Brain LLM --------------------------------------------------------------------------------
-    banner("3 · Brain (the LLM that thinks)", "Jarvis runs his own reasoning model + tool loop.")
+    step(3, "brain — the LLM that thinks", (
+        "The reasoning model + tool loop. Any OpenAI-compatible endpoint works;\n"
+        "[bold]ollama[/bold] keeps it fully offline."
+    ))
     backend = ask("LLM backend", default=cur.get("JARVIS_LLM_BACKEND") or "freellmapi",
                   choices=["freellmapi", "openai", "ollama"])
     ov["JARVIS_LLM_BACKEND"] = backend
@@ -307,16 +349,28 @@ def run() -> None:
         ov["JARVIS_LLM_PRIMARY_MODEL"] = ask(
             "Local model", default=cur.get("JARVIS_LLM_PRIMARY_MODEL") or "llama3.1")
         ov["JARVIS_LLM_FALLBACK_MODELS"] = cur.get("JARVIS_LLM_FALLBACK_MODELS", "")
+    say("  Optional: DIRECT fast providers for the failover chain — a `groq:` prefixed model "
+        "answers in ~0.3s.")
+    if yes("Add direct provider keys (Groq / Cerebras)?",
+           default=bool(cur.get("JARVIS_GROQ_API_KEY"))):
+        ov["JARVIS_GROQ_API_KEY"] = ask_key(
+            "Groq API key (console.groq.com — free tier)", PROBES["groq"],
+            cur.get("JARVIS_GROQ_API_KEY", ""))
+        ov["JARVIS_CEREBRAS_API_KEY"] = ask_key(
+            "Cerebras API key (cloud.cerebras.ai — free tier, blank to skip)", None,
+            cur.get("JARVIS_CEREBRAS_API_KEY", ""))
+        say("  Use them by prefixing chain entries, e.g. "
+            "[bold]JARVIS_LLM_PRIMARY_MODEL=groq:llama-3.3-70b-versatile[/bold].")
 
     # 4) Knowledge (vault) ------------------------------------------------------------------------
-    banner("4 · Knowledge", "An Obsidian/Markdown folder is the assistant's long-term L3 memory.")
+    step(4, "knowledge — your vault", "An Obsidian/Markdown folder is the assistant's long-term L3 memory.")
     vault = ask("Path to your notes folder (Obsidian vault)",
                 default=cur.get("JARVIS_VAULT_PATH")
                 or str(Path.home() / "Documents" / "Obsidian Vault"))
     ov["JARVIS_VAULT_PATH"] = vault
 
     # 5) Deployment shape -------------------------------------------------------------------------
-    banner("5 · Deployment", (
+    step(5, "deployment shape", (
         "[bold]single[/bold] = one machine, loopback only.\n"
         "[bold]vps[/bold] = 24/7 brain reachable by your phone / other devices (binds 0.0.0.0,\n"
         "       protected by an auth token the wizard generates)."
@@ -338,7 +392,7 @@ def run() -> None:
         ov["JARVIS_BRAIN_HOST"] = "127.0.0.1"
 
     # 6) Security: protocol passwords (generated once, kept across re-runs) -----------------------
-    banner("6 · Security", "Strong passwords for the 8 privileged protocols (kept if already set).")
+    step(6, "security", "Strong passwords for the 8 privileged protocols (kept if already set).")
     for k in PROTOCOL_KEYS:
         ov[k] = cur.get(k) or secrets.token_urlsafe(12)
     say("  [green]Done[/green] — goodnight / phoenix / ragnarok / backup / ping / diagnostics / "
@@ -346,7 +400,7 @@ def run() -> None:
         "them back is refused by design — keep your .env safe.)")
 
     # 7) Optional integrations --------------------------------------------------------------------
-    banner("7 · Optional integrations", "Add now or leave blank and wire later via TODO-NOW.md.")
+    step(7, "optional integrations", "Add now or leave blank and wire later — everything degrades gracefully.")
     if yes("Configure any optional integrations now?", default=False):
         if yes("Telegram (read + send messages, voice notes)?", default=False):
             ov["JARVIS_TELEGRAM_API_ID"] = ask("Telegram api_id (my.telegram.org)",
@@ -361,7 +415,7 @@ def run() -> None:
             say("  Then run: uv run python bench/telegram_login.py (one-time interactive sign-in).")
         if yes("Web search (Tavily)?", default=False):
             ov["JARVIS_TAVILY_API_KEY"] = ask_key(
-                "Tavily API key", None, cur.get("JARVIS_TAVILY_API_KEY", ""))
+                "Tavily API key", PROBES["tavily"], cur.get("JARVIS_TAVILY_API_KEY", ""))
         if yes("Gmail + Google Calendar (one OAuth app)?", default=False):
             ov["JARVIS_GOOGLE_CLIENT_ID"] = ask("Google client id",
                                                 default=cur.get("JARVIS_GOOGLE_CLIENT_ID", "")) or ""
@@ -376,7 +430,7 @@ def run() -> None:
                                           default=f"jarvis-{secrets.token_hex(4)}")
 
     # 8) Proactivity + fleet ----------------------------------------------------------------------
-    banner("8 · Behaviour", "Whether the assistant may speak unprompted, and the fleet consult.")
+    step(8, "behaviour", "Whether the assistant may speak unprompted, and the fleet consult.")
     ov["JARVIS_PROACTIVE_ENABLED"] = "true" if yes(
         "Allow proactive (unprompted) reminders/nudges? Respects quiet hours + a daily budget.",
         default=(shape == "vps")) else "false"
@@ -399,16 +453,43 @@ def run() -> None:
         lines.append(f"  {k} = {mask(v) if secretish.search(k) else (v or '(blank)')}")
     banner("Wrote .env", "\n".join(lines))
 
-    banner("Next steps", (
-        "1. Install the stack you chose, e.g.:\n"
-        "   [bold]uv sync --extra edge --extra cloud-voice --extra brain "
+    voice_extra = "cloud-voice" if voice == "cloud" else "local-voice"
+    banner("install & verify", (
+        "1. Install the stack you chose:\n"
+        f"   [bold]uv sync --extra edge --extra {voice_extra} --extra brain "
         "--extra channels --extra identity --extra dev[/bold]\n"
-        "   (drop cloud-voice and add local-voice for a fully local stack)\n"
-        "2. Verify:  [bold]uv run python bench/run_all_tests.py[/bold]\n"
-        "3. Talk locally:  [bold]uv run python -m jarvis.edge.assistant[/bold]\n"
-        "   or run the shared brain:  [bold]uv run python -m jarvis.brain.server[/bold]\n"
-        "4. Finish credential logins + the device test plan in [bold]TODO-NOW.md[/bold].\n"
-        f"5. Personalise [bold]personality/jarvis.md[/bold] to make it truly \"{name}\"."
+        "2. Verify everything:  [bold]uv run python bench/run_all_tests.py[/bold]"
+    ))
+    banner(f"run {name} — the edge (ears + voice, on this machine)", (
+        "Foreground (Ctrl-C to stop):\n"
+        "   [bold]uv run python -m jarvis.edge.assistant[/bold]\n"
+        f"Say [bold]“{wake.split(',')[0].strip()}”[/bold], then your command.\n"
+        "Start on every boot (Windows task / launchd / systemd, auto-detected):\n"
+        "   [bold]uv run python -m jarvis.edge.autostart install[/bold]"
+    ))
+    if shape == "vps":
+        banner("run the brain — 24/7 on your VPS", (
+            "One-time on the VPS (Ubuntu/Debian):\n"
+            "   [bold]git clone <your-fork> ~/jarvis && cd ~/jarvis && "
+            "bash deploy/vps/install-brain.sh[/bold]\n"
+            "   then copy this .env to the VPS:  [bold]scp .env <user>@<vps>:~/jarvis/.env[/bold]\n"
+            "Every later code deploy FROM this machine (runs the suite first, then syncs + restarts):\n"
+            "   [bold]scripts/deploy_vps.sh[/bold]\n"
+            "Check it:  [bold]curl http://<vps>:8766/healthz[/bold]  →  ok\n"
+            "Point every device at [bold]ws://<vps-tailscale-ip>:8765/voice[/bold] with the auth "
+            "token from this .env."
+        ))
+    else:
+        banner("run the brain — locally", (
+            "Same machine, second terminal:\n"
+            "   [bold]uv run python -m jarvis.brain.server[/bold]\n"
+            "Moving to a 24/7 VPS later? Re-run this wizard, pick [bold]vps[/bold], then follow "
+            "the printed deploy steps."
+        ))
+    banner("make it yours", (
+        f"Personalise [bold]personality/jarvis.md[/bold] to shape how {name} speaks, and fill "
+        "your private profile in [bold]memory/about-you.md[/bold].\n"
+        "Docs: [bold]https://openwatari.vercel.app[/bold] — quickstart, devices, tools, security."
     ))
 
 
