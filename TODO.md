@@ -52,6 +52,17 @@ words trained** (`watari`/`hey_watari` openWakeWord, no API key) closing Edge P2
 
 Each item is verified in production before the next starts.
 
+**2026-07-03 round C (all verified):** wizard = WATARI banner + 8-step flow + live probes + run/deploy
+finale (34/34 checks) · speakers barge-in via wake word over TTS (no AEC dep; threshold+0.15) ·
+L5 semantic LIVE on VPS via Jina embeddings API (no torch; flag on) · backup RESTORE path +
+hermetic drill (there was no restore at all before) · fleet routing memory (prefs counters →
+system-prompt bias) + **bug fixed: no-gateway-token setups never reached the CLI path** ·
+pc_agent catastrophic-op refuse-list · weekly live-integration timer on VPS (Mon 07:30 UTC,
+Telegram alert on fail — first run already caught Browserbase unconfigured on VPS).
+**Decisions:** WS gateway path KEPT (documented auth research; clean fallback; framework users can
+allowlist a client id) · GitHub stays local-git-only by design (Composio `github` toolkit covers
+API needs) · groq primary re-benchmark waits for new models · docs mobile nav stays a stack.
+
 ---
 
 ## 1. Brain — `src/jarvis/brain/`

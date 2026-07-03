@@ -117,8 +117,12 @@ async def delegate_to_fleet(
     """
     if not settings.openclaw_delegation_enabled:
         raise FleetUnavailable("fleet delegation is disabled (JARVIS_OPENCLAW_DELEGATION_ENABLED)")
+    # No gateway token = CLI-only setup (the common OpenWatari case). Go straight to the CLI
+    # instead of refusing — the WS path needs a token, the CLI path does not.
     if not settings.openclaw_token:
-        raise FleetUnavailable("no gateway token configured")
+        result = await _delegate_via_cli(task, timeout_s or settings.openclaw_request_timeout_seconds)
+        _note_success(task)
+        return result
 
     try:
         import websockets
@@ -155,19 +159,65 @@ async def delegate_to_fleet(
             return final
 
     try:
-        return await asyncio.wait_for(_run(), timeout=timeout_s + 15)
+        result = await asyncio.wait_for(_run(), timeout=timeout_s + 15)
     except FleetUnavailable as e:
         try:
-            return await _delegate_via_cli(task, timeout_s)
+            result = await _delegate_via_cli(task, timeout_s)
         except FleetUnavailable as cli_e:
             raise FleetUnavailable(f"{e}; CLI fallback failed: {cli_e}") from e
     except Exception as e:  # noqa: BLE001
         try:
-            return await _delegate_via_cli(task, timeout_s)
+            result = await _delegate_via_cli(task, timeout_s)
         except FleetUnavailable as cli_e:
             raise FleetUnavailable(
                 f"gateway error: {type(e).__name__}: {e}; CLI fallback failed: {cli_e}"
             ) from e
+    _note_success(task)
+    return result
+
+
+# ---- routing memory -----------------------------------------------------------------------
+# Watari learns WHICH domains he ends up delegating, so the system prompt can pre-bias him to
+# hand those over confidently instead of re-deliberating every turn. Plain keyword tagging into
+# a prefs counter — no model, no store. ponytail: keywords, embeddings if tagging misroutes.
+_DOMAIN_KEYWORDS = {
+    "finance/markets": ("stock", "etf", "market", "portfolio", "invest", "dividend", "bond"),
+    "real estate": ("apartment", "house", "rent", "is24", "immobilien", "property", "listing"),
+    "crypto": ("crypto", "bitcoin", "btc", "eth", "wallet", "token", "defi"),
+    "deep research": ("research", "report", "analysis", "compare", "investigate", "brief"),
+    "coding": ("code", "repo", "bug", "refactor", "script", "implement"),
+}
+
+
+def _note_success(task: str) -> None:
+    """Bump the routing counter for each domain this delegated task matches. Fail-quiet."""
+    try:
+        from jarvis.brain import prefs
+
+        t = task.lower()
+        counts: dict = prefs.get("fleet_domains", {}) or {}
+        for domain, words in _DOMAIN_KEYWORDS.items():
+            if any(w in t for w in words):
+                counts[domain] = int(counts.get(domain, 0)) + 1
+        if counts:
+            prefs.set("fleet_domains", counts)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def routing_hint() -> str:
+    """One system-prompt line naming domains the owner routinely delegates (>=2 successes)."""
+    try:
+        from jarvis.brain import prefs
+
+        counts: dict = prefs.get("fleet_domains", {}) or {}
+        learned = [d for d, n in sorted(counts.items(), key=lambda kv: -int(kv[1])) if int(n) >= 2]
+        if not learned:
+            return ""
+        return ("Routing memory: tasks in " + ", ".join(learned)
+                + " have gone to the fleet before and worked — delegate those without deliberating.")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 async def _delegate_via_cli(task: str, timeout_s: int) -> str:

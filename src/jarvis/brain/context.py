@@ -190,6 +190,15 @@ def build_system_prompt() -> str:
         parts.append(
             f"# Recently learned about {who} (use `recall` for older)\n" + digest
         )
+    # Learned delegation bias (one line, only once domains repeat) — see fleet.routing_hint.
+    try:
+        from jarvis.brain.fleet import routing_hint
+
+        hint = routing_hint()
+        if hint:
+            parts.append(hint)
+    except Exception:  # noqa: BLE001
+        pass
     # Operating rules (persona covers the rest — kept terse to spare per-turn tokens).
     parts.append(
         "# Clarify, confirm, speak\n"

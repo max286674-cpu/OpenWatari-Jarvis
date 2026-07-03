@@ -35,10 +35,32 @@ def _control_url() -> str:
     return urlunparse(u._replace(path="/control"))
 
 
+# Last-line refuse-list for an ELEVATED process. The brain's own guards (system.py path/secret
+# checks + confirm tier) run first; this catches a compromised/confused brain anyway. Substring
+# match on the flattened command — crude on purpose, these strings have no legitimate use here.
+_REFUSED_SUBSTRINGS = (
+    "format-volume", "format c:", "format d:", "clear-disk", "initialize-disk",
+    "remove-item c:\\ ", "remove-item -path c:\\ ", "rd /s /q c:\\", "del /f /s /q c:\\",
+    "cipher /w", "bcdedit", "vssadmin delete", "reg delete hklm", "diskpart",
+)
+
+
+def _refused(op: str, args: dict) -> str | None:
+    blob = f"{op} {json.dumps(args, ensure_ascii=False)}".lower()
+    for bad in _REFUSED_SUBSTRINGS:
+        if bad in blob:
+            return bad
+    return None
+
+
 async def _run_op(op: str, args: dict) -> tuple[bool, str]:
     fn = LOCAL_HANDLERS.get(op)
     if fn is None:
         return False, f"unknown PC op '{op}'"
+    hit = _refused(op, args)
+    if hit:
+        logger.warning(f"pc-agent: REFUSED catastrophic op {op} (matched '{hit}')")
+        return False, "I won't run that on the laptop — it's on the destructive-op refuse list, sir."
     try:
         return True, str(await fn(args or {}))
     except Exception as e:  # noqa: BLE001
