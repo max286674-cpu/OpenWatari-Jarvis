@@ -295,14 +295,18 @@ def run() -> None:
             "OpenAI API key",
             lambda k: _http_ok(f"{base.rstrip('/')}/models", {"Authorization": f"Bearer {k}"}),
             cur.get("JARVIS_FREELLMAPI_API_KEY", ""))
-        ov["JARVIS_FREELLMAPI_MODEL"] = ask(
-            "Model id", default=cur.get("JARVIS_FREELLMAPI_MODEL") or "gpt-4o-mini")
+        ov["JARVIS_LLM_PRIMARY_MODEL"] = ask(
+            "Model id", default=cur.get("JARVIS_LLM_PRIMARY_MODEL") or "gpt-4o-mini")
+        # The default fallback chain is freellmapi-proxy model ids — meaningless against a plain
+        # OpenAI-compatible endpoint, so keep only a user-curated chain.
+        ov["JARVIS_LLM_FALLBACK_MODELS"] = cur.get("JARVIS_LLM_FALLBACK_MODELS", "")
     else:
         ov["JARVIS_FREELLMAPI_BASE_URL"] = ask(
             "Ollama base URL",
             default=cur.get("JARVIS_FREELLMAPI_BASE_URL") or "http://127.0.0.1:11434/v1")
-        ov["JARVIS_FREELLMAPI_MODEL"] = ask(
-            "Local model", default=cur.get("JARVIS_FREELLMAPI_MODEL") or "llama3.1")
+        ov["JARVIS_LLM_PRIMARY_MODEL"] = ask(
+            "Local model", default=cur.get("JARVIS_LLM_PRIMARY_MODEL") or "llama3.1")
+        ov["JARVIS_LLM_FALLBACK_MODELS"] = cur.get("JARVIS_LLM_FALLBACK_MODELS", "")
 
     # 4) Knowledge (vault) ------------------------------------------------------------------------
     banner("4 · Knowledge", "An Obsidian/Markdown folder is the assistant's long-term L3 memory.")
