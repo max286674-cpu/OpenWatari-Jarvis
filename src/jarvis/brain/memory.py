@@ -19,7 +19,6 @@ from pathlib import Path
 
 from loguru import logger
 
-from jarvis.brain.tools.base import clip
 from jarvis.config import settings
 
 # repo root = .../src/jarvis/brain/memory.py -> parents[3]
@@ -250,6 +249,10 @@ class MemoryStore:
         if "L3" in layers:
             try:
                 from jarvis.brain.tools.vault import search_vault
+                # Lazy import: `clip` lives in tools.base.py, which is in the same package as the
+                # vault tools being imported above. Eagerly importing tools.base at the top of this
+                # file would create a circular import (memory -> tools -> tools.memory -> memory).
+                from jarvis.brain.tools.base import clip as _clip  # noqa: PLC0415
                 res = await search_vault({"query": query, "limit": limit})
                 if res and "couldn't" not in res.lower() and "no " not in res.lower()[:30]:
                     # search_vault returns a multi-line list; split into bullets for ranking.
@@ -258,7 +261,7 @@ class MemoryStore:
                         if not line or line.lower().startswith(("here", "nothing", "no ", "i ")):
                             continue
                         # Tiny length-weighted score so longer hits don't dominate the per-layer rank.
-                        hits.append({"layer": "L3", "text": clip(line, 240),
+                        hits.append({"layer": "L3", "text": _clip(line, 240),
                                      "score": 2.0 + min(2.0, len(line) / 200.0),
                                      "source": "vault"})
             except Exception as e:  # noqa: BLE001
