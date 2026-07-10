@@ -110,7 +110,16 @@ async def _browser_action(args: dict) -> str:
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             await page.goto(url, wait_until="domcontentloaded")
-            return f"Opened {url} — '{await page.title()}', sir."
+            title = await page.title()
+            # T1b: open always returns a screenshot path so the LLM (and the owner) can verify
+            # the page actually loaded (vs 404 / login wall / consent screen). Cheap: one PNG.
+            shot = _REPO_ROOT / "browser-shot.png"
+            try:
+                await page.screenshot(path=str(shot), full_page=False)
+                shot_text = f", screenshot at {shot}"
+            except Exception:
+                shot_text = ""
+            return f"Opened {url} — '{title}'{shot_text}, sir."
 
         if action == "new_tab":
             page = await _BROWSER.new_tab()
@@ -158,6 +167,83 @@ async def _browser_action(args: dict) -> str:
         if action == "back":
             await page.go_back()
             return f"Went back — '{await page.title()}', sir."
+
+        if action == "tabs":
+            # T1d: tab awareness — list all open tabs with index + title + url so the owner can
+            # pick one by saying its title (or refer to it). Stale entries (page closed by another
+            # process) are filtered.
+            pages = _BROWSER._ctx.pages
+            out = []
+            for i, p in enumerate(pages):
+                try:
+                    title = await p.title()
+                    url = p.url
+                except Exception:
+                    continue
+                marker = "►" if p is _BROWSER._page else " "
+                out.append(f"  {marker} {i}. {title} — {url}")
+            if not out:
+                return "No tabs open, sir."
+            return f"{len(out)} tab(s) open:\n" + "\n".join(out)
+
+        if action == "switch_tab":
+            # Switch the singleton `_page` to another tab (by index, title substring, or url).
+            pages = _BROWSER._ctx.pages
+            if not pages:
+                return "No tabs to switch to, sir."
+            arg = (args.get("index") or args.get("title") or args.get("url") or "").strip()
+            pick = None
+            if isinstance(arg, int) or (arg.isdigit() if arg else False):
+                idx = int(arg)
+                if 0 <= idx < len(pages):
+                    pick = pages[idx]
+            elif arg:
+                for p in pages:
+                    if arg.lower() in (await p.title()).lower() or arg.lower() in p.url.lower():
+                        pick = p
+                        break
+            if pick is None:
+                return f"I couldn't find a tab matching '{arg}', sir. Try 'tabs' to see them."
+            _BROWSER._page = pick
+            return f"Switched to '{await pick.title()}', sir."
+
+        if action == "close_tab":
+            # Close a tab by index/title/url; if it was the current page, fall back to another tab.
+            pages = _BROWSER._ctx.pages
+            if not pages:
+                return "No tabs to close, sir."
+            arg = (args.get("index") or args.get("title") or args.get("url") or "").strip()
+            target = None
+            if arg.isdigit() and 0 <= int(arg) < len(pages):
+                target = pages[int(arg)]
+            elif arg:
+                for p in pages:
+                    if arg.lower() in (await p.title()).lower() or arg.lower() in p.url.lower():
+                        target = p
+                        break
+            if target is None:
+                target = _BROWSER._page
+                if len(pages) > 1:
+                    return "Tell me which tab, sir (by index, title or url), or say 'close all except this'."
+            await target.close()
+            # If we closed the active page, repoint to the first remaining tab.
+            if _BROWSER._page is target:
+                remaining = _BROWSER._ctx.pages
+                _BROWSER._page = remaining[0] if remaining else None
+            return f"Closed '{await target.title() if not target.is_closed() else target.title() if False else 'tab'}', sir."
+
+        if action == "close_all_other_tabs":
+            # Close every tab except the current one (the LLM asks "close everything but this").
+            current = _BROWSER._page
+            n = 0
+            for p in list(_BROWSER._ctx.pages):
+                if p is not current:
+                    try:
+                        await p.close()
+                        n += 1
+                    except Exception:
+                        pass
+            return f"Closed {n} other tab(s), sir."
 
         if action == "read":
             title = await page.title()
@@ -216,14 +302,15 @@ SCHEMAS = [
         "function": {
             "name": "browser",
             "description": (
-                "Drive a real visible web browser on the owner's screen: open a URL or new tab, "
-                "click links/buttons (by visible text or CSS selector), fill form fields, type "
-                "text, press keys (e.g. Enter), go back, read the page, or screenshot it. Use "
-                "this for anything interactive — logging in (fill the email and password fields "
-                "when he asks you to), clicking through a site, submitting forms. Confirm before "
-                "submitting anything that sends data or money. For simply OPENING a site or "
-                "search (e.g. 'open YouTube') with no clicking/typing, use open_url instead — it's "
-                "faster and uses his normal browser."
+                "Drive a real visible web browser on the owner's screen. Actions: open, "
+                "new_tab, click (by visible text or CSS selector), fill (form field by "
+                "selector), type (keystrokes), press (e.g. Enter), back, tabs (list all open "
+                "tabs), switch_tab (by index/title/url), close_tab, close_all_other_tabs, "
+                "read (page text), screenshot. The 'open' action auto-takes a screenshot so you "
+                "can verify the page actually loaded (vs 404 / login wall / consent screen). "
+                "For simply OPENING a site or search (e.g. 'open YouTube') with no "
+                "clicking/typing, use open_url instead -- it's faster and uses his normal "
+                "browser. Confirm before submitting anything that sends data or money."
             ),
             "parameters": {
                 "type": "object",
@@ -231,7 +318,7 @@ SCHEMAS = [
                     "action": {
                         "type": "string",
                         "enum": ["open", "click", "fill", "type", "press", "read",
-                                 "screenshot", "new_tab", "back", "close"],
+                                 "screenshot", "new_tab", "back", "close", "tabs", "switch_tab", "close_tab", "close_all_other_tabs"],
                     },
                     "url": {"type": "string", "description": "For open/new_tab."},
                     "selector": {"type": "string", "description": "CSS selector (fill/click/type)."},

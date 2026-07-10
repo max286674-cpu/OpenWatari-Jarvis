@@ -96,8 +96,10 @@ async def composio_find_tools(args: dict) -> str:
         return not_configured("Composio", _NEEDS)
     query = (args.get("query") or "").strip()
     if not query:
-        return "What app action are you looking for, sir? (e.g. 'create a GitHub issue')"
+        return ("What app action are you looking for, sir? Use a short action-verb phrase "
+                "like 'create a GitHub issue' or 'send a slack message'.")
     toolkit = (args.get("toolkit") or "").strip().lower()
+    items: list[dict] = []
     try:
         _uid, active = await _context()
         # Strong keyword -> connected toolkit: scope the search server-side. One precise call instead
@@ -113,7 +115,7 @@ async def composio_find_tools(args: dict) -> str:
             params["toolkit_slug"] = toolkit
         items = (await _get("/tools", params)).get("items", [])
     except Exception as e:  # noqa: BLE001
-        return tool_error("Composio search", e)
+        logger.debug(f"composio_find_tools: live API failed ({type(e).__name__}); trying local cache")
     def _pick(t: dict) -> dict:
         return {"slug": t.get("slug"), "app": (t.get("toolkit") or {}).get("slug"),
                 "desc": (t.get("description") or "").strip()[:140], "required": _required_params(t)}
@@ -154,9 +156,26 @@ async def composio_find_tools(args: dict) -> str:
             if len(out) >= 12:
                 break
         out = out[:12]
+    # T12 — only fall back to the local cache if the live API returned nothing. Live API is more
+    # accurate; the local cache exists for offline fallback. (Earlier we tried local FIRST and got
+    # noisy substring matches that pushed the LLM toward wrong slugs — fixed here.)
     if not out:
-        return (f"I couldn't find a connected-app tool for '{query}', sir — connect the app in "
-                "Composio if you haven't.")
+        try:
+            from jarvis.brain.composio_catalog import long_tail_lookup as _local_lookup
+            for h in _local_lookup(query, limit=8):
+                tk = h.get("app", "")
+                if active and tk and tk not in active:
+                    continue
+                out.append({"slug": h["slug"], "app": tk, "desc": h.get("desc", "")[:140],
+                             "required": h.get("required") or []})
+                if len(out) >= 5:
+                    break
+        except Exception:
+            pass
+    if not out:
+        return (f"I couldn't find a connected-app tool for '{query}', sir. Try a different "
+                "verb (e.g. 'create', 'send', 'list', 'search', 'update') or call composio_find_tools "
+                "with a broader query. If the app isn't connected, link it in Composio and tell me.")
     lines = [f"- {o['slug']} ({o['app']}): {o['desc']} | required: {o['required'] or 'none'}"
              for o in out]
     return ("Found these app tools, sir:\n" + "\n".join(lines)
@@ -194,10 +213,13 @@ SCHEMAS = [
         "function": {
             "name": "composio_find_tools",
             "description": (
-                "Search the owner's CONNECTED external apps (GitHub, Slack, Google Drive/Docs/Sheets, "
-                "Linear, Stripe, Airtable, Google Maps, YouTube, LinkedIn, Reddit, Coinbase, …) for the "
-                "right tool to perform an action. Use this FIRST when the owner asks to do something in "
-                "one of those apps, then call composio_run_tool with the chosen slug."),
+                "Discover which Composio tool to call for a task. ALWAYS use this FIRST when the owner asks "
+                "to do something in ANY external app — GitHub, Slack, Gmail, Google Drive/Docs/Sheets/Calendar, "
+                "Linear, Stripe, Airtable, Supabase, YouTube, LinkedIn, Reddit, Instagram, Coinbase, Google Maps. "
+                "The system prompt lists the common actions per app; this tool finds the long tail and returns "
+                "the exact slug + required arguments. Search first, refuse-never: if the first call returns nothing, "
+                "broaden the verb (create / send / list / search / update / delete) and call again. Then call "
+                "composio_run_tool with the chosen slug."),
             "parameters": {
                 "type": "object",
                 "properties": {

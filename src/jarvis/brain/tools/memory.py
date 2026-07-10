@@ -30,16 +30,25 @@ async def remember(args: dict) -> str:
 
 
 async def recall(args: dict) -> str:
+    """Cross-layer recall — searches L1 (learned) + L2 (journal) + L3 (vault) + L5 (semantic)."""
     if not settings.memory_enabled:
         return "My long-term memory is switched off right now, sir."
     query = (args.get("query") or "").strip()
     if not query:
         return "What should I recall, sir?"
+    layers = args.get("layers")  # optional: ['L1','L2','L3','L5'] to narrow
     try:
-        hits = STORE.recall(query, limit=settings.memory_recall_limit)
+        # fused_recall returns tagged dicts; tag each hit with its layer so the LLM can cite.
+        hits = await STORE.fused_recall(query, limit=settings.memory_recall_limit, layers=tuple(layers) if layers else None)
         if not hits:
             return f"I don't have anything stored about '{query}', sir."
-        return "Here's what I remember: " + " ".join(h.rstrip(".") + "." for h in hits)
+        tag = {"L1": "learned", "L2": "journal", "L3": "vault", "L5": "semantic"}
+        lines = []
+        for h in hits:
+            layer = tag.get(h["layer"], h["layer"])
+            text = h["text"].rstrip(".")
+            lines.append(f"[{layer}] {text}.")
+        return ("Here's what I remember across all layers: " + " ".join(lines))
     except Exception as e:  # noqa: BLE001
         return tool_error("recall", e)
 
@@ -99,13 +108,21 @@ SCHEMAS = [
         "function": {
             "name": "recall",
             "description": (
-                "Search your long-term memory for what you've learned about a topic or person. "
-                "Use for 'what do you know about X / did I tell you about Y / what did I say'."
+                "Search across ALL memory layers — L1 learned facts, L2 journal entries, L3 vault "
+                "notes, L5 semantic — for what you know about a topic or person. Use for "
+                "'what do you know about X / did I tell you about Y / what did we do yesterday'. "
+                "Each hit is tagged with its layer ([learned], [journal], [vault]) so the owner "
+                "knows where it came from."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Topic or person to recall."}
+                    "query": {"type": "string", "description": "Topic or person to recall."},
+                    "layers": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["L1", "L2", "L3", "L5"]},
+                        "description": "Optional: limit to specific layers (default = all).",
+                    },
                 },
                 "required": ["query"],
             },

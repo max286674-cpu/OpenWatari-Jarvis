@@ -79,6 +79,8 @@ class WakeWordGate(FrameProcessor):
         suppress_during_tts: bool = True,
         ack_phrase: str = "",
         barge_in: bool = False,
+        hot_mic_after_wake: bool = False,
+        hot_mic_idle_minutes: int = 30,
     ) -> None:
         super().__init__()
         if not models:
@@ -94,6 +96,11 @@ class WakeWordGate(FrameProcessor):
         self._names = list(self._model.models.keys())
         self._threshold = threshold
         self._listen_window_s = listen_window_s
+        # Hot-mic mode: first wake opens the window for up to `hot_mic_idle_minutes` of silence
+        # (default 30 min); subsequent turns within that idle window flow without the wake word.
+        # `_open_until` is the cutoff timestamp; we extend it on each successful forward.
+        self._hot_mic = hot_mic_after_wake
+        self._hot_mic_idle_s = float(hot_mic_idle_minutes) * 60.0
         self._open_until = 0.0
         self._bot_speaking = False
         self._speaking_since = 0.0
@@ -128,7 +135,14 @@ class WakeWordGate(FrameProcessor):
         return not self._awake and not self._bot_speaking
 
     def _wake(self) -> None:
-        self._open_until = time.monotonic() + self._listen_window_s
+        # Hot-mic: first wake opens the window for the full idle budget. Subsequent opens within
+        # the same session extend to the same deadline. Short listen_window_s still applies on the
+        # post-TTS reopen path (line ~163) so follow-ups after a reply still get a normal window.
+        if self._hot_mic:
+            target = time.monotonic() + self._hot_mic_idle_s
+            self._open_until = max(self._open_until, target)
+        else:
+            self._open_until = time.monotonic() + self._listen_window_s
 
     def _detect(self, frame: InputAudioRawFrame, threshold: float | None = None) -> str | None:
         samples = np.frombuffer(frame.audio, dtype=np.int16)
@@ -159,7 +173,9 @@ class WakeWordGate(FrameProcessor):
                 self._open_until = 0.0
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
-            # After Watari finishes speaking, keep listening briefly for a follow-up.
+            # After Watari finishes speaking, keep listening briefly for a follow-up. In hot-mic
+            # mode this re-opens the long idle window so the owner can keep talking without the
+            # wake word; otherwise it falls back to the short listen_window_s.
             if self._awake or self._resume_after_tts:
                 self._wake()
             self._resume_after_tts = False

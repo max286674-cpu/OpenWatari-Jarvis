@@ -92,6 +92,44 @@ async def _fire_backlog() -> None:
         logger.warning(f"daily backlog pass failed: {e}")
 
 
+async def _fire_pattern_scan() -> None:
+    """T3b: scan the rolling command log for repeating patterns; persist as L1 facts."""
+    try:
+        from jarvis.brain.patterns import persist_as_l1
+        from jarvis.brain.memory import STORE
+        added = persist_as_l1(STORE)
+        if added:
+            logger.info(f"daily pattern scan: {len(added)} new pattern fact(s)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"daily pattern scan failed: {e}")
+
+
+async def _fire_weekly_review() -> None:
+    """T3c: weekly memory review prompt — drop the last 20 learned facts into the owner's chat
+    and ask them to confirm / correct / forget any. Routes through the proactive engine if
+    available; otherwise logs the proposed review for the next session."""
+    try:
+        from jarvis.brain.memory import STORE
+        recent = STORE.recent_digest(limit=20)
+        if not recent:
+            return
+        body = "Watari learned these facts this week, sir — anything to correct or forget?\n\n"
+        body += "\n".join(f"  • {f}" for f in recent)
+        # Surface via the proactive engine (it'll DM Telegram / nudge) if the brain has one.
+        try:
+            from jarvis.brain.proactive import proactive  # noqa: F401  may not exist as instance
+            sched = get_scheduler()
+            if hasattr(sched, "_proactive") and sched._proactive:  # type: ignore[attr-defined]
+                sched._proactive.request_speak(body)  # type: ignore[attr-defined]
+                return
+        except Exception:
+            pass
+        # Fallback: log so the next session surfaces it.
+        logger.info(f"weekly memory review prompt:\n{body}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"weekly memory review failed: {e}")
+
+
 async def _fire_backup() -> None:
     """Top-level job target: zip Watari's learned facts + journal (L1/L2) into ``backups/`` and keep
     the most recent 14. The memory dir is the one durable store with no other automated backup (the
@@ -229,6 +267,44 @@ class Scheduler:
                       misfire_grace_time=3600, coalesce=True, replace_existing=True)
         logger.info(f"daily memory backup scheduled for {hh:02d}:{mm:02d}")
         return "daily-memory-backup"
+
+    def schedule_pattern_scan(self, hhmm: str = "04:30") -> str | None:
+        """T3b: daily pattern-detection pass — scans the rolling command log and writes new patterns
+        as L1 facts (with the 'pattern' tag). Runs after maintenance so fresh digests are available."""
+        from apscheduler.triggers.cron import CronTrigger
+
+        hh, mm = _parse_hhmm(hhmm)
+        sched = self._ensure()
+        sched.add_job(_fire_pattern_scan, trigger=CronTrigger(hour=hh, minute=mm, timezone=USER_TZ),
+                      id="daily-pattern-scan", name="daily pattern scan",
+                      misfire_grace_time=3600, coalesce=True, replace_existing=True)
+        logger.info(f"daily pattern scan scheduled for {hh:02d}:{mm:02d}")
+        return "daily-pattern-scan"
+
+    def schedule_weekly_review(self, hhmm: str = "SUN 20:00") -> str | None:
+        """T3c: weekly review — surface the last 20 learned facts to the owner as a Telegram voice-note
+        or a proactive nudge. ``SUN 20:00`` = Sunday 8pm in the owner's TZ."""
+        from apscheduler.triggers.cron import CronTrigger
+
+        parts = (hhmm or "").strip().split()
+        if len(parts) != 2:
+            return None
+        dow, hm = parts[0].upper(), parts[1]
+        dow_map = {"SUN": "sun", "MON": "mon", "TUE": "tue", "WED": "wed", "THU": "thu", "FRI": "fri", "SAT": "sat"}
+        dow_lit = dow_map.get(dow)
+        if dow_lit is None:
+            return None
+        try:
+            hh, mm = _parse_hhmm(hm)
+        except Exception:
+            return None
+        sched = self._ensure()
+        sched.add_job(_fire_weekly_review, trigger=CronTrigger(day_of_week=dow_lit, hour=hh, minute=mm,
+                      timezone=USER_TZ),
+                      id="weekly-memory-review", name="weekly memory review",
+                      misfire_grace_time=86400, coalesce=True, replace_existing=True)
+        logger.info(f"weekly memory review scheduled for {dow} {hh:02d}:{mm:02d}")
+        return "weekly-memory-review"
 
     def run_briefing_now(self) -> None:
         """Fire the briefing immediately (for a 'brief me now' voice command or a test)."""

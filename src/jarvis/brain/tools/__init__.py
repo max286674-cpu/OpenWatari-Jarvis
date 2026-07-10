@@ -15,13 +15,16 @@ from typing import Any, Awaitable, Callable
 from jarvis.brain.tools import (
     browser,
     calendar,
+    channels,
     coding,
     composio,
     contacts,
     documents,
     gmail,
     localplay,
+    macros,
     memory,
+    multimodal,
     music,
     notify,
     notion,
@@ -33,6 +36,7 @@ from jarvis.brain.tools import (
     system,
     tasks,
     telegram,
+    undo,
     utility,
     vault,
     voicechat,
@@ -41,7 +45,8 @@ from jarvis.brain.tools import (
 
 _MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, browser,
             protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
-            coding, skills, notion, tasks, contacts, documents, composio]
+            coding, skills, notion, tasks, contacts, documents, composio, channels,
+            macros, multimodal, undo]  # noqa: E501
 
 Handler = Callable[[dict], Awaitable[str]]
 
@@ -55,7 +60,9 @@ _LAZY_GROUPS: dict[str, list] = {
     "office": [notion, gmail, calendar],  # email, calendar, Notion — when he asks about them
     "home": [smarthome, voicechat],      # smart-home control + Telegram music-room streaming
     "docs": [documents],                 # read a local document + answer questions grounded in it
-    "apps": [composio],                  # 250+ external apps via Composio (GitHub/Slack/Drive/…)
+    "apps": [composio],                  # 250+ external apps via Composio (GitHub/Slack/Drive/...)
+    "channels": [channels],              # YouTube channel ops (list / random / latest) — T1
+    "macros": [macros],                  # User-defined macro sequences + if_then — T2
 }
 # Substring triggers (lowercased) that activate a group for a turn. Broad on purpose — a miss just
 # means a one-turn delay (the follow-up usually contains the word, and groups stay warm one turn).
@@ -80,11 +87,13 @@ LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
              "hubspot", "salesforce", "calendly", "an issue", "a pr", "pull request",
              "post a message", "send a message to", "add a row", "create a channel", "in slack",
              "on github", "to slack", "a repo", "my repos"),
+    "channels": ("youtube channel", "channel ", "from channel", "random video", "random from",
+                 "latest from", "latest video", "what's new on", "new from", "upload from",
+                 "of videos", "lofi girl", "veritasium", "mrbeast"),
+    "macros": ("macro", "macros", "routine", "morning routine", "evening routine", "shortcut",
+               "if then", "if ", "branching", "every morning", "every day at", "recurring",
+               "set up a"),
 }
-
-_LAZY_MODULES = {m for mods in _LAZY_GROUPS.values() for m in mods}
-# Core modules are advertised on every turn; lazy ones only when their group is active.
-CORE_MODULES = [m for m in _MODULES if m not in _LAZY_MODULES]
 
 
 def _schemas_of(mods: list) -> list[dict[str, Any]]:
@@ -124,3 +133,8 @@ def tool_handlers() -> dict[str, Handler]:
 
 def tool_names() -> list[str]:
     return [s["function"]["name"] for s in tool_schemas()]
+
+
+_LAZY_MODULES = {m for mods in _LAZY_GROUPS.values() for m in mods}
+# Core modules are advertised on every turn; lazy ones only when their group is active.
+CORE_MODULES = [m for m in _MODULES if m not in _LAZY_MODULES]

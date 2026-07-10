@@ -49,12 +49,36 @@ def _script_segments(path: Path) -> list[tuple[str, int]]:
     return segs
 
 
+def _find_input_device(pa, hint: str = "airpods"):
+    """Pick the first input device whose name contains `hint` (case-insensitive).
+    Falls back to the default input device if no match.
+    """
+    hint_l = hint.lower()
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if info.get("maxInputChannels", 0) <= 0:
+            continue
+        name = (info.get("name") or "").lower()
+        if hint_l in name:
+            return i
+    try:
+        return pa.get_default_input_device_info()["index"]
+    except Exception:
+        return None
+
+
 def _record(seconds: int) -> bytes:
     import pyaudio
 
     pa = pyaudio.PyAudio()
-    stream = pa.open(format=pyaudio.paInt16, channels=1, rate=SR, input=True,
-                     frames_per_buffer=1024)
+    device_index = _find_input_device(pa, "airpods")
+    kwargs = dict(format=pyaudio.paInt16, channels=1, rate=SR, input=True,
+                  frames_per_buffer=1024)
+    if device_index is not None:
+        kwargs["input_device_index"] = device_index
+        name = pa.get_device_info_by_index(device_index).get("name")
+        print(f"  (using mic: [{device_index}] {name})")
+    stream = pa.open(**kwargs)
     frames = []
     for _ in range(int(SR / 1024 * seconds)):
         frames.append(stream.read(1024, exception_on_overflow=False))

@@ -392,6 +392,61 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
     except Exception as e:  # noqa: BLE001 — hygiene is best-effort, never blocks startup
         logger.warning(f"memory hygiene not scheduled: {e}")
 
+    # T12 — pre-fetch the full Composio catalog at startup so the system prompt has tool
+    # awareness from the first turn. Fire-and-forget: do not block startup on the network.
+    # NOTE: rely on the module-level `asyncio` import (no local rebind — that would shadow
+    # the later `asyncio.get_running_loop()` call in serve() and trip UnboundLocalError).
+    try:
+        from jarvis.brain.composio_catalog import refresh, invalidate
+
+        async def _refresh_now() -> None:
+            try:
+                await refresh()
+                invalidate()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"composio catalog initial refresh failed (will retry nightly): {e}")
+        try:
+            asyncio.get_running_loop().create_task(_refresh_now())
+        except RuntimeError:
+            asyncio.run(_refresh_now())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"composio catalog startup refresh could not be scheduled: {e}")
+
+    # T3b — daily pattern scan; T3c — weekly memory review (both fail-quiet like hygiene).
+    try:
+        SCHEDULER.schedule_pattern_scan()
+        SCHEDULER.schedule_weekly_review()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"pattern scan / weekly review not scheduled: {e}")
+
+    # T10 — reliability health probe every 4h (silent on green, ntfy on red).
+    try:
+        from apscheduler.triggers.interval import IntervalTrigger
+        from jarvis.brain._scheduled_jobs import _fire_reliability_probe
+
+        sched = SCHEDULER._ensure()  # noqa: SLF001 — scheduler is single-instance
+        sched.add_job(_fire_reliability_probe, trigger=IntervalTrigger(hours=4),
+                      id="reliability-health-probe", name="reliability health probe",
+                      misfire_grace_time=7200, coalesce=True, replace_existing=True)
+        logger.info("reliability health probe scheduled every 4h")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"reliability probe not scheduled: {e}")
+
+    # T12 — nightly Composio catalog refresh (03:15, before memory backup, so the morning briefing
+    # sees any new tools added overnight). Triggers a `_fire_composio_catalog_refresh` task.
+    try:
+        from jarvis.brain._scheduled_jobs import _fire_composio_catalog_refresh
+        from apscheduler.triggers.cron import CronTrigger
+
+        sched = SCHEDULER._ensure()
+        sched.add_job(_fire_composio_catalog_refresh,
+                      trigger=CronTrigger(hour=3, minute=15),
+                      id="composio-catalog-refresh", name="composio catalog refresh",
+                      misfire_grace_time=3600, coalesce=True, replace_existing=True)
+        logger.info("composio catalog refresh scheduled nightly at 03:15")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"composio catalog refresh not scheduled: {e}")
+
     # Phase 10 — proactive companion. Off unless JARVIS_PROACTIVE_ENABLED=true; when on, a
     # background tick may speak to listening clients (or push) within its budget + quiet hours.
     engine = None

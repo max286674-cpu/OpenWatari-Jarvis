@@ -20,6 +20,26 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 PERSONALITY_DIR = _REPO_ROOT / "personality"
 MEMORY_DIR = _REPO_ROOT / "memory"
 
+# Operating rules live in their own boilerplate so they're editable without touching Python.
+# Override the path with JARVIS_OPERATING_RULES_FILE in .env if you've put a custom one elsewhere.
+_OPERATING_RULES_PATH = (
+    PERSONALITY_DIR / getattr(settings, "operating_rules_file", None)
+    if getattr(settings, "operating_rules_file", None)
+    else PERSONALITY_DIR / "operating-rules.md"
+)
+# Fallback shipped inside the code so a missing/corrupt boilerplate still boots with sane defaults.
+_DEFAULT_OPERATING_RULES = (
+    "# Clarify, confirm, speak\n"
+    "If a request is too thin to act on safely, ask one short clarifying question. Confirm before "
+    "anything outward-facing or hard to undo. Spoken output: no markdown or emoji; one or two "
+    "sentences unless asked for more. If you speak unprompted, lead with why.\n\n"
+    "# Check before refusing\n"
+    "If you're about to say 'I can't do that', first try: composio_find_tools (external apps), "
+    "run_powershell / file_op / process_op (laptop), browser / scrape_url (web), play_music "
+    "(music), recall (memory), send_telegram / send_push (phone). Only refuse if every relevant "
+    "tool returns nothing useful."
+)
+
 
 def _persona_path() -> Path:
     """The persona template file (configurable via JARVIS_PERSONA_FILE)."""
@@ -199,14 +219,32 @@ def build_system_prompt() -> str:
             parts.append(hint)
     except Exception:  # noqa: BLE001
         pass
-    # Operating rules (persona covers the rest — kept terse to spare per-turn tokens).
-    parts.append(
-        "# Clarify, confirm, speak\n"
-        "If a request is too thin to act on safely, ask one short clarifying question. Confirm before "
-        "anything outward-facing or hard to undo (send/delete/kill/PowerShell/calendar/protocol). "
-        "Spoken output: no markdown or emoji; one or two sentences unless asked for more. If you speak "
-        "unprompted, lead with why."
-    )
+    # T12 — Composio catalog awareness. Without this, the LLM has no idea that 17 apps with
+    # hundreds of actions exist and defaults to "I can't" when the right tool is one
+    # composio_find_tools() away. Inject a compact summary so every tool is on the LLM's radar.
+    try:
+        from jarvis.brain.composio_catalog import get_summary
+        catalog_summary = get_summary()
+        if catalog_summary:
+            parts.append(catalog_summary)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Operating rules — loaded from `personality/operating-rules.md` so anyone can fork the repo
+    # and customise the rules without touching Python. See the top of that file for the pattern.
+    # Falls back to a minimal hardcoded default only if the file is missing/corrupt (so a brand-new
+    # brain without the boilerplate still ships with sane behaviour).
+    try:
+        from jarvis.config import settings as _s  # noqa: F401 — imported for type only
+        op_rules_path = _OPERATING_RULES_PATH
+        if op_rules_path.is_file():
+            rules_text = op_rules_path.read_text(encoding="utf-8", errors="ignore").strip()
+            if rules_text:
+                parts.append(rules_text)
+        else:
+            parts.append(_DEFAULT_OPERATING_RULES)
+    except Exception:
+        parts.append(_DEFAULT_OPERATING_RULES)
     return "\n\n".join(parts)
 
 

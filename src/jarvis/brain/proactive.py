@@ -350,4 +350,22 @@ def default_signal_sources() -> list[SignalSource]:
         sources.append(news_signals)      # morning news-of-interest brief (MyNews)
     except Exception:  # noqa: BLE001
         pass
+    # T4a — weekly digest signal (fires Sun 20:00 only)
+    try:
+        from jarvis.brain.proactive_signals import weekly_digest
+        sources.append(weekly_digest)
+    except Exception:  # noqa: BLE001
+        pass
+    # T4b — anticipatory prep (next 30 min calendar)
+    try:
+        from jarvis.brain.proactive_signals import anticipatory_prep
+        sources.append(anticipatory_prep)
+    except Exception:  # noqa: BLE001
+        pass
+    # T4c — pattern-triggered suggestion (L1 patterns matching now)
+    try:
+        from jarvis.brain.proactive_signals import pattern_suggestion
+        sources.append(pattern_suggestion)
+    except Exception:  # noqa: BLE001
+        pass
     return sources

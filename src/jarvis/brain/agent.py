@@ -995,6 +995,15 @@ class JarvisAgent:
         """Self-improvement: every N turns, kick off a background pass that learns durable facts into
         L1 memory. Fire-and-forget so the reply is never delayed; a snapshot of history is passed so
         the review is stable even as the conversation moves on."""
+        # T3b: log every user turn so pattern detection has data (cheap: one JSONL append).
+        try:
+            last_user = next((m for m in reversed(self._history)
+                              if m.get("role") == "user" and m.get("content")), None)
+            if last_user:
+                from jarvis.brain.patterns import record
+                record(last_user["content"])
+        except Exception:
+            pass
         if not self._self_improve:
             return
         self._turns_since_review += 1

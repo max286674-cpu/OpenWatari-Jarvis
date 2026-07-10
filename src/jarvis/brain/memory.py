@@ -19,6 +19,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from jarvis.brain.tools.base import clip
 from jarvis.config import settings
 
 # repo root = .../src/jarvis/brain/memory.py -> parents[3]
@@ -190,6 +191,83 @@ class MemoryStore:
                 combined.append((total, mtime_by_key[key], text_by_key[key]))
         combined.sort(key=lambda s: (s[0], s[1]), reverse=True)
         return [text for _, _, text in combined[:limit]]
+
+    async def fused_recall(self, query: str, limit: int = 8, layers: tuple[str, ...] | None = None) -> list[dict]:
+        """Cross-layer recall — returns ranked hits with layer tags so the LLM can cite them.
+
+        Default layers: ("L1", "L2", "L3", "L5"). Each hit is a dict::
+
+            {"layer": "L1", "text": "...", "score": 4.0, "source": "memory/learned/..."}
+
+        L1 = learned facts (with optional L5 semantic blend).
+        L2 = journal entries (most recent days only — journal grows fast; cap scan).
+        L3 = vault notes (Obsidian) via search_vault tool.
+        L5 = re-ranks L1 hits by cosine similarity when available (no separate layer; folds into L1).
+
+        Falls back gracefully: any unavailable layer is silently skipped (no error, no crash).
+        """
+        query = (query or "").strip()
+        if not query:
+            return []
+        layers = layers or ("L1", "L2", "L3", "L5")
+        hits: list[dict] = []
+
+        # L1 (+ L5 semantic re-rank of L1)
+        if "L1" in layers:
+            try:
+                texts = self.recall(query, limit=limit, semantic=("L5" in layers))
+                for i, t in enumerate(texts):
+                    # `recall` is already sorted, so the first hit is the best.
+                    score = max(0.0, float(limit - i))
+                    hits.append({"layer": "L1", "text": t, "score": score, "source": "learned"})
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"fused_recall: L1 layer skipped ({e})")
+
+        # L2 journal — scan the last 14 days' entries (each entry is one bullet).
+        if "L2" in layers:
+            try:
+                terms = _terms(query)
+                if terms and self.journal_dir.is_dir():
+                    days = sorted(self.journal_dir.glob("*.md"), reverse=True)[:14]
+                    for day in days:
+                        try:
+                            raw = day.read_text(encoding="utf-8", errors="ignore")
+                        except OSError:
+                            continue
+                        # Entries are "- **HH:MM** — summary" — split on the dash lines.
+                        for line in raw.splitlines():
+                            if not line.startswith("- "):
+                                continue
+                            low = line.lower()
+                            score = sum(low.count(t) for t in terms)
+                            if score > 0:
+                                hits.append({"layer": "L2", "text": line.lstrip("- ").strip(),
+                                             "score": float(score), "source": str(day.name)})
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"fused_recall: L2 layer skipped ({e})")
+
+        # L3 vault — delegate to the search_vault tool when available.
+        if "L3" in layers:
+            try:
+                from jarvis.brain.tools.vault import search_vault
+                res = await search_vault({"query": query, "limit": limit})
+                if res and "couldn't" not in res.lower() and "no " not in res.lower()[:30]:
+                    # search_vault returns a multi-line list; split into bullets for ranking.
+                    for line in res.splitlines():
+                        line = line.strip()
+                        if not line or line.lower().startswith(("here", "nothing", "no ", "i ")):
+                            continue
+                        # Tiny length-weighted score so longer hits don't dominate the per-layer rank.
+                        hits.append({"layer": "L3", "text": clip(line, 240),
+                                     "score": 2.0 + min(2.0, len(line) / 200.0),
+                                     "source": "vault"})
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"fused_recall: L3 layer skipped ({e})")
+
+        # Rank: score desc, then L1 before L2 before L3 (slight tiebreak by layer priority).
+        layer_priority = {"L1": 0, "L2": 1, "L3": 2}
+        hits.sort(key=lambda h: (-h["score"], layer_priority.get(h["layer"], 9)))
+        return hits[:limit]
 
     def recent_digest(self, limit: int = 20) -> list[str]:
         """The most recently learned facts, newest first — injected into the system prompt."""

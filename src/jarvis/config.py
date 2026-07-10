@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # never forwarded to STT during TTS). VAD barge-in remains headphones-only.
     wake_barge_in_enabled: bool = True
     wake_listen_window_s: float = 8.0     # how long the mic stays open after a wake/reply
+    # Hot-mic mode: after the FIRST wake word of the session, keep the mic open continuously
+    # until the edge restarts (or `JARVIS_HOT_MIC_IDLE_MINUTES` minutes of silence pass).
+    # No need to repeat the wake word for follow-ups; VAD + endpointing drive utterance boundaries.
+    hot_mic_after_wake: bool = False
+    hot_mic_idle_minutes: int = 30        # close the window after this many minutes of silence
     # Spoken acknowledgement the instant a wake word fires, so you KNOW Watari heard you and is
     # actively listening — before you say the command. Pipe-separated choices are picked at random
     # for natural variety; set empty ("") to disable.
@@ -133,9 +138,9 @@ class Settings(BaseSettings):
     # auto-detects and transcribes ALL of the owner's six languages. Jarvis always replies in English.
     deepgram_language: str = "multi"
     # Endpointing: ms of trailing silence before Deepgram finalises an utterance and we hand it to the
-    # brain. Lower = snappier replies, higher = fewer mid-sentence cut-offs. 300ms is a good voice
-    # default; raise toward 500-800 if it cuts you off while you pause to think.
-    deepgram_endpointing_ms: int = 300
+    # brain. Lower = snappier replies, higher = fewer mid-sentence cut-offs. 700ms is a natural-speech
+    # default that tolerates normal thinking pauses; drop to 400-500 for snappier back-and-forth.
+    deepgram_endpointing_ms: int = 700
 
     # --- Audio routing (speakers <-> headphones / AirPods) ------------------------------
     # Output target: a name fragment or alias ("speakers", "headphones", "airpods") or a
