@@ -88,9 +88,34 @@ def main() -> None:
     check("protocol password NOT rotated", "JARVIS_PROTOCOL_PING_PASSWORD=oldpass" in rerun)
 
     # Key probes exist for every provider the wizard collects a probeable secret for.
-    for p in ("deepgram", "elevenlabs", "notion", "telegram-bot"):
+    for p in ("deepgram", "elevenlabs", "notion", "telegram-bot", "groq", "cerebras", "tavily"):
         check(f"probe wired: {p}", callable(w.PROBES.get(p)))
     check("bad key fails validation (live)", w.PROBES["deepgram"]("not-a-real-key") in (False, None))
+
+    # ask_key's retry loop is the "fail LOUDLY, don't silently accept a wrong key" behavior. Drive it
+    # with scripted prompts + a deterministic probe so no network is needed.
+    real_ask, real_yes = w.ask, w.yes
+    try:
+        typed = iter(["wrong-key-1", "good-key"])   # first key bad, second good
+        w.ask = lambda q, default=None, secret=False, choices=None: next(typed)
+        w.yes = lambda q, default=False: True         # "re-enter?" -> yes
+        # Probe: only "good-key" validates. A False means invalid -> ask_key must loop and re-prompt.
+        got = w.ask_key("Test key", probe=lambda k: k == "good-key")
+        check("ask_key rejects a bad key then accepts the re-entered good one", got == "good-key", got)
+
+        # If the API is unreachable (probe -> None), ask_key must KEEP the typed key, not loop forever.
+        typed2 = iter(["some-key"])
+        w.ask = lambda q, default=None, secret=False, choices=None: next(typed2)
+        got2 = w.ask_key("Test key", probe=lambda k: None)   # None = couldn't reach API
+        check("ask_key keeps the key when the API is unreachable (offline-safe)", got2 == "some-key", got2)
+
+        # Enter (empty) on a re-run keeps the existing masked value without probing.
+        w.ask = lambda q, default=None, secret=False, choices=None: ""
+        got3 = w.ask_key("Test key", probe=lambda k: (_ for _ in ()).throw(AssertionError("probed!")),
+                         keep="existing-value")
+        check("ask_key keeps existing value on empty input without probing", got3 == "existing-value", got3)
+    finally:
+        w.ask, w.yes = real_ask, real_yes
 
     # Scripted END-TO-END run in a sandbox: the full flow writes a correct .env, and a re-run
     # keeps the auth token + protocol passwords (idempotence at the flow level, not just render).

@@ -93,7 +93,7 @@ async def main() -> None:
     settings.ntfy_topic = saved_topic
     check("add_reminder returned a job id", bool(job_id), when)
     try:
-        for _ in range(40):                 # up to ~4 s
+        for _ in range(80):                 # up to ~8 s (slack for a starved scheduler under gate load)
             if spoke and pushed:
                 break
             await asyncio.sleep(0.1)
@@ -108,46 +108,42 @@ async def main() -> None:
         except Exception:  # noqa: BLE001 — Windows may still hold the sqlite handle; harmless
             pass
 
-    print("\n[3] daily task briefing builds today's summary and delivers it via proactive emit")
+    print("\n[3] daily digest briefing builds the catch-up and delivers it via proactive emit")
     captured: dict = {}
 
     async def fake_emit(msg, urgency, speak):
         captured.update(msg=msg, urgency=urgency, speak=speak)
         return "voice"
 
-    import jarvis.brain.tools.notion as nt
+    import jarvis.brain.daily_digest as dd
     SCHEDULER.set_briefing_emit(fake_emit)
 
-    seen_scope: dict = {}
+    # Isolate the digest delivery-state file so this test never touches real state / re-fires.
+    dd._state_path = lambda: Path(tmp.name) / "digest_state.json"  # type: ignore[assignment]
 
-    async def fake_tasks(args):
-        seen_scope["scope"] = args.get("scope")
-        return ("1 overdue, sir: rent (2d overdue). 1 due today: call the bank. "
-                "this week: file taxes (Fri). recurring: weekly review.")
-    _orig = nt.notion_tasks
-    nt.notion_tasks = fake_tasks
+    _orig_build = dd.build_body
+
+    async def fake_body():
+        return "2 past-due tasks: rent (2d overdue); call the bank (1d overdue). And 3 important emails unread, the latest from Jane"
+    dd.build_body = fake_body
     try:
         await sch._fire_briefing()
         check("briefing spoken (speak=True)", captured.get("speak") is True)
         check("briefing opens with a greeting", str(captured.get("msg", "")).startswith("Good morning"))
-        check("briefing includes today's tasks", "call the bank" in captured.get("msg", ""))
-        # #6 — the briefing now covers deadlines + recurring, not today-only: it reads the 'open' scope.
-        check("briefing reads the broad 'open' scope", seen_scope.get("scope") == "open")
-        check("briefing includes upcoming deadlines", "file taxes" in captured.get("msg", ""))
-        check("briefing includes recurring tasks", "weekly review" in captured.get("msg", ""))
-        # the recurring-detection heuristic the reader uses
-        check("recurring detect: 'Weekly review' is recurring", nt._is_recurring("Weekly review"))
-        check("recurring detect: 'Water plants daily'", nt._is_recurring("Water plants daily"))
-        check("recurring detect: a one-off task is NOT recurring", not nt._is_recurring("Call the bank"))
+        check("briefing includes past-due tasks", "rent (2d overdue)" in captured.get("msg", ""))
+        check("briefing includes important emails", "important emails" in captured.get("msg", ""))
+        check("push channel marked delivered", not dd.due("push"))
         # 'nothing due' path
-        async def empty_tasks(args):
-            return "Nothing due, sir — you're clear for today."
-        nt.notion_tasks = empty_tasks
+        async def empty_body():
+            return ""
+        dd.build_body = empty_body
         captured.clear()
+        # a fresh day so the push channel is due again
+        dd._save({})
         await sch._fire_briefing()
         check("clear-day briefing still sent", "clear" in captured.get("msg", "").lower())
     finally:
-        nt.notion_tasks = _orig
+        dd.build_body = _orig_build
         SCHEDULER.set_briefing_emit(None)
 
     print(f"\n=== {passed}/{passed + failed} checks passed ===")

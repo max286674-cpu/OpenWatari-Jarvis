@@ -20,7 +20,12 @@ from urllib.parse import urlparse, urlunparse
 
 from loguru import logger
 
-from jarvis.brain.tools.system import LOCAL_HANDLERS
+from jarvis.brain.tools.system import LOCAL_HANDLERS as _SYS_HANDLERS
+from jarvis.brain.tools.camera import LOCAL_HANDLERS as _CAM_HANDLERS
+
+# The laptop executor runs BOTH system ops (files/processes/screenshot) and camera ops (presence/
+# enroll/capture) locally — the camera + owner face refs are on this machine, not the VPS brain.
+LOCAL_HANDLERS = {**_SYS_HANDLERS, **_CAM_HANDLERS}
 from jarvis.config import settings
 
 # Bumped when the executor's behaviour changes, so the brain log confirms which code is live after a
@@ -53,6 +58,35 @@ def _refused(op: str, args: dict) -> str | None:
     return None
 
 
+def _proc_running(name: str) -> bool:
+    """Is a process with this image name in the task list? Windows tasklist; best-effort."""
+    import subprocess
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return name.lower() in (out or "").lower()
+    except Exception:  # noqa: BLE001 — no tasklist / timeout -> can't verify
+        return False
+
+
+def _verify_effect(op: str, args: dict) -> str | None:
+    """C5 see→act→VERIFY: after an op runs, confirm the intended effect actually happened, so Watari
+    reports "done and verified" (or flags a mismatch) instead of blindly trusting the exit. Returns a
+    short note, or None when the op isn't verifiable (open_url/open_app/run_powershell are best-effort —
+    there's no reliable post-state to check). ponytail: existence checks + a tasklist probe; the upgrade
+    path is per-app window/clipboard assertions if a specific workflow needs them."""
+    import os
+    if op == "file_op":
+        action, path = args.get("action"), args.get("path")
+        if action in ("create_file", "create_folder") and path:
+            return "verified — it exists now" if os.path.exists(path) else "WARNING: not found after create"
+        if action in ("delete_file", "delete_folder") and path:
+            return "verified — it's gone" if not os.path.exists(path) else "WARNING: still present after delete"
+    if op == "process_op" and args.get("action") == "kill" and args.get("name"):
+        return "verified — not running" if not _proc_running(args["name"]) else "WARNING: still running after kill"
+    return None
+
+
 async def _run_op(op: str, args: dict) -> tuple[bool, str]:
     fn = LOCAL_HANDLERS.get(op)
     if fn is None:
@@ -62,7 +96,13 @@ async def _run_op(op: str, args: dict) -> tuple[bool, str]:
         logger.warning(f"pc-agent: REFUSED catastrophic op {op} (matched '{hit}')")
         return False, "I won't run that on the laptop — it's on the destructive-op refuse list, sir."
     try:
-        return True, str(await fn(args or {}))
+        out = str(await fn(args or {}))
+        note = _verify_effect(op, args or {})   # C5: confirm the effect landed
+        if note:
+            out = f"{out} ({note})"
+            if note.startswith("WARNING"):
+                logger.warning(f"pc-agent: {op} verify mismatch — {note}")
+        return True, out
     except Exception as e:  # noqa: BLE001
         logger.exception(f"pc-agent: op {op} failed")
         return False, f"That failed on the laptop ({type(e).__name__}), sir."

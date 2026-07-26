@@ -182,6 +182,8 @@ PROBES = {
     "telegram-bot": lambda k: _http_ok(f"https://api.telegram.org/bot{k}/getMe"),
     "groq": lambda k: _http_ok("https://api.groq.com/openai/v1/models",
                                {"Authorization": f"Bearer {k}"}),
+    "cerebras": lambda k: _http_ok("https://api.cerebras.ai/v1/models",
+                                   {"Authorization": f"Bearer {k}"}),
     "tavily": lambda k: _http_ok("https://api.tavily.com/usage", {"Authorization": f"Bearer {k}"}),
 }
 
@@ -357,7 +359,7 @@ def run() -> None:
             "Groq API key (console.groq.com — free tier)", PROBES["groq"],
             cur.get("JARVIS_GROQ_API_KEY", ""))
         ov["JARVIS_CEREBRAS_API_KEY"] = ask_key(
-            "Cerebras API key (cloud.cerebras.ai — free tier, blank to skip)", None,
+            "Cerebras API key (cloud.cerebras.ai — free tier, blank to skip)", PROBES["cerebras"],
             cur.get("JARVIS_CEREBRAS_API_KEY", ""))
         say("  Use them by prefixing chain entries, e.g. "
             "[bold]JARVIS_LLM_PRIMARY_MODEL=groq:llama-3.3-70b-versatile[/bold].")

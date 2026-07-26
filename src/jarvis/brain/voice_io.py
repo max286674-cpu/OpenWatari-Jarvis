@@ -37,13 +37,18 @@ async def transcribe_audio(audio: bytes, content_type: str = "audio/ogg") -> str
         return ""
 
 
-async def synthesize(text: str) -> bytes | None:
-    """ElevenLabs REST TTS → mp3 bytes (or None on failure). Watari's configured voice."""
+async def synthesize(text: str, *, voice_settings: dict | None = None) -> bytes | None:
+    """ElevenLabs REST TTS → mp3 bytes (or None on failure). Watari's configured voice.
+
+    ``voice_settings`` (C3): per-utterance prosody (stability/style/speed) — pass the output of
+    ``affect.affect_to_voice`` to make the voice adapt to the owner's mood. None = the voice's defaults."""
     if not (settings.elevenlabs_api_key and settings.elevenlabs_voice_id) or not text.strip():
         return None
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{settings.elevenlabs_voice_id}"
     headers = {"xi-api-key": settings.elevenlabs_api_key, "Content-Type": "application/json"}
     body = {"text": text[:2500], "model_id": settings.elevenlabs_model or "eleven_flash_v2_5"}
+    if voice_settings:
+        body["voice_settings"] = voice_settings
     try:
         async with httpx.AsyncClient(timeout=60) as c:
             r = await c.post(url, headers=headers, json=body)
@@ -54,11 +59,11 @@ async def synthesize(text: str) -> bytes | None:
         return None
 
 
-async def synthesize_voice_note(text: str) -> bytes | None:
+async def synthesize_voice_note(text: str, *, voice_settings: dict | None = None) -> bytes | None:
     """Watari's reply as a true Telegram VOICE NOTE: ElevenLabs mp3 -> OGG/Opus via ffmpeg (the
     round push-to-talk bubble Telegram requires). Returns OGG bytes, or None to let the caller fall
-    back to text. Needs ffmpeg+libopus (present on the VPS)."""
-    mp3 = await synthesize(text)
+    back to text. Needs ffmpeg+libopus (present on the VPS). ``voice_settings`` (C3): affect prosody."""
+    mp3 = await synthesize(text, voice_settings=voice_settings)
     if not mp3:
         return None
     try:

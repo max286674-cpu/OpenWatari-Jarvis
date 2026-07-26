@@ -137,6 +137,11 @@ def find_output_device(query: str, devices: list[AudioDevice] | None = None) -> 
 # auto-routing: if such a device is connected to this laptop, prefer it over the open speakers.
 _PRIVATE_OUTPUT_CUES = ("airpod", "headphone", "headset", "buds", "earphone", "bluetooth", "bt audio")
 
+# ...but the built-in codec ALWAYS lists a "Headphones (Realtek ... SST)" jack even with nothing plugged
+# in — a WDM-KS endpoint that name-matches "headphone" yet fails to open (-9999). Exclude internal-codec
+# endpoints so auto-route only ever picks a genuinely removable headset (AirPods/BT/USB), else OS default.
+_INTERNAL_OUTPUT_CUES = ("realtek", "hd audio", "high definition audio", "sst", "hdmi", "displayport", "nvidia")
+
 
 def prefer_private_output(devices: list[AudioDevice] | None = None) -> AudioDevice | None:
     """Return a connected private/headphone OUTPUT device (e.g. AirPods Pro Max) if one exists.
@@ -147,12 +152,37 @@ def prefer_private_output(devices: list[AudioDevice] | None = None) -> AudioDevi
     """
     devs = devices if devices is not None else list_devices()
     outputs = [d for d in devs if d.is_output]
-    matches = [d for d in outputs if any(c in d.name.lower() for c in _PRIVATE_OUTPUT_CUES)]
+    matches = [
+        d for d in outputs
+        if any(c in d.name.lower() for c in _PRIVATE_OUTPUT_CUES)
+        and not any(c in d.name.lower() for c in _INTERNAL_OUTPUT_CUES)  # skip the built-in headphone jack
+    ]
     if not matches:
         return None
     non_hfp = [d for d in matches if "hands-free" not in d.name.lower() and "headset" not in d.name.lower()]
     pool = non_hfp or matches
     return max(pool, key=lambda d: d.max_output_channels)
+
+
+# A genuine, RELIABLE headset mic we SHOULD listen through when it's plugged in (wired / USB headset).
+# EXCLUDES Bluetooth "Hands-Free"/AirPods (HFP is telephone-grade and drops the stream) and the built-in
+# codec array (that's the reliable default, not a headset). So this fires only for a real plugged-in
+# headset mic; AirPods intentionally fall through to the built-in mic (owner's "smart per-device" choice).
+_HEADSET_INPUT_CUES = ("headset", "headphone")
+_HEADSET_INPUT_EXCLUDE = ("airpod", "hands-free", "handsfree", "hands free", "bluetooth", "bt audio",
+                          "realtek", "intel", "hd audio", "high definition audio", "microphone array")
+
+
+def find_headset_input(devices: list[AudioDevice] | None = None) -> AudioDevice | None:
+    """A reliable wired/USB headset INPUT device if one is connected, else None (→ use the built-in mic)."""
+    devs = devices if devices is not None else list_devices()
+    for d in devs:
+        if not d.is_input:
+            continue
+        n = d.name.lower()
+        if any(c in n for c in _HEADSET_INPUT_CUES) and not any(x in n for x in _HEADSET_INPUT_EXCLUDE):
+            return d
+    return None
 
 
 def find_input_device(query: str, devices: list[AudioDevice] | None = None) -> AudioDevice | None:
@@ -164,6 +194,28 @@ def find_input_device(query: str, devices: list[AudioDevice] | None = None) -> A
     needles = _expand_query(query)
     matches = [d for d in inputs if any(n in d.name.lower() for n in needles)]
     return matches[0] if matches else None
+
+
+def route_should_change(
+    bound_output_name: str | None, currently_private: bool, auto_route_headphones: bool = True
+) -> str | None:
+    """Return a reason to re-resolve the OUTPUT route (→ restart the edge), else None.
+
+    Two runtime device changes, one enumeration:
+      * the bound output vanished  → headphones DISCONNECTED (fall back to speakers), or
+      * a private endpoint appeared while we're on a shared one → headphones CONNECTED (switch to them).
+    Lets the edge follow AirPods connect/disconnect live. Enumerates PyAudio, so call it off the event
+    loop (the watchdog runs it in a thread — BT device init blocks for seconds).
+    """
+    devs = list_devices()
+    outputs = [d for d in devs if d.is_output]
+    if bound_output_name:
+        needle = bound_output_name.split("(")[0].strip().lower()
+        if needle and not any(needle in d.name.lower() for d in outputs):
+            return f"output '{bound_output_name}' disconnected"
+    if auto_route_headphones and not currently_private and prefer_private_output(devs) is not None:
+        return "headphones connected"
+    return None
 
 
 # ---- persisted preference (so a voice command survives a worker restart) ----------------

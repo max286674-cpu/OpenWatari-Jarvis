@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from jarvis.config import settings
 from jarvis.edge.speaker_id import SpeakerVerifier
 
 SR = 16000
@@ -71,7 +72,10 @@ def _record(seconds: int) -> bytes:
     import pyaudio
 
     pa = pyaudio.PyAudio()
-    device_index = _find_input_device(pa, "airpods")
+    # Enroll on the SAME mic the edge runs on (settings.audio_input_name, e.g. "microphone array") —
+    # NOT AirPods. The runtime deliberately uses the built-in array (AirPods HFP mic degrades quality),
+    # so an AirPods-enrolled voiceprint mismatches the far-field runtime audio and depresses scores.
+    device_index = _find_input_device(pa, (settings.audio_input_device_name or "microphone array"))
     kwargs = dict(format=pyaudio.paInt16, channels=1, rate=SR, input=True,
                   frames_per_buffer=1024)
     if device_index is not None:

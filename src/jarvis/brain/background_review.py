@@ -22,22 +22,36 @@ from typing import Any
 
 from loguru import logger
 
+from jarvis.brain.graph import GRAPH
 from jarvis.brain.memory import STORE
 
-# Adapted from Hermes' _MEMORY_REVIEW_PROMPT, tightened to return machine-parseable output.
+# Adapted from Hermes' _MEMORY_REVIEW_PROMPT, tightened to return machine-parseable output. Now asks
+# for BOTH flat facts (L1) and explicit entity relations (L5b graph) in ONE call, so the graph layer
+# populates itself as the owner talks instead of sitting empty.
 _EXTRACT_PROMPT = (
-    "You are Watari's private memory reviewer. Read the conversation and extract DURABLE facts about "
-    "the owner that are worth remembering for months: his stable preferences and persona, decisions he "
-    "made, people/projects/places he mentioned, and expectations about how Watari should behave. "
-    "IGNORE transient chit-chat, one-off task mechanics, the current time/date, and anything already "
-    "obvious. Each fact must be a short, self-contained third-person sentence. "
-    'Return ONLY a compact JSON array (max 8), e.g. ["the owner prefers replies under two sentences.", '
-    '"the owner renamed his assistant to Watari."]. If nothing is worth saving, return [].'
+    "You are Watari's private memory reviewer. Read the conversation and extract what's worth "
+    "remembering about the owner for months. Return ONLY a compact JSON object with two keys:\n"
+    '  "facts": array (max 8) of short, self-contained third-person sentences — stable preferences '
+    "and persona, decisions, people/projects/places, and expectations about how Watari should behave. "
+    'e.g. ["the owner prefers replies under two sentences.", "the owner renamed his assistant to Watari."]\n'
+    '  "relations": array (max 8) of [subject, predicate, object] triples for EXPLICIT structured '
+    'links the owner stated, e.g. [["rabbit farm","located in","Armavir"],["owner","trains at","6am"]]. '
+    "Use short lowercase entity/predicate phrases. Only include a relation actually stated.\n"
+    "IGNORE transient chit-chat, one-off task mechanics, the current time/date, and the obvious. "
+    'If nothing is worth saving, return {"facts": [], "relations": []}.'
 )
 
 
 def _parse_facts(raw: str) -> list[str]:
-    """Pull a JSON array of fact strings out of the model's reply, defensively."""
+    """Pull fact strings out of the model's reply, defensively.
+
+    Accepts BOTH the current object form ({"facts":[...]}) and the legacy bare-array form ([...]),
+    so older prompts/models and existing tests keep working.
+    """
+    obj = _parse_object(raw)
+    if obj is not None:
+        arr = obj.get("facts")
+        return _clean_str_list(arr if isinstance(arr, list) else [])
     m = re.search(r"\[.*\]", raw or "", re.DOTALL)
     if not m:
         return []
@@ -45,16 +59,48 @@ def _parse_facts(raw: str) -> list[str]:
         arr = json.loads(m.group(0))
     except json.JSONDecodeError:
         return []
+    return _clean_str_list(arr)
+
+
+def _parse_object(raw: str) -> dict | None:
+    """Extract the first JSON *object* from the reply, or None (it's a bare array / not JSON)."""
+    m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _clean_str_list(arr: Any) -> list[str]:
     out: list[str] = []
-    for x in arr:
+    for x in arr or []:
         s = str(x).strip()
         if 3 < len(s) <= 240:
             out.append(s)
     return out[:8]
 
 
-async def review_and_learn(history: list[dict[str, Any]], llm, store: Any = STORE) -> list[str]:
-    """Replay ``history``, extract durable facts, write the new ones to L1. Returns facts learned."""
+def _parse_relations(raw: str) -> list[tuple[str, str, str]]:
+    """Pull [subject, predicate, object] triples out of the object reply (empty for the legacy form)."""
+    obj = _parse_object(raw)
+    if obj is None:
+        return []
+    out: list[tuple[str, str, str]] = []
+    for r in obj.get("relations") or []:
+        if isinstance(r, (list, tuple)) and len(r) == 3:
+            s, p, o = (str(x).strip() for x in r)
+            if s and p and o and all(len(x) <= 80 for x in (s, p, o)):
+                out.append((s, p, o))
+    return out[:8]
+
+
+async def review_and_learn(history: list[dict[str, Any]], llm, store: Any = STORE,
+                           graph: Any = GRAPH) -> list[str]:
+    """Replay ``history``, extract durable facts (L1) + explicit relations (L5b graph), and write the
+    new ones. Returns the facts learned. ONE model call; graph writes are best-effort + deduped."""
     convo = "\n".join(
         f"{m['role']}: {m['content']}"
         for m in history
@@ -71,13 +117,23 @@ async def review_and_learn(history: list[dict[str, Any]], llm, store: Any = STOR
     except Exception as e:  # noqa: BLE001 — self-improvement is best-effort, never breaks a turn
         logger.warning(f"self-improve review skipped ({type(e).__name__}: {e})")
         return []
-    facts = _parse_facts(getattr(msg, "content", "") or "")
+    raw = getattr(msg, "content", "") or ""
+    facts = _parse_facts(raw)
     before = store.count()
     learned: list[str] = []
     for f in facts:
         if store.remember(f, tags=["learned", "auto"]):
             learned.append(f)
+    # L5b: write any explicit relations into the graph (dedup via INSERT OR IGNORE). Never fatal.
+    triples = 0
+    for s, p, o in _parse_relations(raw):
+        try:
+            if graph.add(s, p, o):
+                triples += 1
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"graph relation write skipped ({type(e).__name__})")
     new = store.count() - before
-    if learned:
-        logger.info(f"self-improve: reviewed {len(history)} msgs -> {new} new fact(s) into L1 memory")
+    if learned or triples:
+        logger.info(f"self-improve: reviewed {len(history)} msgs -> {new} new fact(s) into L1, "
+                    f"{triples} relation(s) into L5b graph")
     return learned

@@ -49,9 +49,13 @@ class ListeningPulse:
     """Plays the soft ping ONCE, ``delay_s`` after start (giving the audio output time to open),
     then the thread exits — the pulse is present only before the first wake word. Start once."""
 
-    def __init__(self, delay_s: float = 2.5, enabled: bool = True) -> None:
+    def __init__(self, delay_s: float = 2.5, enabled: bool = True,
+                 output_device_index: int | None = None) -> None:
         self._delay = max(0.5, float(delay_s))
         self._enabled = enabled
+        # Play the ping through the SAME output device the edge chose (e.g. the AirPods), not the OS
+        # default — winsound can only reach the default, so with headphones on you'd hear nothing.
+        self._out_index = output_device_index
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._wav: Path | None = None
@@ -79,8 +83,36 @@ class ListeningPulse:
         except Exception:  # noqa: BLE001
             pass
 
+    def _play_to_device(self) -> bool:
+        """Play the ping through the edge's CHOSEN output device via PyAudio (so it lands on the
+        headphones, not the OS default). Returns True on success. Fail-open — any error → False so the
+        caller falls back to winsound. The pipecat transport shares this device (WASAPI shared mode)."""
+        if self._out_index is None:
+            return False
+        try:
+            import pyaudio
+
+            with wave.open(str(self._wav), "rb") as w:
+                rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+                data = w.readframes(w.getnframes())
+            pa = pyaudio.PyAudio()
+            try:
+                stream = pa.open(format=pa.get_format_from_width(width), channels=ch, rate=rate,
+                                 output=True, output_device_index=self._out_index)
+                stream.write(data)
+                stream.stop_stream()
+                stream.close()
+            finally:
+                pa.terminate()
+            return True
+        except Exception as e:  # noqa: BLE001 — cosmetic cue; never block/crash, just fall back
+            logger.debug(f"listening pulse: device playback failed ({type(e).__name__}); winsound fallback")
+            return False
+
     def _play_once(self) -> None:
         if not self._wav:
+            return
+        if self._play_to_device():   # preferred: the chosen output device (headphones)
             return
         p = str(self._wav)
         if sys.platform == "win32":

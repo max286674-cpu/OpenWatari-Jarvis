@@ -98,8 +98,13 @@ class ProtocolResult:
         self.spoken = spoken
 
 
-def run_protocol(name: str, password: str) -> ProtocolResult:
-    """Verify the password and, if correct, launch the protocol's detached script."""
+def run_protocol(name: str, password: str, drill: bool = False) -> ProtocolResult:
+    """Verify the password and, if correct, launch the protocol's detached script.
+
+    ``drill=True`` REHEARSES instead: it runs the full authorization path (password gate + script
+    presence) but does NOT launch the script — so recovery protocols (which stop/restart the machine)
+    can be verified for readiness without actually firing. This is the drill that keeps the recovery
+    runbook honest: each protocol is proven invocable + correctly gated, on demand and in tests."""
     if not settings.protocols_enabled:
         return ProtocolResult(False, "Protocols are disabled, sir.")
     name = (name or "").strip().lower()
@@ -117,6 +122,14 @@ def run_protocol(name: str, password: str) -> ProtocolResult:
     script = _SCRIPT_DIR / proto["script"]
     if not script.is_file():
         return ProtocolResult(False, f"Protocol script {proto['script']} is missing, sir.")
+    if drill:
+        logger.info(f"protocol '{name}' DRILL: authorized + script present, not launched")
+        return ProtocolResult(
+            True,
+            f"Drill OK: protocol {name} verified — password accepted, script {proto['script']} present. "
+            f"Live, it would {proto['description']}. Not executed (drill).",
+            spoken=f"Drill passed, sir — {name} is ready and would {proto['description']}. I didn't run it.",
+        )
     try:
         flags = 0
         if sys.platform == "win32":

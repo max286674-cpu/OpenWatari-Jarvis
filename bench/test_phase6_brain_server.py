@@ -90,6 +90,12 @@ async def run() -> None:
     from jarvis.brain.server import BrainServer, chunk_for_tts, parse_client_message
     from jarvis.shared.protocol import Barge, Hello, Utterance
 
+    # Isolate from real daily-digest state: on the FIRST edge turn of a day the server appends a
+    # "By the way, sir — …" catch-up as an extra final chunk (and would hit live Gmail). This test is
+    # about the streaming/chunk mechanics, not the digest, so pin `due` off for hermeticity.
+    from jarvis.brain import daily_digest
+    daily_digest.due = lambda channel, now=None: False
+
     print("[1] chunk_for_tts splits sentences for incremental TTS")
     check("empty -> no chunks", chunk_for_tts("  ") == [])
     c = chunk_for_tts("Hi sir. The price is up. Anything else?")
@@ -117,7 +123,7 @@ async def run() -> None:
     check("ready lifecycle sent", ws.sent and ws.sent[-1]["kind"] == "lifecycle" and ws.sent[-1]["delta"] == "ready")
     check("session stored with headphones flag", server._sessions["s1"]["headphones_connected"] is True)
 
-    print("\n[4] Utterance -> thinking, tool filler, streamed assistant chunks (final on last)")
+    print("\n[4] Utterance -> thinking, tool filler, streamed assistant chunks (each sentence non-final + terminal marker)")
     ws = FakeWS()
     await server.handle_message(ws, Utterance(session_id="s1", text="hey jarvis", ts_user_stop_ms=1))
     await server._turns["s1"]  # let the turn finish
@@ -125,8 +131,15 @@ async def run() -> None:
     check("thinking lifecycle first", ws.sent[0]["kind"] == "lifecycle" and ws.sent[0]["delta"] == "thinking")
     check("tool filler relayed", "Working on it…" in ws.deltas("tool"))
     assistant = [f for f in ws.sent if f["kind"] == "assistant"]
-    check("two assistant chunks (two sentences)", len(assistant) == 2, str(assistant))
-    check("only the last chunk is final", [f["final"] for f in assistant] == [False, True])
+    spoken = [f for f in assistant if f["delta"].strip()]
+    # New low-latency contract: each sentence streams the instant it's generated (final=False), then a
+    # single empty final=True marker ends the turn. (The old contract held one sentence back so it could
+    # tag the last as final — that delayed the FIRST spoken sentence by a whole sentence's generation.)
+    check("each sentence is its own non-final chunk (streamed as generated)",
+          len(spoken) == 2 and all(f["final"] is False for f in spoken), str(assistant))
+    check("a single empty final=True marker ends the turn",
+          assistant[-1]["final"] is True and assistant[-1]["delta"].strip() == ""
+          and sum(1 for f in assistant if f["final"]) == 1, str(assistant))
     check("chunks reconstruct the reply", "".join(f["delta"] for f in assistant).strip() == "Hello sir. All set.")
 
     print("\n[5] one shared brain backs every session (phone + glasses = same agent)")
@@ -146,6 +159,50 @@ async def run() -> None:
     await asyncio.sleep(0.05)
     check("in-flight turn cancelled", task.cancelled() or task.done())
     check("client told cancelled", "cancelled" in [f["delta"] for f in ws.sent if f["kind"] == "lifecycle"])
+
+    print("\n[6b] cancelled-mid-stream turn records placeholder so history stays valid")
+    # Stubbed agent with a streaming impl we can cancel mid-flight — same wiring as test 6's
+    # slow agent, but exercising respond_stream's finally-clause (which appends "(interrupted)").
+    class _StubStreaming:
+        def __init__(self) -> None:
+            self._history: list[dict] = []
+
+        async def respond_stream(self, user_text: str, on_progress=None):  # type: ignore[no-untyped-def]
+            self._history.append({"role": "user", "content": user_text})
+            try:
+                # Yield one chunk, then suspend; the test cancels the drain after seeing it.
+                yield "thinking…"
+                await asyncio.sleep(10.0)  # never reached — test cancels here
+                yield "done"
+            finally:
+                # Mirror the real respond_stream's placeholder guard.
+                self._history.append({"role": "assistant", "content": "(interrupted)"})
+
+    stub = _StubStreaming()
+    consumed: list[str] = []
+    gen = stub.respond_stream("hi there")
+    try:
+        await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+        consumed.append(await gen.__anext__())   # try to pull the second chunk
+    except (StopAsyncIteration, asyncio.TimeoutError):
+        pass
+    finally:
+        # An async generator's finally DOES run when aclose() is called — equivalent to the
+        # barge/supersede path that closes the in-flight stream from outside.
+        await gen.aclose()
+    check("at least one chunk was streamed before cancel", len(consumed) >= 1, str(consumed))
+    # After cancellation, history must NEVER end with two user turns (the AUDIT #7 invariant).
+    user_count = sum(1 for m in stub._history if m["role"] == "user")
+    last_two = stub._history[-2:]
+    consecutive_users = (
+        len(last_two) == 2
+        and last_two[0]["role"] == "user"
+        and last_two[1]["role"] == "user"
+    )
+    check("no consecutive user turns after cancel", not consecutive_users, str(last_two))
+    check("the placeholder turn was recorded", any(
+        m["role"] == "assistant" and "interrupted" in m["content"].lower() for m in stub._history
+    ), str(stub._history))
 
     print("\n[7] optional bearer auth gates remote clients")
     import jarvis.config as cfg

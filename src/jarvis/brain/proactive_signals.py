@@ -74,7 +74,7 @@ def pattern_suggestion() -> list[Signal]:
                 out.append(Signal(
                     key=f"pattern-hour-{topic}-{hour}",
                     message=f"It's {wd_name} {hour:02d}:00 — you often mention '{topic}' around now. Want me to queue it up?",
-                    urgency=0.5, kind="pattern"))
+                    urgency=0.62, kind="pattern"))
             # Match "user often mentions 'X' on Mondays"
             m = re.search(r"on\s+(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)", text)
             if m and m.group(1)[:3].lower() == wd_name.lower():
@@ -83,7 +83,7 @@ def pattern_suggestion() -> list[Signal]:
                 out.append(Signal(
                     key=f"pattern-dow-{topic}-{wd_name}",
                     message=f"It's {wd_name} — you often mention '{topic}' on this day. Want me to line it up?",
-                    urgency=0.5, kind="pattern"))
+                    urgency=0.62, kind="pattern"))
         return out[:1]  # at most one suggestion per tick (don't spam)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"pattern_suggestion: skipped ({e})")
@@ -117,6 +117,83 @@ def weekly_digest(now: datetime | None = None) -> list[Signal]:
         return [Signal(key="weekly-digest", message=msg, urgency=0.6, kind="weekly-digest")]
     except Exception as e:  # noqa: BLE001
         logger.debug(f"weekly_digest: skipped ({e})")
+        return []
+
+
+def wellbeing_signals(now: datetime | None = None) -> list[Signal]:
+    """Phase 6.3 — calibrated pushback. When the owner has been heads-down for a long unbroken stretch
+    (or is still at it in the small hours), gently suggest a break / wrapping up. Rides the proactive
+    engine, so quiet-hours, budget, repeat-suppression and dismissal-learning all apply — if he waves it
+    off it backs off. Fail-quiet, and a no-op whenever he's idle or the session is short."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        from jarvis.brain.presence import PRESENCE
+        from jarvis.config import settings
+
+        mins = PRESENCE.continuous_active_minutes()
+        local = now or datetime.now(ZoneInfo(settings.user_tz))
+        if mins >= settings.wellbeing_session_minutes:
+            hrs = mins / 60.0
+            return [Signal(
+                key=f"wellbeing-break-{int(local.timestamp() // 3600)}",  # at most one per hour
+                message=(f"You've been heads-down about {hrs:.0f} hours straight, sir — worth stepping "
+                         "away for a few minutes? It'll keep, and you'll come back sharper."),
+                urgency=0.63, kind="wellbeing")]
+        if 1 <= local.hour < 5 and mins >= 20:
+            return [Signal(
+                key=f"wellbeing-late-{local.date()}",  # at most once per night
+                message=("It's the small hours and you're still going, sir. Whatever this is will look "
+                         "easier after some sleep — want me to note where you left off?"),
+                urgency=0.66, kind="wellbeing")]
+        return []
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"wellbeing_signals: skipped ({e})")
+        return []
+
+
+_RESURFACED_PATH = Path.home() / ".jarvis" / "resurfaced_memories.json"
+
+
+def memory_resurface_signals(now: datetime | None = None) -> list[Signal]:
+    """Memory-util — proactively resurface a durable commitment, not just recall it when asked.
+
+    The owner tells Watari things he wants / means to do; auto-RAG only surfaces those when a related
+    utterance triggers it. This closes the gap: on the tick, pick the single most salient open commitment
+    he hasn't been reminded of, and gently raise it ("A while back you mentioned X — still on your mind?").
+
+    Surfaces each memory at most once (tracked on disk), so it rotates through open commitments rather than
+    nagging the same one. Rides the proactive engine (quiet-hours / budget / dismissal-learning all apply).
+    Fail-quiet; silent when nothing is salient or everything's already been raised.
+    """
+    try:
+        import json
+
+        from jarvis.brain.memory import STORE
+
+        salient = STORE.salient_notes(now=now)
+        if not salient:
+            return []
+        try:
+            seen = set(json.loads(_RESURFACED_PATH.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001 — missing/corrupt = start clean
+            seen = set()
+        pick = next((s for s in salient if s["note_id"] not in seen), None)
+        if pick is None:      # everything salient has already been raised once
+            return []
+        seen.add(pick["note_id"])
+        try:
+            _RESURFACED_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _RESURFACED_PATH.write_text(json.dumps(sorted(seen)[-200:]), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 — if we can't persist, better to stay silent than nag
+            logger.debug(f"memory_resurface: state write failed ({e})")
+            return []
+        return [Signal(
+            key=f"resurface-{pick['note_id']}",
+            message=(f"A while back you mentioned this, sir — still on your mind? “{pick['text']}”"),
+            urgency=0.61, kind="resurface")]
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"memory_resurface_signals: skipped ({e})")
         return []
 
 

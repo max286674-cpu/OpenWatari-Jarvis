@@ -106,10 +106,16 @@ _ALWAYS_ON = [
 
 def _read(p: Path) -> str:
     try:
-        return p.read_text(encoding="utf-8").strip()
+        text = p.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         logger.warning(f"brain context: missing {p.name}")
         return ""
+    # Strip leading HTML comments — they're human-facing documentation, not for the LLM.
+    # Comments are kept in the FILE so authors see the placeholder docs, but excluded from the
+    # prompt to save ~1.5KB per turn.
+    import re
+    text = re.sub(r"^\s*<!--.*?-->\s*", "", text, count=1, flags=re.DOTALL)
+    return text.strip()
 
 
 def _resolve_memory(name: str) -> Path | None:
@@ -149,7 +155,16 @@ def _learned_digest() -> str:
         from jarvis.brain.memory import STORE
 
         facts = STORE.recent_digest(settings.memory_digest_max)
-        return "\n".join(f"- {f}" for f in facts)
+        # Bound each line so the injected digest can't drift the system prompt over its token budget
+        # as facts accumulate (the full fact is always reachable via `recall`; this is just a teaser).
+        cap = settings.memory_digest_fact_chars
+        lines = []
+        for f in facts:
+            f = f.strip()
+            if len(f) > cap:
+                f = f[: cap - 1].rstrip() + "…"
+            lines.append(f"- {f}")
+        return "\n".join(lines)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"learned-memory digest unavailable: {e}")
         return ""

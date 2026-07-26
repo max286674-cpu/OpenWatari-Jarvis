@@ -148,19 +148,12 @@ async def define_macro(args: dict) -> str:
     return f"Macro '{name}' saved, sir — {n} step{'s' if n != 1 else ''}."
 
 
-async def run_macro(args: dict) -> str:
-    """Execute a saved macro step-by-step. Returns a transcript of each step's result."""
-    name = (args.get("name") or "").strip().lower()
-    if not name:
-        return "Which macro should I run, sir?"
-    store = _load()
-    m = store.get(name)
-    if not m:
-        return f"I don't have a macro called '{name}', sir. Try list_macros."
-    steps = m.get("steps") or []
-    desc = (m.get("description") or "").strip()
-    transcript: list[str] = []
-    transcript.append(f"Running macro '{name}'" + (f" — {desc}" if desc else "") + f" ({len(steps)} steps).")
+async def run_steps(steps: list, label: str) -> str:
+    """Execute an ordered step list (tool / say / skill / wait_seconds), returning a transcript.
+    Shared by run_macro (user-defined) and invoke_skill (built-in skill manifests) — one proven
+    executor, so a skill runs exactly like a macro. Each step failure is contained, not fatal."""
+    steps = steps or []
+    transcript: list[str] = [f"{label} ({len(steps)} steps)."]
     for i, step in enumerate(steps, 1):
         if "wait_seconds" in step:
             await asyncio.sleep(float(step["wait_seconds"]))
@@ -173,7 +166,7 @@ async def run_macro(args: dict) -> str:
             try:
                 from jarvis.brain.tools.skills import read_skill
                 res = await read_skill({"name": step["skill"]})
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 res = f"(skill load failed: {e})"
             head = (res or "").strip().split("\n", 1)[0][:120]
             transcript.append(f"[{i}/{len(steps)}] skill '{step['skill']}' -> {head}")
@@ -183,9 +176,8 @@ async def run_macro(args: dict) -> str:
         sub_args = step.get("args") or {}
         try:
             from jarvis.brain.tools import tool_handlers  # lazy (avoid cycle)
-            handlers = tool_handlers()
-            fn = handlers.get(tool)
-        except Exception:
+            fn = tool_handlers().get(tool)
+        except Exception:  # noqa: BLE001
             fn = None
         if fn is None:
             transcript.append(f"[{i}/{len(steps)}] '{tool}': unknown tool.")
@@ -193,11 +185,25 @@ async def run_macro(args: dict) -> str:
         try:
             res = await fn(sub_args)
         except Exception as e:  # noqa: BLE001
-            res = tool_error(f"macro step {i}", e)
+            res = tool_error(f"step {i}", e)
         head = (res or "").strip().split("\n", 1)[0][:120]
         transcript.append(f"[{i}/{len(steps)}] {tool} -> {head}")
-    transcript.append(f"Macro '{name}' finished, sir.")
     return "\n".join(transcript)
+
+
+async def run_macro(args: dict) -> str:
+    """Execute a saved macro step-by-step. Returns a transcript of each step's result."""
+    name = (args.get("name") or "").strip().lower()
+    if not name:
+        return "Which macro should I run, sir?"
+    store = _load()
+    m = store.get(name)
+    if not m:
+        return f"I don't have a macro called '{name}', sir. Try list_macros."
+    desc = (m.get("description") or "").strip()
+    label = f"Running macro '{name}'" + (f" — {desc}" if desc else "")
+    out = await run_steps(m.get("steps") or [], label)
+    return out + f"\nMacro '{name}' finished, sir."
 
 
 # ---- Conditional flow (T2c) ---------------------------------------------------

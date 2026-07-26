@@ -30,15 +30,21 @@ def _secret_values() -> list[str]:
     """Actual secret VALUES from settings, to scrub from the whole line (defence in depth).
 
     Key-based redaction only catches obvious arg keys; this also removes a secret that leaks via a
-    tool *result* (e.g. PowerShell echoing an env var) or an unexpectedly-named field. Only
-    reasonably long strings are scrubbed so we don't mangle ordinary words.
+    tool *result* (e.g. PowerShell echoing an env var) or an unexpectedly-named field.
+
+    `*_password` fields are ALWAYS scrubbed (any length — even 4-digit codes count as secrets).
+    Other secret-keyed fields are scrubbed only when long enough (>=6) to avoid mangling ordinary
+    English words that happen to contain "secret" or "token" substrings.
     """
     vals: list[str] = []
     for name in getattr(settings, "model_fields", {}):
-        if any(s in name.lower() for s in _SECRET_KEYS) or name.endswith("_password"):
-            v = getattr(settings, name, None)
-            if isinstance(v, str) and len(v) >= 6:
-                vals.append(v)
+        v = getattr(settings, name, None)
+        if not isinstance(v, str) or not v:
+            continue
+        if name.endswith("_password"):
+            vals.append(v)   # ANY password — even short numeric codes
+        elif any(s in name.lower() for s in _SECRET_KEYS) and len(v) >= 6:
+            vals.append(v)
     return vals
 
 

@@ -97,14 +97,17 @@ def resolve_barge_in(
     output_name: str | None = None,
     device_hint: str | None = None,
     legacy_enabled: bool = False,
+    aec_active: bool = False,
 ) -> tuple[bool, OutputKind, str]:
     """Decide whether barge-in is on for the live endpoint.
 
     Returns ``(enabled, kind, reason)``. ``mode`` is 'auto' | 'on' | 'off':
       * 'on'  — forced full-duplex (you've set up AEC / know it's safe).
       * 'off' — forced half-duplex.
-      * 'auto'— enable iff the endpoint is private. A remote ``device_hint`` wins over the
-                local ``output_name``; if neither classifies, fall back to ``legacy_enabled``.
+      * 'auto'— enable iff the endpoint is private OR a real echo-canceller is running (``aec_active``,
+                Phase 1.2) — which removes Watari's own TTS from the mic so OPEN speakers become safe for
+                barge-in too. A remote ``device_hint`` wins over the local ``output_name``; if neither
+                classifies, fall back to ``legacy_enabled``.
     """
     m = (mode or "auto").strip().lower()
     if m == "on":
@@ -121,6 +124,9 @@ def resolve_barge_in(
 
     if kind.is_private:
         return True, kind, f"private endpoint ({kind.value}) — barge-in auto-enabled"
+    # Shared speaker + a real echo-canceller on the mic (Phase 1.2) → full-duplex is now safe.
+    if aec_active:
+        return True, kind, f"shared endpoint ({kind.value}) but AEC active — full-duplex enabled"
     return False, kind, f"shared endpoint ({kind.value}) — barge-in off (speaker-safe)"
 
 

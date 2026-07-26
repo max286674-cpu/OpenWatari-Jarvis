@@ -51,11 +51,16 @@ def _auto_whisper(model: str):
             # vad_filter=True: drop silence/noise so it doesn't hallucinate phantom words from quiet.
             lang = settings.whisper_language
             lang = None if (not lang or lang.lower() == "auto") else lang
+            # Proper-noun biasing (Phase 1.5): favour the owner's names/places/projects so "Yerevan"
+            # doesn't become "your event". faster-whisper takes ONE space-joined string.
+            from jarvis.edge.proper_nouns import hotwords_str
+            hot = hotwords_str() or None
             segments, info = await asyncio.to_thread(
                 self._model.transcribe, audio_float,
                 language=lang,
                 condition_on_previous_text=False,
                 vad_filter=True,
+                hotwords=hot,
             )
             detected = getattr(info, "language", None)
             text = ""
@@ -151,21 +156,42 @@ def _build_deepgram():
         f"endpointing={settings.deepgram_endpointing_ms}ms) "
         "— understands EN/FR/DE/RU; for Armenian/Ukrainian set STT provider to 'whisper'"
     )
-    return DeepgramSTTService(
-        api_key=settings.deepgram_api_key,
-        settings=DeepgramSTTService.Settings(
-            model=settings.deepgram_model,
-            language=settings.deepgram_language,  # 'multi' = EN/FR/DE/RU code-switch
-            smart_format=True,
-            # Finalise quickly after the user stops so the brain fires sooner (perceived latency).
-            endpointing=settings.deepgram_endpointing_ms,
-            # We act only on finals in a wake-gated turn; interim hypotheses would just be churn.
-            interim_results=False,
-        ),
+    opts = dict(
+        model=settings.deepgram_model,
+        language=settings.deepgram_language,  # 'multi' = EN/FR/DE/RU code-switch
+        smart_format=True,
+        # Finalise quickly after the user stops so the brain fires sooner (perceived latency).
+        endpointing=settings.deepgram_endpointing_ms,
+        # We act only on finals in a wake-gated turn; interim hypotheses would just be churn.
+        interim_results=False,
     )
+    # Proper-noun biasing (Phase 1.5): nova-3 accepts `keyterm`. Guarded — if this pipecat/Deepgram
+    # build doesn't accept the field, drop it rather than fail to build the STT (the Whisper path
+    # still biases via hotwords). nova-2 would want `keywords=` instead; keyterm is nova-3.
+    from jarvis.edge.proper_nouns import hotwords_list
+    hot = hotwords_list()
+    try:
+        s = DeepgramSTTService.Settings(**opts, keyterm=hot) if hot else DeepgramSTTService.Settings(**opts)
+    except Exception as e:  # noqa: BLE001 — unknown field on this version -> bias via Whisper only
+        logger.warning(f"Deepgram keyterm biasing unavailable ({type(e).__name__}); STT still builds")
+        s = DeepgramSTTService.Settings(**opts)
+
+    from pipecat.frames.frames import ErrorFrame
+    from jarvis.edge import voice_health
+
+    class _MonitoredDeepgram(DeepgramSTTService):
+        """Records every escalated error so the watchdog can fail over to local Whisper when the
+        cloud WebSocket keeps dying (a REST probe can't see that — the socket fails while REST is up)."""
+
+        async def push_error_frame(self, error: ErrorFrame) -> None:
+            voice_health.record_cloud_error(str(getattr(error, "error", "")))
+            await super().push_error_frame(error)
+
+    return _MonitoredDeepgram(api_key=settings.deepgram_api_key, settings=s)
 
 
-# provider -> builder. Moonshine isn't wired yet, so it maps to the local Whisper engine.
+# provider -> builder. All three are real engines: Deepgram (cloud streaming), Whisper (local,
+# all six languages), Moonshine (local, English-only, ~0.4s on CPU — the lowest-latency offline STT).
 _BUILDERS = {
     STTProvider.deepgram: _build_deepgram,
     STTProvider.whisper: _build_whisper,
@@ -181,11 +207,24 @@ def build_stt():
     and ``voice_local_fallback`` is on, fall back to local Whisper so the pipeline always comes up.
     """
     prov = settings.stt_provider
+    fb = settings.stt_fallback_provider
+    # Startup health gate: if cloud is the chosen route, verify it actually answers (reachable + key
+    # valid, or recent-failure cooldown) BEFORE building it — otherwise come up on local so the edge
+    # can always hear. Runtime WebSocket failures are handled separately by the error monitor above.
+    if prov in _CLOUD and settings.voice_local_fallback and fb not in _CLOUD:
+        from jarvis.edge import voice_health
+
+        if not voice_health.cloud_stt_healthy():
+            logger.warning(f"cloud STT '{prov.value}' unhealthy at startup — using local '{fb.value}'")
+            voice_health.mark_cloud_active(False)
+            return _BUILDERS[fb]()
+        voice_health.mark_cloud_active(True)
     try:
         return _BUILDERS.get(prov, _build_deepgram)()
     except Exception as e:  # noqa: BLE001
-        fb = settings.stt_fallback_provider
         if prov in _CLOUD and settings.voice_local_fallback and fb not in _CLOUD:
             logger.warning(f"cloud STT '{prov.value}' unavailable ({e}); falling back to local '{fb.value}'")
+            from jarvis.edge import voice_health
+            voice_health.mark_cloud_active(False)
             return _BUILDERS[fb]()
         raise

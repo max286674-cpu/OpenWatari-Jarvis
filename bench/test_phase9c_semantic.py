@@ -67,7 +67,7 @@ def main() -> None:
 
     print("\n[2] semantic recall surfaces the rabbit-farm fact by meaning")
     embed, calls = _make_stub()
-    index = SemanticIndex(embed_fn=embed)
+    index = SemanticIndex(embed_fn=embed, persist=False)  # in-memory only; keep this test hermetic
     check("injected index reports available", index.available)
     hits = store.recall("bunnies", semantic=index)
     check("semantic recall finds the rabbit farm", any("Lpstrak" in h for h in hits), str(hits))
@@ -82,10 +82,22 @@ def main() -> None:
     check("only the query re-embeds on a second recall", after - before == 1, f"delta {after - before}")
 
     print("\n[4] graceful no-op when no embedder is installed")
-    bare = SemanticIndex(embed_fn=None)   # no stub, and sentence-transformers absent in this env
-    check("bare index is unavailable", not bare.available)
-    check("scores() returns {} with no embedder",
-          bare.scores("anything", [("k", 0.0, "some text")]) == {})
+    # A truly bare index = no injected stub, no local sentence-transformers, AND no Jina key to fall
+    # back on. The personal .env DOES set JARVIS_JINA_API_KEY (it powers the web reader), which would
+    # otherwise let the index reach the Jina embeddings API and report available. Null it for this
+    # check so we're testing the genuine "no embedder anywhere" path.
+    from jarvis.config import settings as _cfg
+    _saved_jina = _cfg.jina_api_key
+    _cfg.jina_api_key = None
+    try:
+        # No stub, no Jina key, AND a bogus model name so the local sentence-transformers path (which
+        # IS installed in some envs) can't load either — the genuine "no embedder anywhere" path.
+        bare = SemanticIndex(embed_fn=None, model_name="__no_such_model_zzz__", persist=False)
+        check("bare index is unavailable", not bare.available)
+        check("scores() returns {} with no embedder",
+              bare.scores("anything", [("k", 0.0, "some text")]) == {})
+    finally:
+        _cfg.jina_api_key = _saved_jina
     # recall with the (unavailable) real index must equal keyword-only behaviour.
     check("recall stays keyword-only without an embedder", store.recall("submarines") == [])
 

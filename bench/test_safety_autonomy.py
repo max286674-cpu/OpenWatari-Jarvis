@@ -53,7 +53,7 @@ class CaptureLLM:
         self.messages = None
         self.tool_choice = None
 
-    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         self.messages = messages
         self.tool_choice = tool_choice
         return SimpleNamespace(content="Right away, sir.", tool_calls=None)

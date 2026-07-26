@@ -23,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import datetime
 from typing import Union
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
@@ -76,7 +78,21 @@ class BrainServer:
         self._turns: dict[str, asyncio.Task] = {}      # session_id -> in-flight turn task
         self._sessions: dict[str, dict] = {}           # session_id -> device/headphones info
         self._conns: dict[str, object] = {}            # session_id -> live websocket (for push)
+        self._active_sid: str | None = None            # Phase 5.2 handoff: the device last spoken to
         self._tg_bridge = None                         # set in serve(): proactive VOICE to the phone
+        self._proactive = None                         # set in serve(): the ProactiveEngine (feedback)
+
+    def _speak_targets(self) -> list[tuple[str, object]]:
+        """Devices to deliver an unprompted line to (Phase 5.2 — device handoff).
+
+        Prefer the ACTIVE device: the one the owner last spoke to. So a nudge/reminder follows him to
+        wherever he just was — the laptop he's typing at, the phone he just asked something on — instead
+        of blurting from every connected client at once (or a phone in his pocket). Falls back to every
+        connected device if the active one has since dropped, so reach is never reduced by the handoff.
+        """
+        if self._active_sid and self._active_sid in self._conns:
+            return [(self._active_sid, self._conns[self._active_sid])]
+        return list(self._conns.items())
 
     async def warmup(self) -> None:
         await self._agent.warmup()
@@ -100,7 +116,7 @@ class BrainServer:
         except Exception:  # noqa: BLE001
             pass
         sent = 0
-        for sid, ws in list(self._conns.items()):
+        for sid, ws in self._speak_targets():  # Phase 5.2: follow the owner to his active device
             try:
                 self._cancel(sid)  # interrupt any in-flight turn so he can speak now
                 await self._send(
@@ -210,6 +226,7 @@ class BrainServer:
             return
 
         if isinstance(msg, Utterance):
+            self._active_sid = msg.session_id  # Phase 5.2 handoff: this is now the owner's live device
             self._cancel(msg.session_id)  # a new utterance supersedes the previous turn
             self._turns[msg.session_id] = asyncio.create_task(self._run_turn(ws, msg))
             return
@@ -219,8 +236,64 @@ class BrainServer:
         if task and not task.done():
             task.cancel()
 
+    async def _daily_digest_addendum(self, digest_task, now) -> str:
+        """Resolve the first-turn daily catch-up: if a build was kicked off for this (first-of-day)
+        turn, await it, mark the 'edge' channel delivered, and return a spoken 'By the way, sir — …'
+        addendum (or '' if nothing / not due). Once per day, persisted, so it never repeats. Fail-quiet."""
+        if digest_task is None:
+            return ""
+        try:
+            from jarvis.brain import daily_digest
+
+            body = await digest_task
+            daily_digest.mark_delivered("edge", now)  # mark on the first turn regardless of content
+            if not body:
+                return ""
+            line = "By the way, sir — " + body + "."
+            try:
+                self._agent.note_proactive(line)  # so a follow-up ('mark the rent one done') has context
+            except Exception:  # noqa: BLE001
+                pass
+            return line
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"daily digest addendum failed: {e}")
+            return ""
+
+    def _grade_proactive_reaction(self, text: str, now) -> None:
+        """If Watari just interjected, read the owner's reply as accept/dismiss so the engine learns
+        (Phase 1 feedback). Only clear yes/no moves the needle; ambiguity is left neutral. Fail-quiet."""
+        if self._proactive is None:
+            return
+        try:
+            from jarvis.brain.proactive import classify_reaction
+
+            kind = self._proactive.pending_feedback(now)
+            if not kind:
+                return
+            verdict = classify_reaction(text)
+            if verdict == "positive":
+                self._proactive.record_feedback(kind, "act", now)
+            elif verdict == "negative":
+                self._proactive.record_feedback(kind, "dismiss", now)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"proactive reaction grading skipped: {e}")
+
     async def _run_turn(self, ws, utt: Utterance) -> None:
         sid = utt.session_id
+        # On the owner's FIRST live-edge turn of the day, build the daily catch-up CONCURRENTLY with
+        # the reply (so it adds no latency) and append it once the reply is done. `due` is a cheap
+        # file read; the network build only starts when it's actually the first turn today.
+        now = datetime.now(ZoneInfo(settings.user_tz))
+        # If he's replying to a just-made interjection, let the engine learn from his reaction.
+        self._grade_proactive_reaction(utt.text, now)
+        digest_task = None
+        try:
+            from jarvis.brain import daily_digest
+
+            if daily_digest.due("edge", now):
+                digest_task = asyncio.create_task(daily_digest.build_body())
+        except Exception:  # noqa: BLE001
+            digest_task = None
         try:
             await self._send(
                 ws, StreamEvent(session_id=sid, kind=StreamKind.lifecycle, delta="thinking")
@@ -238,15 +311,21 @@ class BrainServer:
             # PREVIOUS sentence as non-final and only mark the last one final=True, so the client
             # knows when the turn is complete.
             async with self._lock:
-                pending: str | None = None
+                # Send EACH sentence the instant it's generated (final=False), then a terminal empty
+                # final=True marker. The old code held one sentence back (so it could tag the last as
+                # final), which delayed the FIRST spoken sentence by a whole extra sentence's generation
+                # — the dominant streaming lag on multi-sentence replies. Clients speak deltas as they
+                # arrive and use final only as the end-of-turn signal (an empty delta speaks nothing).
                 async for sentence in self._agent.respond_stream(utt.text, on_progress=progress):
-                    if pending is not None:
-                        await self._send(ws, StreamEvent(
-                            session_id=sid, kind=StreamKind.assistant, delta=pending + " ", final=False))
-                    pending = sentence
+                    await self._send(ws, StreamEvent(
+                        session_id=sid, kind=StreamKind.assistant, delta=sentence + " ", final=False))
+                # First-turn-of-the-day catch-up, appended once per day before the terminal marker.
+                addendum = await self._daily_digest_addendum(digest_task, now)
+                if addendum:
+                    await self._send(ws, StreamEvent(
+                        session_id=sid, kind=StreamKind.assistant, delta=addendum + " ", final=False))
                 await self._send(ws, StreamEvent(
-                    session_id=sid, kind=StreamKind.assistant,
-                    delta=((pending + " ") if pending else ""), final=True))
+                    session_id=sid, kind=StreamKind.assistant, delta="", final=True))
         except asyncio.CancelledError:
             # Barge-in or a superseding utterance: tell the client to stop speaking.
             try:
@@ -314,6 +393,8 @@ class BrainServer:
             # Drop any sessions bound to this socket so we don't push into a dead connection.
             for sid in [s for s, w in self._conns.items() if w is ws]:
                 self._conns.pop(sid, None)
+                if self._active_sid == sid:      # handoff: the active device left; fall back to broadcast
+                    self._active_sid = None
             logger.info("client disconnected")
 
     @staticmethod
@@ -366,10 +447,11 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
     SCHEDULER.start(on_speak=server.speak_reminder)
     logger.info("reminder scheduler started (brain owns the jobstore)")
 
-    # Daily proactive VOICE briefing of today's Notion tasks/deadlines (only when a tasks DB is set).
-    # Delivery uses the richest proactive path: speak to a listening device, else Telegram voice
-    # note, else ntfy push. Wired after _tg_bridge below via set_briefing_emit.
-    if settings.notion_tasks_db_id and settings.task_briefing_time:
+    # Daily consolidated catch-up (past-due tasks + important email), delivered once at this time.
+    # Scheduled whenever a briefing time is set — the digest pulls from Notion AND Gmail AND the
+    # local task queue, so it's useful even if only one of those is configured. Delivery uses the
+    # richest proactive path: speak to a listening device, else Telegram voice note, else ntfy push.
+    if settings.task_briefing_time:
         SCHEDULER.schedule_daily_briefing(settings.task_briefing_time)
 
     # Phase 3.1 — autonomous daily BACKLOG pass (opt-in: JARVIS_BACKLOG_ENABLED). When on and a tasks
@@ -377,8 +459,19 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
     # outward steps deferred) and comments the results back onto each Notion task.
     if settings.backlog_enabled and settings.notion_tasks_db_id:
         SCHEDULER.set_backlog_runner(server._agent.run_backlog)
+        if settings.proactive_action_reports:
+            # Report the pass unprompted (what + why + reasoning) so an autonomous action is never silent.
+            SCHEDULER.set_backlog_reporter(server._agent.backlog_report)
         SCHEDULER.schedule_daily_backlog(settings.backlog_time)
         logger.info("autonomous daily backlog pass scheduled")
+
+    # Phase 4.1 — autonomous daily OBJECTIVES advance (opt-in: JARVIS_OBJECTIVES_ENABLED). A daily job
+    # advances the objectives the owner handed Watari to drive, one safe step each, and reports the
+    # progress unprompted. Safe by construction (the worker defers every outward step).
+    if settings.objectives_enabled:
+        SCHEDULER.set_objectives_runner(server._agent.advance_objectives)
+        SCHEDULER.schedule_daily_objectives(settings.objectives_time)
+        logger.info("autonomous daily objectives advance scheduled")
 
     # Daily backup of Watari's L1/L2 memory (the one durable store with no other automated backup).
     SCHEDULER.schedule_daily_backup()
@@ -447,18 +540,36 @@ async def serve(host: str | None = None, port: int | None = None) -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"composio catalog refresh not scheduled: {e}")
 
+    # Phase 0 companion — activity/presence poller: sample the laptop's foreground window so Watari
+    # knows what the owner is doing (context for proactivity) + can report screen-time. Local-only,
+    # a harmless no-op when no laptop is attached or tracking is paused.
+    from jarvis.brain.presence import PRESENCE
+
+    PRESENCE.start()
+    logger.info("presence/activity poller started")
+
     # Phase 10 — proactive companion. Off unless JARVIS_PROACTIVE_ENABLED=true; when on, a
     # background tick may speak to listening clients (or push) within its budget + quiet hours.
     engine = None
     if settings.proactive_enabled:
+        from pathlib import Path
+
         from jarvis.brain.proactive import ProactiveEngine, default_signal_sources
 
+        # Persist suppression + budget so a restart doesn't re-fire nudges (default: next to tasks DB).
+        state_path = settings.proactive_state_path or (
+            str(Path(settings.tasks_db_path).parent / "proactive_state.json")
+            if settings.tasks_db_path
+            else str(Path(__file__).resolve().parents[3] / "proactive_state.json"))
         engine = ProactiveEngine(
             emit=server.proactive_emit,
             sources=default_signal_sources(),
             is_listening=lambda: server.is_listening,
+            is_busy=lambda: PRESENCE.busy(),   # Phase 1: hold routine nudges while he's heads-down
+            state_path=state_path,
         )
         engine.start()
+        server._proactive = engine  # so a live turn can grade his reaction to the last interjection
 
     # 24/7 reachability — inbound Telegram. DM the bot from any device (even with the laptop off);
     # the shared agent answers, so Telegram and voice share one memory + conversation context.
@@ -551,7 +662,25 @@ def _serve_client_http(
             return urlparse(self.path).path.rstrip("/")
 
         def do_POST(self):  # noqa: N802 (http.server API) — the Siri Shortcut voice turn
-            if self._route() != "/talk":
+            route = self._route()
+            # C2: HMAC-verified inbound integration webhooks -> the proactive world-model. No owner
+            # auth token here (the signature IS the auth); source-scoped under /webhook/<source>.
+            if route.startswith("/webhook/"):
+                from jarvis.brain.webhooks import handle_webhook
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                sig = (self.headers.get("X-Hub-Signature-256")
+                       or self.headers.get("X-Watari-Signature"))
+                status, msg = handle_webhook(route.split("/webhook/", 1)[1], body, sig)
+                out = json.dumps({"status": "ok" if status == 200 else "rejected",
+                                  "detail": msg}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
+            if route != "/talk":
                 self.send_error(404, "not found")
                 return
             if server is None or loop is None:
@@ -614,14 +743,50 @@ def _serve_client_http(
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            # Structured observability (TODO 8.8): JSON metrics snapshot. Auth-gated (same bearer/
+            # ?token as /talk) since it reveals usage patterns; on a loopback-only brain it's open.
+            if self._route() == "/metrics":
+                if not _post_authorized(self):
+                    self.send_error(401, "unauthorized")
+                    return
+                import json as _json
+
+                from jarvis.brain.metrics import METRICS
+                body = _json.dumps(METRICS.snapshot(), indent=2).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            # Phase 5.3 — ambient HUD state (objectives / working-on / awaiting-approval / presence).
+            # Auth-gated like /metrics (it reveals what he's doing); open on a loopback-only brain.
+            if self._route() == "/hud.json":
+                if not _post_authorized(self):
+                    self.send_error(401, "unauthorized")
+                    return
+                import json as _json
+
+                from jarvis.brain.hud import hud_snapshot
+                body = _json.dumps(hud_snapshot(), indent=2).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if serve_dir is None:
                 self.send_error(404, "no client dir on this host")
                 return
             # Serve the phone client with the auth token injected, so a browser (which can't set a
             # WS Authorization header) connects with no manual token paste. The HTTP port is only
             # reachable on the trusted tailnet/localhost, so embedding the token here is acceptable.
-            if self._route() in ("/iphone", "/iphone/index.html"):
-                idx = Path(serve_dir) / "iphone" / "index.html"
+            page = {"/iphone": ("iphone", "/iphone"), "/hud": ("hud", "/hud")}.get(self._route())
+            if self._route() in ("/iphone/index.html", "/hud/index.html"):
+                page = (self._route().split("/")[1], "/" + self._route().split("/")[1])
+            if page is not None:
+                subdir, _ = page
+                idx = Path(serve_dir) / subdir / "index.html"
                 if idx.exists():
                     html = idx.read_text(encoding="utf-8")
                     tok = (settings.api_auth_token or "").replace("</", "<\\/")
@@ -639,7 +804,7 @@ def _serve_client_http(
         def end_headers(self):
             # Never let Safari serve a stale cached copy of the client — a stale page silently hides
             # new UI (e.g. the mic button) until a manual hard refresh.
-            if self._route().startswith("/iphone"):
+            if self._route().startswith("/iphone") or self._route().startswith("/hud"):
                 self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
                 self.send_header("Pragma", "no-cache")
                 self.send_header("Expires", "0")

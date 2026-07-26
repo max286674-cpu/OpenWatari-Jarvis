@@ -36,7 +36,7 @@ class FakeLLM:
         self._scripts = scripts
         self._i = 0
 
-    async def stream_with_tools(self, messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def stream_with_tools(self, messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         script = self._scripts[self._i]
         self._i += 1
         for ev in script:

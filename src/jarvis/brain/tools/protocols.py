@@ -12,11 +12,13 @@ from jarvis.brain.protocols import describe_protocols, run_protocol as _run
 async def run_protocol(args: dict) -> str:
     name = (args.get("name") or "").strip()
     password = (args.get("password") or "").strip()
+    drill = bool(args.get("drill"))
     if not name:
         return f"Which protocol, sir? I have: {describe_protocols()}."
     if not password:
-        return f"Protocol {name} requires the password, sir. What is it?"
-    result = _run(name, password)
+        verb = "drill" if drill else "run"
+        return f"Protocol {name} requires the password to {verb} it, sir. What is it?"
+    result = _run(name, password, drill=drill)
     return result.spoken if (result.ok and result.spoken) else result.message
 
 
@@ -33,13 +35,16 @@ SCHEMAS = [
                 "'checkpoint' (archive non-secret context). NEVER call this without the password: "
                 "if he names a "
                 "protocol but hasn't given the password, ask him for it first, then call this "
-                "with both. The runner rejects a wrong password."
+                "with both. The runner rejects a wrong password. Set drill=true to REHEARSE a recovery "
+                "protocol (verify it's ready) WITHOUT actually stopping/restarting anything."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Protocol name."},
                     "password": {"type": "string", "description": "The password the owner provided."},
+                    "drill": {"type": "boolean", "description": "If true, rehearse (verify readiness) "
+                              "without executing. Use when he says 'drill'/'test'/'rehearse' a protocol."},
                 },
                 "required": ["name", "password"],
             },

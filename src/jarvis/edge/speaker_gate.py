@@ -54,7 +54,9 @@ class SpeakerGate(FrameProcessor):
                     logger.info(f"speaker gate: ignored ({score:.2f}) — not the owner's voice: "
                                 f"{frame.text!r}")
                     return  # drop: brain never sees it
-                logger.debug(f"speaker gate: accepted ({score:.2f})")
+                # INFO (not DEBUG) so the owner's real accept-scores are visible in production — the
+                # only way to calibrate the threshold against a live owner-vs-stranger separation.
+                logger.info(f"speaker gate: accepted ({score:.2f}) — {frame.text!r}")
             await self.push_frame(frame, direction)
             return
 

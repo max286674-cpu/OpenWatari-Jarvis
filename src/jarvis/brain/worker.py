@@ -54,18 +54,44 @@ class TaskWorker:
         registry: dict[str, Callable[[dict], Awaitable[str]]],
         tools: list[dict[str, Any]],
         max_steps: int = 6,
+        system: str | None = None,
+        allow_confirmed: set[str] | None = None,
+        origin: str = "",
+        approvals: Any = None,
     ) -> None:
         self._llm = llm
         self._registry = registry
         self._tools = tools
         self._max_steps = max(1, max_steps)
+        self._system = system or _WORKER_SYSTEM   # override for specialised loops (e.g. code self-improve)
+        # Phase 4.2 — where deferred outward steps go so the owner can actually approve/execute them
+        # later (not just read about them). ``origin`` labels what produced them (e.g. an objective id).
+        self._origin = origin
+        self._approvals = approvals
+        # Tools that are normally confirm-gated but PRE-AUTHORISED for this loop, so they run instead of
+        # deferring. Used only by the opt-in code self-improve loop (local edits + local commits on a
+        # branch, which the owner armed). Push/outward tools are NOT put here — they still defer.
+        self._allow_confirmed = allow_confirmed or set()
+
+    def _queue_approval(self, name: str, args: dict) -> None:
+        """Record a deferred outward step as an APPROVABLE action. Fail-quiet: a queue problem must
+        never break the task the worker is doing."""
+        try:
+            queue = self._approvals
+            if queue is None:
+                from jarvis.brain.approvals import APPROVALS
+
+                queue = APPROVALS
+            queue.enqueue(name, args, origin=self._origin)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"could not queue approval for {name}: {type(e).__name__}")
 
     async def run(self, objective: str, on_progress: Callable[[str], None] | None = None) -> str:
         objective = (objective or "").strip()
         if not objective:
             return "There was no task to work on, sir."
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": _WORKER_SYSTEM},
+            {"role": "system", "content": self._system},
             {"role": "user", "content": objective},
         ]
         deferred: list[str] = []
@@ -92,11 +118,13 @@ class TaskWorker:
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                if confirm_required(name, args):
+                if confirm_required(name, args) and name not in self._allow_confirmed:
                     note = f"{name}({', '.join(f'{k}={v}' for k, v in list(args.items())[:3])})"
                     deferred.append(note)
+                    self._queue_approval(name, args)
                     result = ("DEFERRED: this is an outward/destructive action that needs the owner's "
-                              "approval. Do not retry it; note it for him and continue the safe work.")
+                              "approval. It has been queued for him to approve — do not retry it; "
+                              "continue the safe work.")
                 else:
                     fn = self._registry.get(name)
                     if fn is None:

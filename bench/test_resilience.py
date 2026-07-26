@@ -105,7 +105,7 @@ async def test_tool_raises_in_turn() -> None:
 
     calls = {"n": 0}
 
-    async def fake_complete(messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def fake_complete(messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         calls["n"] += 1
         if calls["n"] == 1:
             tc = SimpleNamespace(id="c1", function=SimpleNamespace(name="boom", arguments="{}"))

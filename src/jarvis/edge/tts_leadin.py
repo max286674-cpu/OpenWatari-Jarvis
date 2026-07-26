@@ -14,7 +14,7 @@ class TTSLeadInSilence(FrameProcessor):
     Padding the first chunk keeps TTS streaming intact while giving the endpoint time to open cleanly.
     """
 
-    def __init__(self, ms: int = 220) -> None:
+    def __init__(self, ms: int = 120) -> None:  # ponytail: 220→120, enough to avoid word-2 clipping on a
         super().__init__()
         self._ms = max(0, ms)
         self._needs_pad = True

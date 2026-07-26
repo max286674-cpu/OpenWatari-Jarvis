@@ -13,14 +13,19 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from jarvis.brain.tools import (
+    activity,
+    approvals,
     browser,
     calendar,
+    camera,
     channels,
+    coaching,
     coding,
     composio,
     contacts,
     documents,
     gmail,
+    graphmem,
     localplay,
     macros,
     memory,
@@ -28,8 +33,10 @@ from jarvis.brain.tools import (
     music,
     notify,
     notion,
+    objectives,
     protocols,
     reminders,
+    relationship,
     routines,
     skills,
     smarthome,
@@ -46,7 +53,8 @@ from jarvis.brain.tools import (
 _MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, browser,
             protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
             coding, skills, notion, tasks, contacts, documents, composio, channels,
-            macros, multimodal, undo]  # noqa: E501
+            macros, multimodal, undo, graphmem, activity, coaching, camera, objectives,
+            approvals, relationship]  # noqa: E501
 
 Handler = Callable[[dict], Awaitable[str]]
 
@@ -63,6 +71,15 @@ _LAZY_GROUPS: dict[str, list] = {
     "apps": [composio],                  # 250+ external apps via Composio (GitHub/Slack/Drive/...)
     "channels": [channels],              # YouTube channel ops (list / random / latest) — T1
     "macros": [macros],                  # User-defined macro sequences + if_then — T2
+    "screen": [multimodal],              # screenshot + OCR the screen — T6 (only on "look at my screen")
+    "camera": [camera],                  # webcam vision (look_around) + visual presence — Phase 3.2/3.3
+    "undo": [undo],                      # undo_last / list_recent_actions — T7 (only on "undo that")
+    "graph": [graphmem],                 # L5b structured relations + multi-hop recall (only when linking)
+    "activity": [activity],              # screen-time / current activity / tracking privacy switch — Phase 0
+    "coaching": [coaching],              # field skill reviews + progress (e.g. German quiz) — Phase 2
+    "objectives": [objectives],          # multi-day objectives Watari drives (assign/status/…) — Phase 4.1
+    "approvals": [approvals],            # approve/reject the outward steps autonomous work deferred — 4.2
+    "relationship": [relationship],      # sensitivities / running jokes / how-we-stand — Phase 6.2
 }
 # Substring triggers (lowercased) that activate a group for a turn. Broad on purpose — a miss just
 # means a one-turn delay (the follow-up usually contains the word, and groups stay warm one turn).
@@ -70,7 +87,8 @@ LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
     "coding": ("code", "coding", "source", "function", "bug", "refactor", "commit", "git ",
                "lint", "unit test", "run the test", "run tests", "repo", "push", "branch",
                "revert", "your code", "self-improve", "self improve", "improve yourself",
-               "pull request", "diff", "the suite"),
+               "pull request", "diff", "the suite", "issue", "file a bug", "open an issue",
+               "github issue", "ticket"),
     "office": ("email", "e-mail", "mail", "inbox", "gmail", "draft", "calendar", "schedule",
                "event", "meeting", "appointment", "agenda", "notion", "document", "page",
                "task list", "my tasks", "task", "tasks", "deadline", "due", "to-do", "todo",
@@ -93,6 +111,38 @@ LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
     "macros": ("macro", "macros", "routine", "morning routine", "evening routine", "shortcut",
                "if then", "if ", "branching", "every morning", "every day at", "recurring",
                "set up a"),
+    "screen": ("my screen", "the screen", "look at my", "what's on screen", "whats on screen",
+               "screenshot", "read the screen", "on my display", "see my screen", "what am i looking"),
+    "camera": ("camera", "webcam", "look around", "in front of me", "can you see", "look through",
+               "am i at my desk", "are you watching", "who's here", "who is here", "with your eyes",
+               "point the camera", "through the camera", "look at this", "learn my face",
+               "recognise me", "recognize me", "remember my face", "remember what i look like",
+               "do you recognise", "do you recognize", "who am i", "enroll my face", "enrol my face"),
+    "undo": ("undo", "undo that", "revert that", "take that back", "roll back", "rollback",
+             "what did you just do", "recent actions", "last action"),
+    "graph": ("related to", "connected to", "connection between", "link ", "linked to", "how is",
+              "how are", "associate", "association", "relationship between", "what's tied to",
+              "whats tied to", "map out", "knowledge graph"),
+    "activity": ("screen time", "screentime", "screen-time", "what am i doing", "what have i been",
+                 "how long have i", "how much time", "on my computer", "on the computer", "focused",
+                 "productivity", "how long was i", "stop watching my screen", "pause tracking",
+                 "pause activity", "resume tracking", "activity tracking", "am i wasting"),
+    "coaching": ("quiz me", "test me", "test my", "quiz my", "practise", "practice", "my german",
+                 "my french", "my spanish", "review my", "my level", "how's my", "hows my",
+                 "am i improving", "am i progressing", "skill", "flashcard", "coaching", "learn german",
+                 "language practice", "check my", "vocab", "vocabulary"),
+    "objectives": ("objective", "objectives", "take this on", "take on this", "own this", "drive this",
+                   "drive it to", "make it happen", "over the next", "across days", "work on it over",
+                   "what are you working on", "what are you driving", "your objectives", "how's the",
+                   "hows the", "progress on", "get it launch", "launch-ready", "launch ready",
+                   "carry this", "keep pushing on", "long-term goal", "multi-day"),
+    "approvals": ("approve", "approval", "approvals", "needs my sign", "sign-off", "sign off",
+                  "waiting on me", "waiting for me", "pending action", "pending actions", "anything pending",
+                  "go ahead and send", "go ahead and", "permission to", "reject that", "don't send it",
+                  "dont send it", "drop that one", "let it through", "authorise", "authorize"),
+    "relationship": ("sensitive subject", "sore subject", "sore spot", "go easy on", "be gentle about",
+                     "touchy subject", "running joke", "inside joke", "our joke", "read the room",
+                     "how am i doing", "how are we doing", "handle gently", "don't bring up", "dont bring up"),
 }
 
 
@@ -122,6 +172,13 @@ def groups_for_text(text: str) -> set[str]:
     """Which lazy groups a user utterance should activate (substring trigger match)."""
     t = (text or "").lower()
     return {g for g, kws in LAZY_GROUP_TRIGGERS.items() if any(k in t for k in kws)}
+
+
+def schemas_by_name(names) -> list[dict[str, Any]]:
+    """Schemas for the given tool names, pulled from the FULL registry (any group). Used by the
+    B1 intent router to narrow a turn to exactly the right tool(s). Silently skips unknown names."""
+    want = set(names)
+    return [s for s in tool_schemas() if s["function"]["name"] in want]
 
 
 def tool_handlers() -> dict[str, Handler]:

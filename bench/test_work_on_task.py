@@ -44,7 +44,7 @@ class FakeLLM:
         self._msgs = msgs
         self.calls = 0
 
-    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         m = self._msgs[min(self.calls, len(self._msgs) - 1)]
         self.calls += 1
         return m
@@ -61,7 +61,7 @@ class StatelessLLM:
     def __init__(self, reply: str) -> None:
         self._reply = reply
 
-    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         return _text_msg(self._reply)
 
     async def warmup(self):

@@ -55,7 +55,7 @@ class FakeCompleteLLM:
         self._msgs = msgs
         self.complete_calls = 0
 
-    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         m = self._msgs[self.complete_calls]
         self.complete_calls += 1
         return m

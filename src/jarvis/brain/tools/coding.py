@@ -260,6 +260,56 @@ async def git_revert(args: dict) -> str:
             if rc == 0 else f"Couldn't revert {commit}, sir: {clip(out, 200)}")
 
 
+async def create_github_issue(args: dict) -> str:
+    """File a GitHub issue in ONE call via the configured PAT — the common dev action by voice.
+
+    First-class shortcut over the 2-step Composio router (find_tools -> run_tool): "open me an issue
+    titled X" becomes a single tool call. Confirm-gated (it's outward-facing). Falls back to a spoken
+    'not configured' note if no PAT/repo is set. Repo defaults to JARVIS_GITHUB_REPO; an explicit
+    'owner/repo' argument overrides it.
+    """
+    token = settings.github_token
+    repo = (args.get("repo") or settings.github_repo or "").strip()
+    if not token or not repo:
+        from jarvis.brain.tools.base import not_configured
+        return not_configured(
+            "GitHub issues",
+            "a GitHub PAT (JARVIS_GITHUB_TOKEN, Issues: read/write) and JARVIS_GITHUB_REPO (owner/repo)")
+    title = (args.get("title") or "").strip()
+    if not title:
+        return "What should the issue title be, sir?"
+    body = (args.get("body") or "").strip()
+    labels = args.get("labels") or []
+    if isinstance(labels, str):
+        labels = [x.strip() for x in labels.split(",") if x.strip()]
+    payload: dict = {"title": title}
+    if body:
+        payload["body"] = body
+    if labels:
+        payload["labels"] = labels
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(
+                f"https://api.github.com/repos/{repo}/issues",
+                headers={"Authorization": f"Bearer {token}",
+                         "Accept": "application/vnd.github+json",
+                         "X-GitHub-Api-Version": "2022-11-28"},
+                json=payload,
+            )
+    except Exception as e:  # noqa: BLE001
+        return tool_error("GitHub issue", e)
+    if r.status_code == 201:
+        data = r.json()
+        return f"Filed issue #{data.get('number')} in {repo}, sir: “{title}”. {data.get('html_url', '')}"
+    if r.status_code in (401, 403):
+        return ("GitHub rejected the token, sir — check the PAT has Issues:read/write on that repo.")
+    if r.status_code == 404:
+        return f"I couldn't find the repo '{repo}', sir — check JARVIS_GITHUB_REPO (owner/repo)."
+    return f"GitHub wouldn't create the issue, sir (HTTP {r.status_code}): {clip(r.text, 160)}"
+
+
 SCHEMAS = [
     {"type": "function", "function": {
         "name": "read_source",
@@ -337,6 +387,19 @@ SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "commit": {"type": "string", "description": "Commit hash or ref (default HEAD)."}},
             "required": []}}},
+    {"type": "function", "function": {
+        "name": "create_github_issue",
+        "description": "File a GitHub issue in ONE step — use directly when the owner says 'open an "
+                       "issue', 'file a bug', 'create a GitHub issue about X'. No need for "
+                       "composio_find_tools; this uses the configured PAT. Outward-facing — confirm first.",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "The issue title (required)."},
+            "body": {"type": "string", "description": "The issue body / description (optional)."},
+            "labels": {"type": "array", "items": {"type": "string"},
+                       "description": "Optional labels, e.g. ['bug','p1']."},
+            "repo": {"type": "string", "description":
+                     "Optional 'owner/repo' override (default JARVIS_GITHUB_REPO)."}},
+            "required": ["title"]}}},
 ]
 
 HANDLERS = {
@@ -344,5 +407,5 @@ HANDLERS = {
     "run_tests": run_tests, "lint": lint,
     "git_status": git_status, "git_diff": git_diff, "git_log": git_log,
     "git_new_branch": git_new_branch, "git_commit": git_commit, "git_push": git_push,
-    "git_revert": git_revert,
+    "git_revert": git_revert, "create_github_issue": create_github_issue,
 }

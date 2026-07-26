@@ -44,14 +44,46 @@ import json
 import shlex
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any
+
+from loguru import logger
 
 from jarvis.config import settings
 
 # Minimal scopes: message an agent + read its replies. Deliberately NOT operator.admin.
 JARVIS_SCOPES = ["operator.read", "operator.write"]
 PROTOCOL = 4
+
+# Phase 4.4 — WS-path circuit breaker. Some gateways refuse operator connections over a non-secure
+# context (CONTROL_UI_DEVICE_IDENTITY_REQUIRED: they want HTTPS or localhost). When that's the case the
+# WS handshake fails on EVERY delegation and we pay ~0.1-1.3s of doomed round-trip before the CLI
+# fallback that was always going to answer. Remember the verdict for a while and go straight to the CLI.
+# It expires so the fast path self-heals the moment the gateway is fixed (bind localhost / add HTTPS).
+# ponytail: a timestamp, not a state machine — per-URL tracking if you ever run several gateways.
+_WS_BLOCKED_UNTIL: float = 0.0
+_WS_BLOCK_SECONDS: float = 600.0
+
+
+def _ws_blocked() -> bool:
+    return time.monotonic() < _WS_BLOCKED_UNTIL
+
+
+def _block_ws(reason: str) -> None:
+    """Mark the WS fast path unusable for a cooldown, so delegations stop paying for a doomed attempt."""
+    global _WS_BLOCKED_UNTIL
+    first = not _ws_blocked()
+    _WS_BLOCKED_UNTIL = time.monotonic() + _WS_BLOCK_SECONDS
+    if first:
+        logger.info(f"fleet: WS path unusable ({reason}); using the CLI path for "
+                    f"{int(_WS_BLOCK_SECONDS // 60)}min, then retrying")
+
+
+def _reset_ws_block() -> None:
+    """Clear the breaker (a WS delegation succeeded, or a test wants a clean slate)."""
+    global _WS_BLOCKED_UNTIL
+    _WS_BLOCKED_UNTIL = 0.0
 
 
 def _ws_url() -> str:
@@ -118,8 +150,10 @@ async def delegate_to_fleet(
     if not settings.openclaw_delegation_enabled:
         raise FleetUnavailable("fleet delegation is disabled (JARVIS_OPENCLAW_DELEGATION_ENABLED)")
     # No gateway token = CLI-only setup (the common OpenWatari case). Go straight to the CLI
-    # instead of refusing — the WS path needs a token, the CLI path does not.
-    if not settings.openclaw_token:
+    # instead of refusing — the WS path needs a token, the CLI path does not. Same shortcut when the
+    # breaker says the gateway is refusing WS operator connects (Phase 4.4): don't pay for a doomed
+    # handshake on every delegation when the CLI is what will answer anyway.
+    if not settings.openclaw_token or _ws_blocked():
         result = await _delegate_via_cli(task, timeout_s or settings.openclaw_request_timeout_seconds)
         _note_success(task)
         return result
@@ -160,12 +194,15 @@ async def delegate_to_fleet(
 
     try:
         result = await asyncio.wait_for(_run(), timeout=timeout_s + 15)
+        _reset_ws_block()  # the fast path works — make sure the breaker isn't holding it back
     except FleetUnavailable as e:
+        _block_ws(str(e)[:120])
         try:
             result = await _delegate_via_cli(task, timeout_s)
         except FleetUnavailable as cli_e:
             raise FleetUnavailable(f"{e}; CLI fallback failed: {cli_e}") from e
     except Exception as e:  # noqa: BLE001
+        _block_ws(f"{type(e).__name__}: {e}"[:120])
         try:
             result = await _delegate_via_cli(task, timeout_s)
         except FleetUnavailable as cli_e:
@@ -214,8 +251,11 @@ def routing_hint() -> str:
         learned = [d for d, n in sorted(counts.items(), key=lambda kv: -int(kv[1])) if int(n) >= 2]
         if not learned:
             return ""
-        return ("Routing memory: tasks in " + ", ".join(learned)
-                + " have gone to the fleet before and worked — delegate those without deliberating.")
+        # Terse AND capped on purpose: this line is charged on EVERY turn and the system prompt has a
+        # hard 2000-token budget (bench/test_finetune). The un-capped, chatty version pushed a real
+        # user's prompt to 2006 tok as soon as they'd delegated twice. The prompt already explains that
+        # delegation goes to ispir, so this only needs to name the domains.
+        return "Auto-delegate: " + ", ".join(learned[:2]) + "."
     except Exception:  # noqa: BLE001
         return ""
 
@@ -232,10 +272,14 @@ async def _delegate_via_cli(task: str, timeout_s: int) -> str:
     if sys.platform == "win32":
         if not settings.openclaw_cli_ssh_target:
             raise FleetUnavailable("no OpenClaw CLI SSH target configured")
-        remote = (
+        inner = (
             f"{shlex.quote(cli)} agent --agent {shlex.quote(agent)} "
             f"--message {shlex.quote(task)} --json --timeout {shlex.quote(timeout_arg)}"
         )
+        # A non-interactive SSH shell has a minimal PATH that omits ~/.npm-global/bin, so a bare
+        # `openclaw` returns 127 (command not found). Run it through a LOGIN shell so the remote
+        # user's profile puts the npm-global bin on PATH — the same way the CLI resolves locally.
+        remote = f"bash -lc {shlex.quote(inner)}"
         argv = ["ssh", settings.openclaw_cli_ssh_target, remote]
     else:
         # The CLI often isn't on a systemd service's minimal PATH (npm installs to ~/.npm-global/bin).

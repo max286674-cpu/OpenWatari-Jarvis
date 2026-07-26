@@ -60,7 +60,10 @@ def main() -> None:
     print("\n[5] forget removes the best match")
     gone = store.forget("IS24 realty key")
     check("forget returns the removed text", gone is not None and "IS24" in gone)
-    check("forgotten fact no longer recalls", store.recall("IS24") == [])
+    # Assert the fact is truly GONE via the keyword path. (Semantic recall is on by default now, and
+    # an odd token like "IS24" has weak fuzzy neighbours among the other facts — scores ~0.33, on par
+    # with a real meaning-match — so a semantic query wouldn't be empty. Its removal is what we test.)
+    check("forgotten fact no longer recalls (keyword)", store.recall("IS24", semantic=False) == [])
 
     print("\n[6] journal append + read")
     store.journal_append("Vazghen asked about the rabbit farm; recalled the Lpstrak charter.")

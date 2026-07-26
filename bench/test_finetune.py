@@ -45,13 +45,17 @@ def main() -> None:
     sp = build_system_prompt()
     tok = len(sp) // 4
     check(f"prompt <= 2000 tok (got ~{tok})", tok <= 2000, f"{tok} tok")
-    # Worst case = the base prompt WITHOUT any learned digest, plus a FULL digest's headroom
-    # (memory_digest_max facts ~55 chars each). Measuring the digest-free base keeps this stable as
-    # real learned facts accumulate — otherwise the current digest would be double-counted and the
-    # check would drift over budget in normal use.
-    base_no_digest = sp.split("# Recently learned about")[0]
-    worst = len(base_no_digest) // 4 + (settings.memory_digest_max * 55) // 4
-    check(f"prompt stays <= 2000 tok with a full digest (~{worst})", worst <= 2000, f"{worst} tok")
+    # Worst case = the REAL prompt with the current digest removed (base = everything else, incl. the
+    # catalog + operating rules that follow the digest), plus a FULL, MAX-LENGTH digest's headroom
+    # (memory_digest_max facts, each capped at memory_digest_fact_chars + "- " + newline). This is the
+    # honest bound: it holds even if every learned fact grows to the per-fact cap. The per-fact cap is
+    # what makes this bound real (context._learned_digest truncates each line).
+    from jarvis.brain.context import _learned_digest
+    digest = _learned_digest()
+    base_no_digest_chars = len(sp) - len(digest)
+    per_fact = settings.memory_digest_fact_chars + 3   # "- " prefix + newline
+    worst = (base_no_digest_chars + settings.memory_digest_max * per_fact) // 4
+    check(f"prompt stays <= 2000 tok with a full max-length digest (~{worst})", worst <= 2000, f"{worst} tok")
     # Still carries identity + principal + the proactive mandate.
     check("persona present (Watari)", "Watari" in sp)
     check("principal present (Vazghen)", "Vazghen" in sp)
@@ -66,7 +70,13 @@ def main() -> None:
     print("\n[2] Item 2 — lean per-turn surface, full registry intact")
     core = len(core_tool_schemas()) + 2          # + get_time, delegate_to_fleet
     full = len(tool_names())
-    check(f"per-turn surface <= 48 (got {core})", core <= 48, f"{core}")
+    # Discipline guard: the per-turn surface must stay a lean SUBSET of the full registry (the point
+    # of lazy groups). The absolute number tracks legitimate core growth across phases — the task
+    # co-pilot (plan_task/execute_task, advertised as agent schemas) and media control (media_pause)
+    # added real capability — so the guard is expressed relatively: core is well under 60% of the
+    # full set, with an absolute ceiling to catch runaway growth. (Was 48 when core was ~46.)
+    check(f"per-turn surface <= 55 (got {core})", core <= 55, f"{core}")
+    check(f"per-turn surface stays a subset (<60% of full): {core}/{full}", core < 0.6 * full, f"{core}/{full}")
     check(f"full registry intact (>= 63, got {full})", full >= 63, f"{full}")
     # No capability removed: every lazy tool is still resolvable to a handler.
     handlers = tool_handlers()

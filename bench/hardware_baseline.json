@@ -1,0 +1,16 @@
+{
+  "_comment": "Per-device voice-latency acceptance baselines (MASTER 4.8). A live battery (voice_live_bench.py --device <kind>) compares its P50/P95 TTFW + VAQI against the ceiling/floor here and flags a REGRESSION if it drifts past them. ttfw_*_ms are CEILINGS (higher = worse), vaqi_floor is a FLOOR (lower = worse).",
+  "_status": "The numbers below are ESTIMATES until recorded. To record REAL numbers for a device: run `voice_live_bench.py --device <kind> --record` on that device with a working LLM — it measures the BRAIN-PATH battery (respond_stream) and rewrites that device's envelope (ceiling = measured x1.4/x1.3, floor = measured VAQI - 8), adding a `measured` block. NOTE: this captures brain-path latency, not true acoustic mic->STT->brain->TTS->speaker; full acoustic acceptance is captured by the live edge's TTFWMeter during real use (edge/latency_meter.py). laptop = recordable here; airpods/mentra/iphone/android need the physical device.",
+  "devices": {
+    "laptop": {"ttfw_p50_ms": 1800, "ttfw_p95_ms": 3500, "vaqi_floor": 80,
+               "note": "open speakers, half-duplex; the reference device"},
+    "airpods": {"ttfw_p50_ms": 1800, "ttfw_p95_ms": 3500, "vaqi_floor": 82,
+                "note": "private endpoint, barge-in on; slightly higher VAQI floor (no self-interrupt risk)"},
+    "mentra": {"ttfw_p50_ms": 2200, "ttfw_p95_ms": 4000, "vaqi_floor": 78,
+               "note": "glasses over network transport; a little more latency headroom"},
+    "iphone": {"ttfw_p50_ms": 2200, "ttfw_p95_ms": 4200, "vaqi_floor": 78,
+               "note": "remote web client; network + phone-speaker"},
+    "android": {"ttfw_p50_ms": 2400, "ttfw_p95_ms": 4500, "vaqi_floor": 76,
+                "note": "Termux edge-lite; widest envelope"}
+  }
+}

@@ -12,6 +12,11 @@ Writes/comments are confirm-gated. Everything degrades to a spoken note until th
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+from loguru import logger
+
 from jarvis.brain.tools.base import clip, not_configured, tool_error
 from jarvis.config import settings
 
@@ -298,6 +303,43 @@ async def notion_tasks(args: dict) -> str:
         return tool_error("Notion tasks", e)
 
 
+async def notion_tasks_structured() -> list[dict]:
+    """Structured task fetch for the world-model (Phase 2.2): ``[{id, title, due, project, done}]``.
+
+    Same DB + prop detection as ``notion_tasks``, but returns data (not a spoken string) so the
+    world-model can turn open tasks into goals and completed ones into done goals. Fail-quiet → [].
+    """
+    from datetime import datetime
+
+    db_id = (settings.notion_tasks_db_id or "").strip()
+    if not _configured() or not db_id:
+        return []
+    try:
+        p = _detect_props(await _get(f"/databases/{db_id}"))
+        data = await _post(f"/databases/{db_id}/query", {"page_size": 100})
+        out: list[dict] = []
+        for page in data.get("results") or []:
+            props = page.get("properties") or {}
+            title = (_prop_value(props.get(p["title"], {})) if p["title"] else _title_of(page)) or ""
+            title = title.strip()
+            if not title:
+                continue
+            done = bool(p["status"] and _is_done(_prop_value(props.get(p["status"], {}))))
+            dstr = _prop_value(props.get(p["date"], {})) if p["date"] else None
+            due = None
+            if dstr:
+                try:
+                    due = datetime.fromisoformat(dstr.replace("Z", "+00:00")).isoformat()
+                except ValueError:
+                    due = None
+            out.append({"id": page.get("id") or title, "title": title,
+                        "due": due, "project": "", "done": done})
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"notion_tasks_structured: {type(e).__name__}")
+        return []
+
+
 async def task_signals():
     """Proactive source: one daily nudge if tasks are overdue or due today (the deadline-tracking
     a JARVIS does). Repeat-suppressed by date so it nudges once, not every tick. Fail-quiet."""
@@ -347,6 +389,47 @@ async def task_signals():
     # Key by date so it's one nudge per day; urgency higher when something is actually overdue.
     return [Signal(key=f"tasks-{today}", kind="reminder",
                    urgency=0.7 if overdue else 0.62, message=msg)]
+
+
+async def overdue_and_today() -> tuple[list[str], list[str]]:
+    """Structured (overdue_titles, due_today_titles) from the Notion tasks DB, for the daily digest.
+
+    Overdue titles carry an '(Nd overdue)' suffix. Completed tasks are skipped. Returns ([], [])
+    when Notion or the tasks DB isn't configured, or on any error — always safe to call."""
+    if not _configured():
+        return [], []
+    db_id = (settings.notion_tasks_db_id or "").strip()
+    if not db_id:
+        return [], []
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo(settings.user_tz)).date()
+    try:
+        p = _detect_props(await _get(f"/databases/{db_id}"))
+        if not p["date"]:
+            return [], []
+        data = await _post(f"/databases/{db_id}/query", {"page_size": 100})
+    except Exception:  # noqa: BLE001 — never throw into the digest/tick
+        return [], []
+    overdue: list[str] = []
+    due_today: list[str] = []
+    for page in data.get("results") or []:
+        props = page.get("properties") or {}
+        if p["status"] and _is_done(_prop_value(props.get(p["status"], {}))):
+            continue
+        title = _prop_value(props.get(p["title"], {})) or _title_of(page)
+        dstr = _prop_value(props.get(p["date"], {}))
+        if not dstr:
+            continue
+        try:
+            d = datetime.fromisoformat(dstr.replace("Z", "+00:00")).date()
+        except ValueError:
+            continue
+        if d < today:
+            overdue.append(f"{title} ({(today - d).days}d overdue)")
+        elif d == today:
+            due_today.append(title)
+    return list(dict.fromkeys(overdue)), list(dict.fromkeys(due_today))
 
 
 async def fetch_backlog_tasks(limit: int = 5) -> list[dict]:
@@ -490,6 +573,62 @@ def _tasks_db(args: dict) -> str | None:
     return (args.get("database_id") or settings.notion_tasks_db_id or "").strip() or None
 
 
+# --- spoken deadline reminders for Notion tasks -------------------------------------------
+# A Notion task with a deadline (or an explicit `reminder` time) also gets a spoken reminder that
+# fires through the edge process at that time (reusing the local-queue scheduler path). We remember
+# page_id -> reminder job id in a small JSON file so completing/deleting/rescheduling a task cancels
+# its reminder instead of letting a stale "task due" fire.
+def _reminders_path() -> Path:
+    base = Path(settings.tasks_db_path).parent if settings.tasks_db_path else Path(__file__).resolve().parents[3]
+    return base / "notion_task_reminders.json"
+
+
+def _load_task_reminders() -> dict:
+    try:
+        return json.loads(_reminders_path().read_text("utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_task_reminders(m: dict) -> None:
+    try:
+        _reminders_path().write_text(json.dumps(m), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"notion reminder-map save failed: {e}")
+
+
+async def _set_task_reminder(page_id: str, title: str, when_str: str) -> bool:
+    """Schedule a spoken edge reminder for a task deadline/reminder time. Fail-quiet; True if set."""
+    from jarvis.brain.tools.tasks import _parse_deadline, _schedule_deadline_reminder
+
+    epoch, _err = _parse_deadline(when_str)
+    if epoch is None:
+        return False
+    job_id = await _schedule_deadline_reminder(title, epoch)
+    if job_id and page_id:
+        m = _load_task_reminders()
+        m[page_id] = job_id
+        _save_task_reminders(m)
+        return True
+    return False
+
+
+def _cancel_task_reminder(page_id: str) -> None:
+    if not page_id:
+        return
+    m = _load_task_reminders()
+    job_id = m.pop(page_id, None)
+    if not job_id:
+        return
+    try:
+        from jarvis.brain.scheduler import SCHEDULER
+
+        SCHEDULER.cancel(job_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"notion reminder cancel failed: {e}")
+    _save_task_reminders(m)
+
+
 async def notion_create_task(args: dict) -> str:
     """Create a new row in the tasks dashboard (title + optional deadline/status/priority/category)."""
     if not _configured():
@@ -503,8 +642,13 @@ async def notion_create_task(args: dict) -> str:
     try:
         m = _schema_map(await _get(f"/databases/{db_id}"))
         props = _build_task_props(m, args, for_create=True)
-        await _post("/pages", {"parent": {"database_id": db_id}, "properties": props})
+        resp = await _post("/pages", {"parent": {"database_id": db_id}, "properties": props})
+        # Schedule a spoken reminder (announced through the edge at fire time) from an explicit
+        # `reminder` datetime, else the deadline.
+        when = (args.get("reminder") or args.get("deadline") or "").strip()
+        reminded = await _set_task_reminder(resp.get("id", ""), title, when) if when else False
         extra = f" (due {args['deadline']})" if args.get("deadline") else ""
+        extra += ", and I'll remind you out loud when it's due" if reminded else ""
         return f"Added '{title}' to your tasks, sir{extra}."
     except Exception as e:  # noqa: BLE001
         return tool_error("Notion create task", e)
@@ -523,30 +667,69 @@ async def notion_update_task(args: dict) -> str:
             return err
         m = _schema_map(await _get(f"/databases/{db_id}"))
         props = _build_task_props(m, args, for_create=False)
-        if not props:
+        if not props and "reminder" not in args:
             return "What should I change, sir — status, deadline, or priority?"
-        await _patch(f"/pages/{page_id}", {"properties": props})
+        if props:
+            await _patch(f"/pages/{page_id}", {"properties": props})
+        # Deadline (or explicit reminder) changed -> reschedule the spoken reminder for this task.
+        if "deadline" in args or "reminder" in args:
+            _cancel_task_reminder(page_id)
+            when = (args.get("reminder") or args.get("deadline") or "").strip()
+            if when:
+                await _set_task_reminder(page_id, title or "your task", when)
         return f"Updated '{title or 'that task'}', sir."
     except Exception as e:  # noqa: BLE001
         return tool_error("Notion update task", e)
 
 
+_BULK_WORDS = {"all", "everything", "them all", "all tasks", "all of them", "all my tasks",
+               "all of my tasks", "the rest", "the lot", "these", "all these", "all of these"}
+
+
+def _is_bulk(args: dict) -> bool:
+    """Did the owner mean 'mark ALL tasks done' rather than a single one? An explicit ``all`` flag, or
+    a whole-list phrase in the title/query. Kept strict so a real task named 'all-hands' isn't swept."""
+    if str(args.get("all", "")).strip().lower() in ("true", "1", "yes"):
+        return True
+    q = (args.get("query") or args.get("title") or "").strip().lower().rstrip(".!?")
+    return q in _BULK_WORDS
+
+
 async def notion_complete_task(args: dict) -> str:
-    """Mark a task done (find it by a word in its name, or page_id)."""
+    """Mark a task done — one (by a word in its name / page_id) or ALL open tasks (``all=true``)."""
     if not _configured():
         return not_configured("Notion", _NEEDS)
     db_id = _tasks_db(args)
     if not db_id:
         return "No tasks database is configured yet, sir."
     try:
-        page_id, title, err = await _resolve_task(db_id, args)
-        if err:
-            return err
         m = _schema_map(await _get(f"/databases/{db_id}"))
         done = m["status_done"] or (m["status_options"][-1] if m["status_options"] else None)
         if not (m["status"] and done):
             return "I couldn't find a 'Done' status on that database, sir."
+
+        if _is_bulk(args):
+            data = await _post(f"/databases/{db_id}/query", {"page_size": 100})
+            open_pages = [p for p in (data.get("results") or [])
+                          if not _is_done(_prop_value((p.get("properties") or {}).get(m["status"], {})))]
+            if not open_pages:
+                return "Your task list is already clear, sir — nothing open to mark done."
+            n = 0
+            for p in open_pages:
+                try:
+                    await _patch(f"/pages/{p['id']}",
+                                 {"properties": {m["status"]: {"status": {"name": done}}}})
+                    _cancel_task_reminder(p["id"])
+                    n += 1
+                except Exception:  # noqa: BLE001 — one failure must not abort the sweep
+                    continue
+            return f"Marked all {n} open task{'s' if n != 1 else ''} as {done}, sir. Clean slate."
+
+        page_id, title, err = await _resolve_task(db_id, args)
+        if err:
+            return err
         await _patch(f"/pages/{page_id}", {"properties": {m["status"]: {"status": {"name": done}}}})
+        _cancel_task_reminder(page_id)  # done -> no need to nag about the deadline
         return f"Marked '{title or 'that task'}' as {done}, sir."
     except Exception as e:  # noqa: BLE001
         return tool_error("Notion complete task", e)
@@ -564,6 +747,7 @@ async def notion_delete_task(args: dict) -> str:
         if err:
             return err
         await _patch(f"/pages/{page_id}", {"archived": True})
+        _cancel_task_reminder(page_id)  # gone -> cancel any pending deadline reminder
         return f"Deleted '{title or 'that task'}' from your tasks, sir."
     except Exception as e:  # noqa: BLE001
         return tool_error("Notion delete task", e)
@@ -578,6 +762,9 @@ SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string", "description": "The task text (the title)."},
             "deadline": {"type": "string", "description": "Optional due date, YYYY-MM-DD."},
+            "reminder": {"type": "string", "description": "Optional time to speak a reminder out loud "
+                         "(announced on the live edge + phone), ISO YYYY-MM-DDThh:mm. Defaults to the "
+                         "deadline (at 09:00) if omitted. Compute it from 'now'/'in 5 minutes' yourself."},
             "status": {"type": "string", "description": "Optional: To Do / In progress / Done."},
             "priority": {"type": "string", "description": "Optional: High / Medium / Low."},
             "category": {"type": "string", "description": "Optional, comma-separated: Work, Home, Business, Personal, Family, Personal development."},
@@ -593,15 +780,19 @@ SCHEMAS = [
             "page_id": {"type": "string", "description": "Optional exact page id instead of query."},
             "status": {"type": "string", "description": "To Do / In progress / Done."},
             "deadline": {"type": "string", "description": "New due date YYYY-MM-DD (blank clears it)."},
+            "reminder": {"type": "string", "description": "Reschedule the spoken reminder to this ISO "
+                         "datetime YYYY-MM-DDThh:mm (blank clears it)."},
             "priority": {"type": "string", "description": "High / Medium / Low."}},
             "required": []}}},
     {"type": "function", "function": {
         "name": "notion_complete_task",
-        "description": "Mark a task as Done. Identify it by a word from its name (query) or page_id. "
-                       "Use for 'I finished X', 'mark X done', 'check off X'.",
+        "description": "Mark task(s) as Done. For ONE task, identify it by a word from its name (query) "
+                       "or page_id ('I finished X', 'mark X done', 'check off X'). To complete EVERY "
+                       "open task at once ('mark all my tasks done', 'clear my list'), set all=true.",
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "A word from the task name."},
-            "page_id": {"type": "string", "description": "Optional exact page id."}},
+            "query": {"type": "string", "description": "A word from the task name (single task)."},
+            "page_id": {"type": "string", "description": "Optional exact page id (single task)."},
+            "all": {"type": "boolean", "description": "True = mark ALL open tasks done (bulk)."}},
             "required": []}}},
     {"type": "function", "function": {
         "name": "notion_delete_task",

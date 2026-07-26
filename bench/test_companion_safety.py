@@ -156,13 +156,18 @@ def test_ack_for() -> None:
 
 
 def test_immediate_ack() -> None:
+    # G1: the immediate ack now ROTATES a phrase pool (no fixed line), and stays silent when a
+    # specific per-tool ack is imminent (a zero-arg read). So assert POOL membership, not one phrase.
+    from jarvis.brain.agent import _WORK_ACKS, _CHAT_ACKS
+
     agent = JarvisAgent()
     notes: list[str] = []
-    agent._immediate_ack("set a reminder for 5pm", notes.append)
-    check("immediate ack fires on a command", any("Right away" in n for n in notes))
+    agent._immediate_ack("set a reminder for 5pm", notes.append)   # arg-bearing command -> WORK pool
+    check("immediate ack fires on a command", len(notes) == 1 and notes[0] in _WORK_ACKS)
     chatter: list[str] = []
-    agent._immediate_ack("haha that's pretty funny", chatter.append)
-    check("plain accepted speech gets a brief acknowledgement", any("Yes, sir" in n for n in chatter))
+    agent._immediate_ack("haha that's pretty funny", chatter.append)   # plain chatter -> CHAT pool
+    check("plain accepted speech gets a brief acknowledgement",
+          len(chatter) == 1 and chatter[0] in _CHAT_ACKS)
 
 
 async def test_progress_watchdog() -> None:

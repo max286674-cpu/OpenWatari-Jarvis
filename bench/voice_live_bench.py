@@ -103,7 +103,30 @@ def _pct(values: list[float], q: float) -> float:
     return statistics.quantiles(values, n=100)[min(98, int(q) - 1)]
 
 
-async def main() -> None:
+def _record_baseline(device: str, p50: float, p95: float, vaqi: float) -> None:
+    """Write MEASURED numbers into hardware_baseline.json for `device`, with headroom.
+
+    Turns the estimated envelope into a recorded one: ceilings = measured × 1.4 (P50) / × 1.3 (P95)
+    so normal run-to-run variance doesn't flap the acceptance check, floor = measured VAQI − 8. Only
+    the named device is updated; others keep their prior values. Records the raw measurement too.
+    """
+    bl_path = Path(__file__).resolve().parent / "hardware_baseline.json"
+    data = json.loads(bl_path.read_text(encoding="utf-8"))
+    prev = data["devices"].get(device, {})
+    data["devices"][device] = {
+        "ttfw_p50_ms": int(p50 * 1.4),
+        "ttfw_p95_ms": int(p95 * 1.3),
+        "vaqi_floor": max(0, int(vaqi - 8)),
+        "note": prev.get("note", ""),
+        "measured": {"ttfw_p50_ms": round(p50, 1), "ttfw_p95_ms": round(p95, 1),
+                     "vaqi": round(vaqi, 1), "recorded_at": time.strftime("%Y-%m-%d %H:%M")},
+    }
+    bl_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    print(f"\n  RECORDED baseline for '{device}': P50<={int(p50*1.4)}ms P95<={int(p95*1.3)}ms "
+          f"VAQI>={max(0, int(vaqi-8))} (from measured {p50:.0f}/{p95:.0f}/{vaqi:.0f})")
+
+
+async def main(device: str = "laptop", record: bool = False) -> None:
     from jarvis.brain.agent import JarvisAgent
 
     print("Live TTFW / VAQI battery — needs the brain LLM reachable (freellmapi tunnel / Groq key).\n")
@@ -156,6 +179,24 @@ async def main() -> None:
     vc = GREEN if vaqi >= 85 else (YELLOW if vaqi >= 70 else RED)
     print(f"  VAQI                  {vc}{vaqi:.1f}/100{RESET}")
 
+    # Acceptance check against the committed per-device baseline (MASTER 4.8). The battery here uses
+    # the chat first-word P50 as the perceived-TTFW proxy and full P95 as the tail. A drift past the
+    # device envelope prints REGRESSION (informational — this bench never fails the build).
+    regs: list[str] = []
+    try:
+        from test_hardware_baseline import regressions
+        measured = {"ttfw_p50_ms": chat_ttfw_p50 or p50_full, "ttfw_p95_ms": p95_full, "vaqi": vaqi}
+        regs = regressions(device, measured)
+        print(f"\n  --- acceptance vs baseline [{device}] ---")
+        if regs:
+            print(f"  {RED}REGRESSION{RESET} on {device}:")
+            for r in regs:
+                print(f"    - {r}")
+        else:
+            print(f"  {GREEN}within the accepted envelope for {device}{RESET}")
+    except Exception as e:  # noqa: BLE001 — baseline check is best-effort
+        print(f"  (baseline check skipped: {type(e).__name__})")
+
     out_dir = Path(__file__).resolve().parent / "_artifacts"
     out_dir.mkdir(exist_ok=True)
     out_path = out_dir / f"voice_live_{time.strftime('%Y%m%d-%H%M%S')}.json"
@@ -167,10 +208,23 @@ async def main() -> None:
         "chat_first_word_p50_ms": chat_ttfw_p50 if chat_ttfws else None,
         "p50_full_ms": p50_full, "p95_full_ms": p95_full,
         "missed_turns": missed, "total": len(rows), "vaqi": vaqi,
+        "device": device, "baseline_regressions": regs,
         "rows": rows,
     }, indent=2), encoding="utf-8")
     print(f"\n  wrote {out_path}")
 
+    # --record: persist THIS run's measured numbers as the device's accepted baseline.
+    if record:
+        _record_baseline(device, chat_ttfw_p50 or p50_full, p95_full, vaqi)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Live TTFW/VAQI battery with per-device acceptance check")
+    ap.add_argument("--device", default="laptop",
+                    help="device kind for the baseline check: laptop | airpods | mentra | iphone | android")
+    ap.add_argument("--record", action="store_true",
+                    help="write THIS run's measured numbers into hardware_baseline.json for --device")
+    args = ap.parse_args()
+    asyncio.run(main(device=args.device, record=args.record))

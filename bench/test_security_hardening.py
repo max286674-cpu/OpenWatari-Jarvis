@@ -73,7 +73,9 @@ async def main() -> None:
         try:
             # A genuine secret from settings, embedded where a leak would happen: the result text.
             secret = settings.protocol_goodnight_password   # e.g. a real protocol password
-            check("there is a secret value to test with", isinstance(secret, str) and len(secret) >= 6,
+            # Protocol passwords may be short numeric codes (e.g. 4-digit pins); a non-empty string
+            # is enough to test redaction — length is no longer a reliable proxy.
+            check("there is a secret value to test with", isinstance(secret, str) and bool(secret),
                   repr(secret))
             audit.record(
                 "run_powershell",

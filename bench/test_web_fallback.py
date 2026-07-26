@@ -95,10 +95,15 @@ def main() -> None:
           isinstance(out3, str) and ("trouble" in out3.lower() or "couldn't" in out3.lower()
                                      or "error" in out3.lower() or "sir" in out3.lower()), out3)
 
-    print("\n[5] scrape_url is read-only -> never confirm-gated (Phase 3.5)")
+    print("\n[5] read-only web tools are never confirm-gated; interactive browser IS (Phase 3.5)")
     from jarvis.brain.proactive import confirm_required
     check("scrape_url is not confirm-gated", confirm_required("scrape_url", {"url": "x"}) is False)
     check("web_search is not confirm-gated", confirm_required("web_search", {"query": "x"}) is False)
+    check("browse_web (read-only fetch) is not confirm-gated",
+          confirm_required("browse_web", {"url": "x"}) is False)
+    # The interactive Playwright browser CAN log in / submit forms / spend, so it MUST stay gated —
+    # the line that separates 'read the web' (free) from 'act on the web' (confirm).
+    check("interactive browser IS confirm-gated", confirm_required("browser", {"url": "x"}) is True)
 
     settings.tavily_api_key = settings.brave_api_key = settings.firecrawl_api_key = None
     print(f"\n=== {passed}/{passed + failed} checks passed ===")

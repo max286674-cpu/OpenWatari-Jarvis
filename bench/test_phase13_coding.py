@@ -83,9 +83,25 @@ def main() -> None:
     check("read_source NOT gated", not confirm_required("read_source"))
     check("git_status NOT gated", not confirm_required("git_status"))
 
+    print("\n[6b] first-class create_github_issue: registered, gated, degrades without a PAT")
+    check("create_github_issue registered", "create_github_issue" in tool_names())
+    check("create_github_issue has a handler", "create_github_issue" in coding.HANDLERS)
+    check("create_github_issue is confirm-gated (outward-facing)",
+          confirm_required("create_github_issue"))
+    # With no PAT/repo it must degrade to a spoken 'not configured' note, never raise.
+    from jarvis.config import settings as _s
+    _tok, _repo = _s.github_token, _s.github_repo
+    _s.github_token = None
+    _s.github_repo = None
+    try:
+        msg = asyncio.run(coding.create_github_issue({"title": "x"}))
+        check("degrades gracefully without a token", "configured" in msg.lower(), msg[:80])
+    finally:
+        _s.github_token, _s.github_repo = _tok, _repo
+
     print("\n[7] skills library loads the coding playbooks")
     listing = asyncio.run(skills.list_skills({}))
-    for s in ("self-improvement", "jarvis-architecture", "python", "adding-a-tool"):
+    for s in ("self-improvement", "jarvis-architecture", "python", "adding-a-tool", "task-cleanup"):
         check(f"skill '{s}' listed", s in listing, listing[:80])
     doc = asyncio.run(skills.read_skill({"name": "self-improvement"}))
     check("read_skill returns the playbook", "reversible" in doc.lower(), doc[:80])

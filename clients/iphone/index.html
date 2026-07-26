@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Watari</title>
+<!-- The brain injects <script>window.JARVIS_TOKEN="…"</script> here at serve time (server.py),
+     so this page needs no manual token paste when opened over the tailnet. -->
+<style>
+  :root { --bg:#0b0d12; --fg:#e7ecf3; --dim:#8b95a7; --accent:#4c8dff; --accent2:#8b5cff;
+          --ok:#37d67a; --err:#ff5c6c; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  body { display:flex; flex-direction:column; align-items:center;
+    padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: .3px; margin: 8px 0 2px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+  #mic { position: relative; width: 168px; height: 168px; border-radius: 50%; border: none;
+    margin: 12px 0 20px; color: #fff; font-size: 17px; font-weight: 600; cursor: pointer;
+    background: radial-gradient(circle at 50% 35%, var(--accent), var(--accent2));
+    box-shadow: 0 12px 40px rgba(76,141,255,.35); transition: transform .12s ease, box-shadow .2s; }
+  #mic:active { transform: scale(.97); }
+  #mic.rec { background: radial-gradient(circle at 50% 35%, #ff6b7a, #ff2d55);
+    box-shadow: 0 0 0 0 rgba(255,45,85,.6); animation: pulse 1.4s infinite; }
+  #mic.busy { opacity:.7; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(255,45,85,.5);} 70%{box-shadow:0 0 0 26px rgba(255,45,85,0);} 100%{box-shadow:0 0 0 0 rgba(255,45,85,0);} }
+  #status { color: var(--dim); font-size: 14px; min-height: 20px; margin-bottom: 18px; }
+  .card { width: 100%; max-width: 520px; background:#11151d; border:1px solid #1e2530;
+    border-radius: 14px; padding: 14px 16px; margin: 8px 0; }
+  .card.hidden { display:none; }
+  .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; margin-bottom: 4px; }
+  #you { color: var(--fg); }
+  #reply { color: var(--fg); white-space: pre-wrap; }
+  .err { color: var(--err); }
+  audio { width: 100%; margin-top: 8px; }
+  .foot { margin-top: auto; color: #5a6474; font-size: 11px; text-align:center; padding-top: 20px; }
+</style>
+</head>
+<body>
+  <h1>Watari</h1>
+  <div class="sub">tap to talk · over your private tailnet</div>
+  <button id="mic" aria-label="Talk to Watari">Tap&nbsp;to&nbsp;talk</button>
+  <div id="status">Ready.</div>
+
+  <div id="youCard" class="card hidden">
+    <div class="label">You</div>
+    <div id="you"></div>
+  </div>
+  <div id="replyCard" class="card hidden">
+    <div class="label">Watari</div>
+    <div id="reply"></div>
+    <audio id="player" controls playsinline></audio>
+  </div>
+
+  <div class="foot">Mic needs a secure context — open this page via <code>https://</code> (tailscale serve).</div>
+
+<script>
+(function () {
+  const mic = document.getElementById('mic');
+  const statusEl = document.getElementById('status');
+  const youCard = document.getElementById('youCard');
+  const replyCard = document.getElementById('replyCard');
+  const youEl = document.getElementById('you');
+  const replyEl = document.getElementById('reply');
+  const player = document.getElementById('player');
+
+  const TOKEN = window.JARVIS_TOKEN || '';
+  let media = null, recorder = null, chunks = [], recording = false, busy = false;
+
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg;
+    statusEl.className = isErr ? 'err' : '';
+  }
+
+  // getUserMedia only exists in a secure context (https or localhost). Fail loudly, not silently.
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    mic.disabled = true;
+    setStatus('Microphone unavailable — open this page over https:// (tailscale serve).', true);
+  }
+
+  // Pick a MediaRecorder mime iOS Safari actually supports (mp4/aac); fall back to whatever it offers.
+  function pickMime() {
+    const prefs = ['audio/mp4', 'audio/aac', 'audio/webm;codecs=opus', 'audio/webm'];
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported) {
+      for (const m of prefs) if (MediaRecorder.isTypeSupported(m)) return m;
+    }
+    return '';
+  }
+
+  async function startRec() {
+    if (busy) return;
+    try {
+      media = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      setStatus('Microphone permission denied.', true);
+      return;
+    }
+    const mime = pickMime();
+    try {
+      recorder = mime ? new MediaRecorder(media, { mimeType: mime }) : new MediaRecorder(media);
+    } catch (e) {
+      recorder = new MediaRecorder(media);
+    }
+    chunks = [];
+    recorder.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    recorder.onstop = onStop;
+    recorder.start();
+    recording = true;
+    mic.classList.add('rec');
+    mic.textContent = 'Listening…';
+    setStatus('Listening — tap again to send.');
+  }
+
+  function stopRec() {
+    if (!recording) return;
+    recording = false;
+    mic.classList.remove('rec');
+    try { recorder.stop(); } catch (e) {}
+    if (media) media.getTracks().forEach(t => t.stop());
+  }
+
+  async function onStop() {
+    const type = (recorder && recorder.mimeType) || 'audio/mp4';
+    const blob = new Blob(chunks, { type });
+    if (!blob.size) { setStatus('Nothing recorded — try again.'); resetMic(); return; }
+    await send(blob, type);
+  }
+
+  async function send(blob, type) {
+    busy = true;
+    mic.classList.add('busy');
+    mic.textContent = 'Thinking…';
+    setStatus('Sending to the brain…');
+    try {
+      const headers = { 'Content-Type': type };
+      if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+      const res = await fetch('/talk', { method: 'POST', headers, body: blob });
+      if (res.status === 401) { setStatus('Unauthorized — the brain rejected the token.', true); return resetMic(); }
+      if (!res.ok) { setStatus('Brain error (' + res.status + ').', true); return resetMic(); }
+
+      const transcript = res.headers.get('X-Watari-Transcript') || '';
+      const replyHdr = res.headers.get('X-Watari-Reply') || '';
+      const ctype = (res.headers.get('Content-Type') || '').toLowerCase();
+
+      if (ctype.indexOf('audio') === 0) {
+        const abuf = await res.blob();
+        if (transcript) { youEl.textContent = transcript; youCard.classList.remove('hidden'); }
+        replyEl.textContent = replyHdr || '(spoken reply)';
+        replyCard.classList.remove('hidden');
+        player.src = URL.createObjectURL(abuf);
+        player.play().catch(() => {});   // autoplay may be blocked; the controls still work
+        setStatus('Done.');
+      } else {
+        // JSON fallback: synth failed on the brain, or ?format=text — show + speak via the browser.
+        const data = await res.json();
+        if (data.transcript) { youEl.textContent = data.transcript; youCard.classList.remove('hidden'); }
+        replyEl.textContent = data.reply || '(no reply)';
+        replyCard.classList.remove('hidden');
+        speakLocal(data.reply || '');
+        setStatus('Done (text).');
+      }
+    } catch (e) {
+      setStatus('Network error — is the tailnet up?', true);
+    } finally {
+      resetMic();
+    }
+  }
+
+  function speakLocal(text) {
+    if (!text || !window.speechSynthesis) return;
+    try { window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+  }
+
+  function resetMic() {
+    busy = false;
+    mic.classList.remove('busy', 'rec');
+    mic.textContent = 'Tap to talk';
+  }
+
+  mic.addEventListener('click', () => {
+    if (busy) return;
+    if (recording) stopRec(); else startRec();
+  });
+})();
+</script>
+</body>
+</html>

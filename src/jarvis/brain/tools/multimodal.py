@@ -5,8 +5,11 @@ screenshot of the laptop display via the pc_agent executor and (if pytesseract i
 runs OCR on it. Falls back to returning the screenshot path so a vision-capable LLM can read
 it on the next turn.
 
-When Mentra OS glasses integration lands (separate module), this same surface should accept a
-frame from the glasses camera instead of the laptop screen — the schema stays the same.
+The realised "eyes" (Phase 3): this module SEES the SCREEN (screenshot -> ``describe_screen`` VLM /
+``read_screen_text`` OCR); ``tools/camera.py`` sees the ROOM (laptop/phone webcam -> ``look_around``
+VLM + ``visual_presence`` local face detection). MentraOS glasses were NOT pursued (no SDK/account —
+the half-finished client was deleted); the phone camera is the mobile eye and reuses the same
+``LLMClient.see`` surface, so nothing here has to change if a wearable ever lands.
 """
 
 from __future__ import annotations
@@ -18,32 +21,38 @@ from loguru import logger
 from jarvis.brain.tools.base import tool_error
 
 
-_DEFAULT_SHOT = Path.home() / ".jarvis" / "screenshots" / "latest.png"
+_DEFAULT_SHOT = Path.home() / ".jarvis" / "screenshots" / "latest.jpg"
 
 
 async def screenshot_screen(args: dict) -> str:
-    """Capture a screenshot of the laptop screen via the pc_agent executor.
+    """Capture the screen and store it on the BRAIN host so it can actually be read/OCR'd.
 
-    The LLM can then call ``read_screen_text`` (OCR) or read the image directly. Returns the
-    saved PNG path so the next turn can attach it to a vision-capable model."""
-    path = (args.get("path") or str(_DEFAULT_SHOT)).strip() or str(_DEFAULT_SHOT)
+    Captures via the ``screenshot`` PC op, which runs on the machine with the display (the laptop)
+    and returns the image BYTES — so this works even when the brain is the 24/7 VPS and the screen
+    is on the laptop (the old code saved on the laptop but read on the brain, which never worked
+    across that split). ``read_screen_text`` then OCRs the brain-side file."""
+    import base64
+    import json
+
+    path = Path((args.get("path") or str(_DEFAULT_SHOT)).strip() or str(_DEFAULT_SHOT))
     try:
-        from jarvis.brain.tools.system import run_powershell
-        # PowerShell: System.Drawing.Bitmap of the primary screen, save as PNG.
-        ps = (
-            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
-            "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
-            "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
-            "$g=[System.Drawing.Graphics]::FromImage($bmp);"
-            "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
-            f"$bmp.Save('{path}',[System.Drawing.Imaging.ImageFormat]::Png);"
-            "Write-Output $bmp.Width;Write-Output $bmp.Height"
-        )
-        res = await run_powershell({"command": ps})
-        # run_powershell forwards to laptop; if it ran there, we'll get a string with width/height
-        if "didn't run" in (res or "").lower() or "no laptop" in (res or "").lower():
-            return f"Laptop executor isn't connected, sir — I can't capture the screen right now."
-        return f"Screenshot captured at {path}, sir — {res.strip().splitlines()[-2:]}"
+        from jarvis.brain.tools.system import screenshot as _cap
+
+        raw = await _cap({})
+        try:
+            data = json.loads(raw or "{}")
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        b64 = data.get("b64")
+        if not b64:
+            return "I couldn't capture the screen, sir — the laptop may be offline or its executor isn't running."
+        img = base64.b64decode(b64)
+        if img[:2] != b"\xff\xd8":  # not a JPEG — capture failed
+            return "The screen capture came back malformed, sir; I couldn't save it."
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(img)
+        dims = data.get("dims") or ""
+        return f"Screenshot captured ({dims}) and saved, sir — I can read it now."
     except Exception as e:  # noqa: BLE001
         return tool_error("screenshot", e)
 
@@ -76,7 +85,68 @@ async def read_screen_text(args: dict) -> str:
         return tool_error("OCR", e)
 
 
+async def describe_screen(args: dict) -> str:
+    """Phase 3.1 — SEE the screen, not just OCR it. Capture the laptop screen and have a vision model
+    describe/answer about it: "what's on my screen", "what's this error", "read me that dialog". Falls
+    back to OCR text if no vision model is reachable, so it degrades instead of going blind.
+    """
+    import base64
+    import json
+
+    prompt = (args.get("prompt") or "").strip() or (
+        "Describe what's on this screen concisely for the owner. If there's an error, a dialog box, or "
+        "important text, read it out. Keep it to one or two sentences unless there's a lot to report."
+    )
+    try:
+        from jarvis.brain.tools.system import screenshot as _cap
+
+        raw = await _cap({})
+        try:
+            data = json.loads(raw or "{}")
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        b64 = data.get("b64")
+        if not b64:
+            return "I couldn't capture the screen, sir — the laptop may be offline or its executor isn't running."
+        from jarvis.brain.llm import LLMClient
+
+        try:
+            desc = await LLMClient().see(b64, prompt)
+            return f"On your screen, sir: {desc}"
+        except Exception as e:  # noqa: BLE001 — vision down -> degrade to OCR rather than fail blind
+            logger.warning(f"describe_screen: vision unavailable ({type(e).__name__}); falling back to OCR")
+            try:
+                img = base64.b64decode(b64)
+                _DEFAULT_SHOT.parent.mkdir(parents=True, exist_ok=True)
+                _DEFAULT_SHOT.write_bytes(img)
+                ocr = await read_screen_text({"path": str(_DEFAULT_SHOT)})
+                return f"(I can't see it properly right now, sir, so I read the text instead.) {ocr}"
+            except Exception:  # noqa: BLE001
+                return "I captured the screen but couldn't interpret it, sir."
+    except Exception as e:  # noqa: BLE001
+        return tool_error("describe_screen", e)
+
+
 SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "describe_screen",
+            "description": (
+                "SEE and describe the laptop screen using vision (not just OCR). Use for 'what's on "
+                "my screen', 'what am I looking at', 'what's this error', 'read me that dialog', "
+                "'describe what you see'. Understands images/layout, not only text. Optional 'prompt' "
+                "to ask something specific about the screen."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description":
+                               "Optional specific question about the screen (default: describe it)."},
+                },
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -116,4 +186,5 @@ SCHEMAS = [
     },
 ]
 
-HANDLERS = {"screenshot_screen": screenshot_screen, "read_screen_text": read_screen_text}
+HANDLERS = {"describe_screen": describe_screen, "screenshot_screen": screenshot_screen,
+            "read_screen_text": read_screen_text}

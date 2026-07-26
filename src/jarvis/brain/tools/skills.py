@@ -34,14 +34,73 @@ def _title(p: Path) -> str:
     return p.stem
 
 
+# Built-in INVOKABLE skills: pre-authored, composable multi-step sequences run through the same proven
+# executor as macros (macros.run_steps). Unlike the Markdown playbooks (prose guidance read via
+# read_skill), these DO things — each step is a tool call / spoken line / playbook load, run in order.
+# Steps use module-registered tools (not agent built-ins like get_time, which aren't in the handler map).
+_SKILL_MANIFESTS: dict[str, dict] = {
+    "morning-briefing": {
+        "desc": "Your day at a glance: open tasks, today's calendar, and unread email.",
+        "steps": [
+            {"tool": "notion_tasks", "args": {}},
+            {"tool": "list_events", "args": {}},
+            {"tool": "read_email", "args": {}},
+        ],
+    },
+    "comms-check": {
+        "desc": "Sweep your channels: unread Telegram and unread email in one pass.",
+        "steps": [
+            {"tool": "check_telegram", "args": {}},
+            {"tool": "read_email", "args": {}},
+        ],
+    },
+    "evening-review": {
+        "desc": "Wind down: what's still open on your task list, then today's journal.",
+        "steps": [
+            {"tool": "notion_tasks", "args": {}},
+            {"tool": "read_journal", "args": {}},
+            {"say": "That's the day, sir. Rest well."},
+        ],
+    },
+}
+
+
+def _invokable_lines() -> list[str]:
+    return [f"{name} — {m['desc']}" for name, m in _SKILL_MANIFESTS.items()]
+
+
 async def list_skills(args: dict) -> str:
     if not settings.skills_enabled:
         return "My skills library is switched off right now, sir."
     files = _skill_files()
-    if not files:
-        return "I don't have any skill playbooks yet, sir."
-    items = [f"{p.stem} — {_title(p)}" for p in files]
-    return f"I have {len(items)} skill playbook(s), sir: " + "; ".join(items)
+    invokable = _invokable_lines()
+    parts: list[str] = []
+    if invokable:
+        parts.append(f"{len(invokable)} runnable skill(s) I can invoke: " + "; ".join(invokable))
+    if files:
+        items = [f"{p.stem} — {_title(p)}" for p in files]
+        parts.append(f"{len(items)} reference playbook(s): " + "; ".join(items))
+    if not parts:
+        return "I don't have any skills yet, sir."
+    return " ".join(parts)
+
+
+async def invoke_skill(args: dict) -> str:
+    """Run a built-in composable skill by name — its steps fire in order (tools/spoken/playbook)."""
+    if not settings.skills_enabled:
+        return "My skills library is switched off right now, sir."
+    name = (args.get("name") or "").strip().lower().replace(" ", "-")
+    if not name:
+        return "Which skill should I run, sir?"
+    m = _SKILL_MANIFESTS.get(name)
+    if m is None:
+        match = next((k for k in _SKILL_MANIFESTS if name in k), None)
+        if match is None:
+            avail = ", ".join(_SKILL_MANIFESTS)
+            return f"I don't have a runnable skill called '{name}', sir. I can run: {avail}."
+        name, m = match, _SKILL_MANIFESTS[match]
+    from jarvis.brain.tools.macros import run_steps  # lazy (avoid import cycle)
+    return await run_steps(m["steps"], f"Running skill '{name}' — {m['desc']}")
 
 
 async def read_skill(args: dict) -> str:
@@ -71,11 +130,19 @@ SCHEMAS = [
         "parameters": {"type": "object", "properties": {}, "required": []}}},
     {"type": "function", "function": {
         "name": "read_skill",
-        "description": "Open one of your skill playbooks by name (e.g. 'self-improvement', 'python', "
+        "description": "Open one of your reference playbooks by name (e.g. 'self-improvement', 'python', "
                        "'jarvis-architecture'). Read the relevant one before editing your own code.",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string", "description": "Skill name (filename stem)."}},
             "required": ["name"]}}},
+    {"type": "function", "function": {
+        "name": "invoke_skill",
+        "description": "RUN a built-in composable skill — its steps (tool calls / spoken lines) fire in "
+                       "order. Use for a named routine like 'morning-briefing' (tasks+calendar+email), "
+                       "'comms-check' (telegram+email), or 'evening-review'. list_skills shows what's runnable.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Runnable skill name, e.g. 'morning-briefing'."}},
+            "required": ["name"]}}},
 ]
 
-HANDLERS = {"list_skills": list_skills, "read_skill": read_skill}
+HANDLERS = {"list_skills": list_skills, "read_skill": read_skill, "invoke_skill": invoke_skill}

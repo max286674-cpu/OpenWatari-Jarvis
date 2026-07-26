@@ -61,11 +61,18 @@ class TelegramBridge:
             logger.warning(f"telegram bridge: file download failed ({type(e).__name__}: {e})")
             return None
 
-    async def _send_voice_reply(self, chat_id: str, text: str) -> bool:
-        """Send Watari's reply as a true VOICE NOTE (OGG/Opus). Returns False if synthesis failed."""
+    async def _send_voice_reply(self, chat_id: str, text: str, user_text: str | None = None) -> bool:
+        """Send Watari's reply as a true VOICE NOTE (OGG/Opus). Returns False if synthesis failed.
+
+        ``user_text`` (C3): the owner's inbound message — its affect shapes Watari's voice prosody so a
+        stressed/low message gets a steadier, gentler reply."""
         from jarvis.brain.voice_io import synthesize_voice_note
 
-        ogg = await synthesize_voice_note(text)
+        voice_settings = None
+        if user_text:
+            from jarvis.brain.affect import affect_to_voice, infer_affect
+            voice_settings = affect_to_voice(infer_affect(user_text))
+        ogg = await synthesize_voice_note(text, voice_settings=voice_settings)
         if not ogg:
             return False
         try:
@@ -150,7 +157,7 @@ class TelegramBridge:
                     # whether the input was a voice note or text. Fall back to a text message ONLY if
                     # synthesis/transcode fails, so Watari is never silent.
                     await self._api("sendChatAction", chat_id=chat_id, action="record_voice")
-                    if not await self._send_voice_reply(chat_id, reply):
+                    if not await self._send_voice_reply(chat_id, reply, user_text=text):
                         await self._api("sendMessage", chat_id=chat_id, text=reply)
             except asyncio.CancelledError:
                 raise

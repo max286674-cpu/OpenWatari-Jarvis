@@ -84,6 +84,40 @@ def main() -> int:
         == "FAIL",
     )
 
+    print("\n[4] whole failover chain exhausted to a connectivity failure -> SKIP (no LLM in this env)")
+    check(
+        "all models failed + Connection error -> SKIP even with a stray provider 400",
+        classify_result(
+            "network",
+            1,
+            "LLM marked 'groq:llama' unhealthy (BadRequestError)\n"
+            "RuntimeError: all LLM models failed; last error: Connection error.",
+            ["fleet sentinel not leaked"],
+        )
+        == "SKIP",
+    )
+    check(
+        "but a tool-validation 400 (no chain-exhaustion marker) stays FAIL",
+        classify_result(
+            "network",
+            1,
+            "Connection error earlier from one provider\n"
+            "Error code: 400 - {'error': {'message': 'tool call validation failed'}}",
+            ["fleet sentinel not leaked"],
+        )
+        == "FAIL",
+    )
+
+    print("\n[5] a [network] test that TIMES OUT is a slow/absent LLM dependency -> SKIP")
+    check(
+        "network + timeout (code 124) -> SKIP",
+        classify_result("network", 124, "TIMEOUT after 180s", ["checks passed"]) == "SKIP",
+    )
+    check(
+        "but an OFFLINE test that times out is a real hang -> FAIL",
+        classify_result("offline", 124, "TIMEOUT after 180s", ["checks passed"]) == "FAIL",
+    )
+
     print(f"\n=== {PASS}/{PASS + FAIL} checks passed ===")
     return 0 if FAIL == 0 else 1
 

@@ -70,6 +70,7 @@ identity = [
     "speechbrain>=1.0",
     "torch>=2.2",
     "torchaudio>=2.2",
+    "soxr>=0.3",                # resample live mic (44.1/48k) -> 16k for ECAPA (speaker_id.embed)
 ]
 dev = [
     "ruff>=0.6",

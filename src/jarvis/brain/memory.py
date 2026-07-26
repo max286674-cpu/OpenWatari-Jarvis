@@ -38,8 +38,26 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
+# Function words carry no topical signal but match almost every stored fact ("the owner…"), which
+# floods keyword recall with false hits — harmless for a deliberate `recall` query, but noise when
+# auto-recall runs every turn. Dropping them makes a term match mean something. Kept small + generic.
+_STOPWORDS = frozenset((
+    "the", "a", "an", "of", "to", "in", "on", "at", "for", "and", "or", "but", "is", "are", "was",
+    "were", "be", "been", "being", "am", "do", "does", "did", "have", "has", "had", "it", "its",
+    "this", "that", "these", "those", "my", "your", "his", "her", "our", "their", "me", "you", "i",
+    "we", "he", "she", "they", "them", "so", "as", "if", "then", "than", "with", "about", "into",
+    "what", "whats", "which", "who", "whom", "how", "when", "where", "why", "can", "could", "would",
+    "should", "will", "shall", "now", "right", "just", "please", "tell", "give", "get", "some", "any",
+    "there", "here", "up", "out", "by", "from", "not", "no", "yes", "ok", "okay", "again", "still",
+))
+
+
 def _terms(query: str) -> list[str]:
-    return [t for t in _SLUG_RE.sub(" ", query.lower()).split() if len(t) > 1]
+    """Meaningful search terms from a query — >1 char and not a function word (stopword)."""
+    raw = [t for t in _SLUG_RE.sub(" ", query.lower()).split() if len(t) > 1]
+    filtered = [t for t in raw if t not in _STOPWORDS]
+    # If a query is *all* stopwords ("what is it"), fall back to the raw terms so recall isn't blank.
+    return filtered or raw
 
 
 class LearnedNote:
@@ -183,9 +201,13 @@ class MemoryStore:
             sem = index.scores(query, items)
 
         weight = settings.memory_semantic_weight
+        floor = settings.memory_semantic_min_score
         combined: list[tuple[float, float, str]] = []
         for key in text_by_key:
-            total = kw.get(key, 0.0) + weight * sem.get(key, 0.0)
+            # Only count semantic similarity above the floor — otherwise near-zero cosines let every
+            # fact leak into results for an unrelated query (keyword hits are always kept).
+            s = sem.get(key, 0.0)
+            total = kw.get(key, 0.0) + (weight * s if s >= floor else 0.0)
             if total > 0:
                 combined.append((total, mtime_by_key[key], text_by_key[key]))
         combined.sort(key=lambda s: (s[0], s[1]), reverse=True)
@@ -276,6 +298,50 @@ class MemoryStore:
         """The most recently learned facts, newest first — injected into the system prompt."""
         notes = sorted(self._iter_notes(), key=lambda n: n.mtime, reverse=True)
         return [n.text for n in notes[:limit]]
+
+    # Cue words that mark a learned fact as an open commitment / intention worth resurfacing later —
+    # something the owner said he wanted or meant to do, which he may have let slip.
+    _COMMIT_CUES = ("want to", "wants to", "planning", "plan to", "going to", "intend", "hoping to",
+                    "would like to", "means to", "meant to", "need to", "should ", "someday",
+                    "eventually", "thinking about", "keeps meaning", "on his list", "goal", "aims to")
+
+    def salient_notes(self, *, now: datetime | None = None, limit: int = 5) -> list[dict]:
+        """Durable commitments worth *proactively* resurfacing (Memory-util), ranked by salience.
+
+        Salience = a commitment/intention cue (he said he wanted/meant to do it) weighted by a recency
+        window that favours the sweet spot of a few days to a few weeks old: brand-new facts are still
+        top-of-mind (no need to remind), and very old ones are stale. Returns [{text, created, age_days,
+        note_id, score}], best first. Fail-quiet — a bad ``created`` timestamp just scores age-neutral.
+        """
+        now = now or datetime.now(timezone.utc)
+        out: list[dict] = []
+        for note in self._iter_notes():
+            low = note.text.lower()
+            cue = sum(1 for c in self._COMMIT_CUES if c in low)
+            has_goal_tag = any(t in ("goal", "commitment", "todo", "intention") for t in note.tags)
+            if not cue and not has_goal_tag:
+                continue
+            try:
+                created = datetime.fromisoformat(note.created)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                age_days = max(0.0, (now - created).total_seconds() / 86400.0)
+            except (ValueError, TypeError):
+                age_days = 7.0   # unknown age -> treat as mid-window, don't drop it
+            # Recency weight: 0 under 1 day (too fresh), peak ~2–21 days, decaying after ~45 days.
+            if age_days < 1:
+                recency = 0.2
+            elif age_days <= 21:
+                recency = 1.0
+            elif age_days <= 45:
+                recency = 0.6
+            else:
+                recency = 0.25
+            score = (cue + (1 if has_goal_tag else 0)) * recency
+            out.append({"text": note.text, "created": note.created, "age_days": round(age_days, 1),
+                        "note_id": note.path.stem, "score": round(score, 3)})
+        out.sort(key=lambda d: -d["score"])
+        return out[:limit]
 
     def forget(self, query: str) -> str | None:
         """Delete the single best-matching learned fact; return its text, or None."""

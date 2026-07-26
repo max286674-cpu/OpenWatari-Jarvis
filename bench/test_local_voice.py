@@ -111,7 +111,30 @@ def main() -> None:
 
     # The same fallback wiring exists on the STT side (Deepgram -> Whisper).
     import jarvis.edge.stt as stt_mod
+    from jarvis.config import STTProvider
     check("STT exposes a cloud->local fallback table", hasattr(stt_mod, "_BUILDERS") and bool(stt_mod._CLOUD))
+
+    # All three STT providers dispatch to their OWN real builder — moonshine must NOT alias whisper
+    # (the old bug: 'moonshine' silently ran the slower whisper engine). Wiring check, no model load.
+    check("deepgram -> _build_deepgram", stt_mod._BUILDERS[STTProvider.deepgram] is stt_mod._build_deepgram)
+    check("whisper -> _build_whisper (local)", stt_mod._BUILDERS[STTProvider.whisper] is stt_mod._build_whisper)
+    check("moonshine -> _build_moonshine (its OWN engine, NOT whisper)",
+          stt_mod._BUILDERS[STTProvider.moonshine] is stt_mod._build_moonshine
+          and stt_mod._build_moonshine is not stt_mod._build_whisper)
+    # build_stt() selects the right builder per provider (sentinels — nothing heavy loads).
+    real_stt = stt_mod._BUILDERS
+    stt_mod._BUILDERS = {
+        STTProvider.deepgram: lambda: "DG",
+        STTProvider.whisper: lambda: "WH",
+        STTProvider.moonshine: lambda: "MOON",
+    }
+    saved_stt = settings.stt_provider
+    try:
+        settings.stt_provider = STTProvider.moonshine
+        check("build_stt picks moonshine's engine", stt_mod.build_stt() == "MOON")
+    finally:
+        settings.stt_provider = saved_stt
+        stt_mod._BUILDERS = real_stt
 
     print(f"\n=== {PASS}/{PASS + FAIL} checks passed ===")
     raise SystemExit(0 if FAIL == 0 else 1)

@@ -1,6 +1,10 @@
 #!/bin/sh
 # Commit gate: nothing leaves this machine unless the suite is green (same gate as deploy_vps.sh).
 # Enabled once per clone:  git config core.hooksPath scripts/githooks
-echo "pre-push: running the test suite (skip with --no-verify only if you mean it)"
+echo "pre-push: running the full verification suite (skip with --no-verify only if you mean it)"
 cd "$(git rev-parse --show-toplevel)" || exit 1
-uv run python -m pytest -q || { echo "pre-push: TESTS FAILED — push blocked."; exit 1; }
+# Use the canonical runner, NOT `pytest -q`: these bench scripts tally failures via check() (not
+# assert) and validate inside main(), so pytest reports them green even when checks fail, and it
+# collects none of the main()-only scripts. run_all_tests runs each as a subprocess and honours its
+# exit code, with proper PASS/FAIL/SKIP (a dev box with no LLM skips, doesn't falsely fail).
+uv run python bench/run_all_tests.py || { echo "pre-push: TESTS FAILED — push blocked."; exit 1; }

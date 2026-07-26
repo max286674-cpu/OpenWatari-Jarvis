@@ -301,6 +301,69 @@ async def convert(args: dict) -> str:
     return f"{value:g} {frm} is {result:,.4g} {to}, sir."
 
 
+async def _geocode_one(name: str) -> dict | None:
+    """Resolve a place name to {name, latitude, longitude, country} via Open-Meteo (no key)."""
+    try:
+        geo = await http_get("https://geocoding-api.open-meteo.com/v1/search",
+                             params={"name": name, "count": 1})
+        results = geo.json().get("results") or []
+        return results[0] if results else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# OSRM travel profiles (keyless public demo server). Transit/public-transport isn't covered by OSRM;
+# for that Watari falls back to the Composio google_maps toolkit via composio_find_tools.
+_TRAVEL_MODES = {"drive": "driving", "driving": "driving", "car": "driving",
+                 "walk": "walking", "walking": "walking", "foot": "walking",
+                 "bike": "cycling", "cycling": "cycling", "cycle": "cycling"}
+
+
+async def travel_time(args: dict) -> str:
+    """Travel time + distance between two places (driving/walking/cycling). Keyless via OSRM."""
+    dest = (args.get("to") or args.get("destination") or "").strip()
+    if not dest:
+        return "Where to, sir?"
+    origin = (args.get("from") or args.get("origin") or "").strip()
+    if not origin:
+        from jarvis.brain import prefs
+        origin = prefs.home_location() or ""
+    if not origin:
+        return ("From where, sir? Give me a starting point, or set your home location "
+                "(say 'set my home to <place>').")
+    mode = _TRAVEL_MODES.get((args.get("mode") or "drive").strip().lower(), "driving")
+
+    async def fetch() -> str:
+        o, d = await _geocode_one(origin), await _geocode_one(dest)
+        if not o:
+            return f"I couldn't find '{origin}', sir."
+        if not d:
+            return f"I couldn't find '{dest}', sir."
+        url = (f"https://router.project-osrm.org/route/v1/{mode}/"
+               f"{o['longitude']},{o['latitude']};{d['longitude']},{d['latitude']}")
+        r = await http_get(url, params={"overview": "false"})
+        data = r.json()
+        routes = data.get("routes") or []
+        if not routes:
+            return (f"I couldn't find a {mode} route from {o.get('name', origin)} to "
+                    f"{d.get('name', dest)}, sir.")
+        secs = routes[0]["duration"]
+        km = routes[0]["distance"] / 1000.0
+        mins = round(secs / 60)
+        if mins >= 60:
+            dur = f"{mins // 60}h {mins % 60}m"
+        else:
+            dur = f"{mins} minute{'s' if mins != 1 else ''}"
+        verb = {"driving": "by car", "walking": "on foot", "cycling": "by bike"}[mode]
+        return (f"About {dur} {verb} from {o.get('name', origin)} to {d.get('name', dest)}, sir — "
+                f"roughly {km:.0f} km.")
+
+    try:
+        return await CACHE.cached("travel", f"{origin}|{dest}|{mode}".lower(), ttl=600, factory=fetch)
+    except Exception as e:  # noqa: BLE001
+        return tool_error("travel time", e)
+
+
 SCHEMAS = [
     {"type": "function", "function": {
         "name": "weather",
@@ -357,6 +420,18 @@ SCHEMAS = [
             "from": {"type": "string", "description": "Source unit or 3-letter currency code."},
             "to": {"type": "string", "description": "Target unit or 3-letter currency code."}},
             "required": ["value", "from", "to"]}}},
+    {"type": "function", "function": {
+        "name": "travel_time",
+        "description": "How long to get somewhere and how far — driving (default), walking, or "
+                       "cycling. Use for 'how long to the airport', 'travel time from X to Y'. "
+                       "Origin defaults to your home location if omitted. No key needed. (For public "
+                       "TRANSIT, use composio_find_tools with the Google Maps toolkit.)",
+        "parameters": {"type": "object", "properties": {
+            "to": {"type": "string", "description": "Destination place/city."},
+            "from": {"type": "string", "description": "Origin (default: your home location)."},
+            "mode": {"type": "string", "enum": ["drive", "walk", "bike"],
+                     "description": "Travel mode (default drive)."}},
+            "required": ["to"]}}},
 ]
 
 HANDLERS = {
@@ -368,4 +443,5 @@ HANDLERS = {
     "wiki_lookup": wiki_lookup,
     "define_word": define_word,
     "convert": convert,
+    "travel_time": travel_time,
 }

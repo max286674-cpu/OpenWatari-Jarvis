@@ -21,6 +21,26 @@ from jarvis.config import settings
 # Errors that mean "this model is unavailable right now — try the next one".
 _FAILOVER = (RateLimitError, APITimeoutError, APIError)
 
+# A PERMANENT failure means "retrying this key WON'T help" — out of credits, unpaid/invalid key, or no
+# access to the model. Unlike a transient 429/timeout, a dead-credit key benched for the short transient
+# cooldown just flaps back into the chain seconds later and fails every turn. Matched on the error BODY
+# (vendor error codes), NOT the HTTP status: a 429 is also plain rate-limiting and a 404 is also a wrong
+# base_url — neither of those is permanent. Cues are verbatim vendor markers (OpenAI/Anthropic/Groq).
+_PERMANENT_ERR_CUES = (
+    "insufficient_quota", "exceeded your current quota", "credit balance is too low",
+    "billing hard limit", "billing_hard_limit_reached", "model_not_found",
+    "does not exist or you do not have access", "does not have access to model",
+    "permission_error", "permission denied", "invalid api key", "invalid_api_key",
+    "unauthorized", "account is not active", "account_deactivated",
+)
+_PERMANENT_COOLDOWN_S = 21600.0  # 6h — credits/access don't come back in the transient window
+
+
+def _is_permanent_error(err: Exception) -> bool:
+    """True for a quota/credit/access failure that retrying won't fix (bench the model long, not the
+    short transient cooldown, so the chain stops flapping onto a dead key). See ``_PERMANENT_ERR_CUES``."""
+    return any(cue in str(err).lower() for cue in _PERMANENT_ERR_CUES)
+
 # A weaker model in the chain sometimes emits a tool call AS TEXT — '<function name="...">',
 # '<tool_code ...>', '<|python_tag|>…', 'print(default_api.x(...))' — instead of using the native
 # tool-calling API. If we accept that as a final answer the TOOL NEVER RUNS and the raw tag gets
@@ -37,6 +57,68 @@ _TEXTUAL_TOOLCALL_RE = re.compile(
 def _looks_like_textual_toolcall(text: str | None) -> bool:
     t = (text or "").lstrip()
     return bool(t) and bool(_TEXTUAL_TOOLCALL_RE.search(t[:160]))
+
+
+# MiniMax reasoning models (M2.7-highspeed, M3 — the paid primary chain) emit inline chain-of-thought
+# wrapped in <think>...</think> BEFORE the real answer. No request param disables it (all tested), so
+# we strip it: never speak the reasoning, never let it reach a tool parser. It always LEADS the content.
+_THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_think(text: str | None) -> str | None:
+    """Remove a leading <think>...</think> reasoning block from a whole (non-streamed) content string."""
+    if not text:
+        return text
+    return _THINK_BLOCK_RE.sub("", text, count=1)
+
+
+class _ThinkStripper:
+    """Streaming counterpart of ``_strip_think``: withhold a leading <think>...</think> block that
+    arrives split across chunks, then pass everything after </think> through unchanged. A model that
+    never emits <think> (groq/gemini/proxy) streams through with only one chunk of buffering delay."""
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._state = "start"  # start -> thinking | pass
+
+    def feed(self, chunk: str) -> str:
+        if self._state == "pass":
+            return chunk
+        self._buf += chunk
+        if self._state == "start":
+            lead = self._buf.lstrip()
+            if not lead:
+                return ""                       # only whitespace so far — wait
+            if lead.startswith(self._OPEN):
+                self._state = "thinking"
+                self._buf = lead                # drop leading whitespace before the tag
+            elif self._OPEN.startswith(lead):
+                return ""                       # ambiguous prefix like "<thi" — wait for more
+            else:
+                self._state = "pass"            # definitely not a think block — flush as-is
+                out, self._buf = self._buf, ""
+                return out
+        if self._state == "thinking":           # hold until the block closes
+            idx = self._buf.find(self._CLOSE)
+            if idx == -1:
+                return ""
+            self._buf = self._buf[idx + len(self._CLOSE):]
+            self._state = "trim"                # now drop the answer's leading whitespace (the \n\n)
+        if self._state == "trim":
+            stripped = self._buf.lstrip()
+            self._buf = ""
+            if not stripped:
+                return ""                       # answer hasn't started yet — keep waiting
+            self._state = "pass"
+            return stripped
+        return ""
+
+    def flush(self) -> str:
+        """End of stream: emit any held content that turned out NOT to be a think block."""
+        return self._buf if self._state == "start" else ""
 
 
 # groq + llama-3.3-70b intermittently emits a tool call in Llama's TEXT format —
@@ -122,12 +204,15 @@ class LLMClient:
         """Map a chain entry to (client, model_name), honouring a ``provider:`` prefix.
 
         ``groq:<model>`` hits Groq directly; ``cerebras:<model>`` hits Cerebras directly (the fastest
-        inference provider, ~2000 tok/s, separate rate-limit pool from Groq); ``ollama:<model>`` hits a
-        LOCAL Ollama server (no key, true offline fallback); unprefixed goes to the freellmapi proxy.
-        Each provider's client is built once and cached."""
+        inference provider, ~2000 tok/s, separate rate-limit pool from Groq); ``minimax:<model>`` hits
+        MiniMax directly (api.minimax.io — a paid reasoning model, independent of Groq's quota + the
+        freellmapi proxy); ``ollama:<model>`` hits a LOCAL Ollama server (no key, true offline
+        fallback); unprefixed goes to the freellmapi proxy. Each provider's client is built once and
+        cached."""
         for prefix, base_url, api_key in (
             ("groq:", settings.groq_base_url, settings.groq_api_key or "missing-groq-key"),
             ("cerebras:", settings.cerebras_base_url, settings.cerebras_api_key or "missing-cerebras-key"),
+            ("minimax:", settings.minimax_base_url, settings.minimax_api_key or "missing-minimax-key"),
             ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key
         ):
             if entry.startswith(prefix):
@@ -156,10 +241,24 @@ class LLMClient:
         return list(self._chain)
 
     def _mark_failure(self, model: str, err: Exception) -> None:
-        if not self._cooldown:
+        from jarvis.brain.metrics import METRICS
+        METRICS.incr("llm_model_failures")
+        permanent = _is_permanent_error(err)
+        # A permanent (quota/credit/access) failure benches the model even when the transient cooldown is
+        # disabled — the whole point is to stop retrying a dead key. _candidate_chain still falls back to
+        # the full chain if EVERY entry is benched, so this never locks Watari out of answering.
+        if not self._cooldown and not permanent:
             return
-        self._unhealthy_until[model] = asyncio.get_running_loop().time() + self._cooldown
-        logger.debug(f"LLM marked '{model}' unhealthy for {self._cooldown:.1f}s ({type(err).__name__})")
+        cooldown = _PERMANENT_COOLDOWN_S if permanent else self._cooldown
+        self._unhealthy_until[model] = asyncio.get_running_loop().time() + cooldown
+        if permanent:
+            METRICS.incr("llm_permanent_failures")
+            logger.warning(
+                f"LLM '{model}' PERMANENT failure (quota/credits/access) — benching {cooldown / 3600:.1f}h "
+                f"so failover stops flapping onto a dead key: {str(err)[:120]}"
+            )
+        else:
+            logger.debug(f"LLM marked '{model}' unhealthy for {cooldown:.1f}s ({type(err).__name__})")
 
     def _mark_success(
         self,
@@ -170,6 +269,12 @@ class LLMClient:
         errors: list[dict[str, str]] | None = None,
     ) -> None:
         self._unhealthy_until.pop(model, None)
+        from jarvis.brain.metrics import METRICS
+        METRICS.incr("llm_routes")
+        if failures:
+            METRICS.incr("llm_failovers")
+        if latency_ms is not None:
+            METRICS.observe("llm_route_ms", latency_ms)
         self.last_route = {
             "mode": mode,
             "answered_by": model,
@@ -221,6 +326,8 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.6,
         tool_choice: str | dict[str, Any] = "auto",
+        skip_primary: bool = False,
+        prepend_model: str | None = None,
     ) -> Any:
         """Non-streaming completion (used for tool-calling turns). Returns the message.
 
@@ -228,12 +335,21 @@ class LLMClient:
         ``tool_choice`` is passed to the provider: "auto" (default), "required" (the model MUST
         call some tool — used to stop a weak model from *claiming* it acted without acting), or a
         ``{"type":"function","function":{"name": ...}}`` dict to force one specific tool.
+        ``skip_primary`` starts the chain PAST the primary — used by the B4 retry when the primary
+        (a non-thinking model) dodges a forced tool call, to reach a more reliable tool-caller.
+        ``prepend_model`` tries a SPECIFIC model FIRST (then the normal chain as fallback) — used by the
+        B5 thinking-tier escalation to reach a MiniMax reasoning model on a dodged forced turn.
         """
         last_err: Exception | None = None
         route_started = asyncio.get_running_loop().time()
         errors: list[dict[str, str]] = []
         failures = 0
-        for model in self._candidate_chain():
+        chain = self._candidate_chain()
+        if skip_primary and len(chain) > 1:
+            chain = chain[1:]
+        if prepend_model:
+            chain = [prepend_model] + [m for m in chain if m != prepend_model]
+        for model in chain:
             client, model_name = self._resolve(model)
             try:
                 kwargs: dict[str, Any] = {
@@ -250,6 +366,10 @@ class LLMClient:
                     # 200 with no choices = proxy/model error object — fail over, don't crash.
                     raise _EmptyResponse(getattr(resp, "error", None) or "empty choices")
                 msg = resp.choices[0].message
+                # Strip a MiniMax <think> block from the content before anything reads it (spoken text
+                # or the textual-tool-call heuristic below). Tool calls come natively, untouched.
+                if getattr(msg, "content", None):
+                    msg.content = _strip_think(msg.content)
                 # A 200 with a choice but NEITHER content NOR a tool call = the model said nothing
                 # usable (congested free proxies do this intermittently). Treat it as a miss and fail
                 # over to the next model rather than muting Watari with "I didn't catch that".
@@ -289,6 +409,7 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.6,
         tool_choice: str | dict[str, Any] = "auto",
+        skip_primary: bool = False,
     ) -> AsyncIterator[tuple[str, Any]]:
         """Stream a completion that may also call tools. Yields events:
 
@@ -299,15 +420,20 @@ class LLMClient:
         This is what lets the voice path speak the first sentence while the rest is still being
         generated. Fails over to the next model ONLY before the first token — once we've started
         yielding we never silently switch mid-utterance (that would double-speak).
+        ``skip_primary`` starts the chain past the primary (tool-tier routing for forced turns).
         """
         last_err: Exception | None = None
         route_started = asyncio.get_running_loop().time()
         errors: list[dict[str, str]] = []
         failures = 0
-        for model in self._candidate_chain():
+        chain = self._candidate_chain()
+        if skip_primary and len(chain) > 1:
+            chain = chain[1:]
+        for model in chain:
             client, model_name = self._resolve(model)
             tool_acc: dict[int, dict[str, str]] = {}
             got_any = False
+            stripper = _ThinkStripper()  # withhold a MiniMax <think> block from the spoken stream
             # Lead-buffer classification: hold the first chunk of CONTENT until we can tell prose
             # from a textual tool-call. Prose flushes and streams normally; a textual tool-call is
             # withheld (never spoken) so got_any stays False -> the no-content failover kicks in.
@@ -343,9 +469,11 @@ class LLMClient:
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
-                    if getattr(delta, "content", None):
+                    raw = getattr(delta, "content", None)
+                    piece = stripper.feed(raw) if raw else ""
+                    if piece:
                         if lead_state == "buffering":
-                            lead += delta.content
+                            lead += piece
                             if _looks_like_textual_toolcall(lead):
                                 lead_state = "toolcall"   # withhold; never speak the tag
                             elif len(lead) >= 24:
@@ -354,7 +482,7 @@ class LLMClient:
                                 yield ("text", lead)
                         elif lead_state == "prose":
                             got_any = True
-                            yield ("text", delta.content)
+                            yield ("text", piece)
                         # lead_state == "toolcall": swallow content (no native call -> will fail over)
                     for tcd in getattr(delta, "tool_calls", None) or []:
                         got_any = True
@@ -366,6 +494,13 @@ class LLMClient:
                                 slot["name"] += tcd.function.name
                             if tcd.function.arguments:
                                 slot["arguments"] += tcd.function.arguments
+                tail = stripper.flush()  # held content that turned out not to be a think block
+                if tail:
+                    if lead_state == "buffering":
+                        lead += tail
+                    elif lead_state == "prose":
+                        got_any = True
+                        yield ("text", tail)
                 # Stream ended mid-buffer: flush a short prose lead (e.g. "Yes, sir."). A withheld
                 # textual tool-call is intentionally NOT flushed -> stays unspoken, fails over.
                 if lead_state == "buffering" and lead and not _looks_like_textual_toolcall(lead):
@@ -411,6 +546,50 @@ class LLMClient:
                 continue
         raise RuntimeError(f"all LLM models failed; last error: {last_err}")
 
+    async def see(
+        self,
+        image_b64: str,
+        prompt: str,
+        *,
+        chain: list[str] | None = None,
+        max_tokens: int = 500,
+    ) -> str:
+        """Vision (Phase 3): describe/answer about a JPEG image (screen or camera frame).
+
+        Walks ``settings.vision_chain`` — vision-capable, provider-prefixed models — and returns the
+        first real answer. Image goes as an OpenAI-style ``image_url`` data URI. Raises RuntimeError
+        only if EVERY vision model fails, so a caller can degrade gracefully (e.g. fall back to OCR).
+        """
+        chain = chain or settings.vision_chain
+        if not chain:
+            raise RuntimeError("no vision models configured (settings.vision_models)")
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+        ]
+        messages = [{"role": "user", "content": content}]
+        last_err: Exception | None = None
+        for model in chain:
+            client, model_name = self._resolve(model)
+            try:
+                resp = await client.chat.completions.create(
+                    model=model_name, messages=messages, temperature=0.2, max_tokens=max_tokens,
+                )
+                if not getattr(resp, "choices", None):
+                    raise _EmptyResponse("no choices")
+                text = (resp.choices[0].message.content or "").strip()
+                if not text:
+                    raise _EmptyResponse("empty vision response")
+                if model != chain[0]:
+                    logger.warning(f"vision via fallback '{model}'")
+                return text
+            except Exception as e:  # noqa: BLE001 — try the next vision model
+                last_err = e
+                logger.warning(f"vision model '{model}' failed ({type(e).__name__}); trying next")
+                continue
+        raise RuntimeError(f"all vision models failed; last error: {last_err}")
+
     async def stream(
         self,
         messages: list[dict[str, Any]],
@@ -434,11 +613,18 @@ class LLMClient:
                 if model != self._chain[0]:
                     logger.warning(f"LLM streaming via fallback '{model}'")
                 got_any = False
+                stripper = _ThinkStripper()  # strip a MiniMax <think> block from the text stream
                 async for chunk in stream:
                     delta = chunk.choices[0].delta.content if chunk.choices else None
                     if delta:
-                        got_any = True
-                        yield delta
+                        piece = stripper.feed(delta)
+                        if piece:
+                            got_any = True
+                            yield piece
+                tail = stripper.flush()
+                if tail:
+                    got_any = True
+                    yield tail
                 if not got_any:
                     raise _EmptyResponse("stream produced no content")
                 latency_ms = (asyncio.get_running_loop().time() - route_started) * 1000

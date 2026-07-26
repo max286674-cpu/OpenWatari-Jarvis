@@ -78,7 +78,14 @@ def main() -> None:
     print("\n[7] outward/sensitive tools are confirm-gated")
     check("send_email confirm-gated", confirm_required("send_email"))
     check("create_event confirm-gated", confirm_required("create_event"))
-    check("ha_call confirm-gated", confirm_required("ha_call"))
+    # ha_call is domain-aware: security actuation confirms, but a light/scene flows without friction.
+    check("ha_call lock confirm-gated", confirm_required("ha_call", {"domain": "lock", "service": "lock"}))
+    check("ha_call alarm confirm-gated",
+          confirm_required("ha_call", {"domain": "alarm_control_panel", "service": "arm_away"}))
+    check("ha_call cover confirm-gated", confirm_required("ha_call", {"domain": "cover", "service": "open_cover"}))
+    check("ha_call light NOT gated (smooth voice UX)",
+          not confirm_required("ha_call", {"domain": "light", "service": "turn_on"}))
+    check("ha_call scene NOT gated", not confirm_required("ha_call", {"domain": "scene", "service": "turn_on"}))
     check("read_email NOT confirm-gated (it's a read)", not confirm_required("read_email"))
 
     print(f"\n=== {passed}/{passed + failed} checks passed ===")

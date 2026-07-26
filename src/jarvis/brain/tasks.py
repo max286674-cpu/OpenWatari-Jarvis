@@ -37,21 +37,50 @@ def _db_path() -> Path:
     return Path(settings.tasks_db_path) if settings.tasks_db_path else _REPO_ROOT / "jarvis_tasks.sqlite"
 
 
+# Priority ordering for the manageable to-do list (higher = more urgent = sorts first).
+PRIORITIES = ("low", "normal", "high", "urgent")
+_PRIO_RANK = {p: i for i, p in enumerate(PRIORITIES)}
+
+
+def normalize_priority(value: str | None) -> str:
+    """Map free-text priority ('med', 'important', 'p1', 'critical') onto a canonical level."""
+    v = (value or "").strip().lower()
+    if not v:
+        return "normal"
+    if v in _PRIO_RANK:
+        return v
+    aliases = {
+        "urgent": ("urgent", "critical", "asap", "p0", "p1", "highest", "top"),
+        "high": ("high", "important", "hi", "p2"),
+        "normal": ("normal", "medium", "med", "mid", "default", "p3", "moderate"),
+        "low": ("low", "minor", "someday", "later", "p4", "p5", "lowest"),
+    }
+    for level, words in aliases.items():
+        if any(w in v for w in words):
+            return level
+    return "normal"
+
+
 @dataclass
 class Task:
     id: str
     title: str
-    kind: str = "fleet"                  # fleet | coding | generic
-    status: str = "running"             # running | done | failed
+    kind: str = "fleet"                  # fleet | coding | generic | todo
+    status: str = "running"             # running | done | failed  (todo: open | done)
     started_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     last_progress: str = ""
     result: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
+    # --- manageable to-do fields (kind == "todo") ---------------------------------------
+    description: str = ""               # a longer note about what the task involves
+    priority: str = "normal"           # low | normal | high | urgent
+    deadline: float | None = None      # Unix epoch of the due date/time, or None
+    progress: int = 0                  # 0..100 percent complete
 
     @property
     def elapsed_s(self) -> float:
-        end = self.updated_at if self.status != "running" else time.time()
+        end = self.updated_at if self.status not in ("running", "open") else time.time()
         return max(0.0, end - self.started_at)
 
     def human_elapsed(self) -> str:
@@ -61,6 +90,31 @@ class Task:
         if s < 3600:
             return f"{s // 60}m {s % 60}s"
         return f"{s // 3600}h {(s % 3600) // 60}m"
+
+    def human_deadline(self) -> str:
+        """A human phrase for the deadline ('overdue by 2d', 'due today', 'in 3d'), or '' if none."""
+        if self.deadline is None:
+            return ""
+        delta = self.deadline - time.time()
+        days = delta / 86400
+        if delta < 0:
+            od = -delta
+            if od < 3600:
+                return "overdue"
+            if od < 86400:
+                return f"overdue by {int(od // 3600)}h"
+            return f"overdue by {int(od // 86400)}d"
+        if delta < 3600:
+            return f"due in {int(delta // 60)}m"
+        if days < 1:
+            return f"due in {int(delta // 3600)}h"
+        if days < 2:
+            return "due tomorrow"
+        return f"due in {int(days)}d"
+
+    @property
+    def prio_rank(self) -> int:
+        return _PRIO_RANK.get(self.priority, 1)
 
 
 # Completion callback: set by the server so a finished task is announced by voice. Signature: (Task).
@@ -84,14 +138,24 @@ class TaskQueue:
         c.row_factory = sqlite3.Row
         return c
 
+    # Columns added after the original release; migrated onto pre-existing DBs at startup.
+    _EXTRA_COLS = (("description", "TEXT"), ("priority", "TEXT"), ("deadline", "REAL"),
+                   ("progress", "INTEGER"))
+
     def _init_db(self) -> None:
         try:
             with self._conn() as c:
                 c.execute(
                     "CREATE TABLE IF NOT EXISTS tasks ("
                     "id TEXT PRIMARY KEY, title TEXT, kind TEXT, status TEXT, "
-                    "started_at REAL, updated_at REAL, last_progress TEXT, result TEXT, meta TEXT)"
+                    "started_at REAL, updated_at REAL, last_progress TEXT, result TEXT, meta TEXT, "
+                    "description TEXT, priority TEXT, deadline REAL, progress INTEGER)"
                 )
+                # Migrate older DBs that predate the to-do columns (ALTER is a no-op-if-exists guard).
+                have = {r["name"] for r in c.execute("PRAGMA table_info(tasks)")}
+                for name, sqltype in self._EXTRA_COLS:
+                    if name not in have:
+                        c.execute(f"ALTER TABLE tasks ADD COLUMN {name} {sqltype}")
         except sqlite3.Error as e:
             logger.warning(f"task queue: db init failed ({e}); running in-memory only")
 
@@ -99,9 +163,13 @@ class TaskQueue:
         try:
             with self._conn() as c:
                 c.execute(
-                    "INSERT OR REPLACE INTO tasks VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO tasks "
+                    "(id, title, kind, status, started_at, updated_at, last_progress, result, meta, "
+                    "description, priority, deadline, progress) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (t.id, t.title, t.kind, t.status, t.started_at, t.updated_at,
-                     t.last_progress, t.result, json.dumps(t.meta)),
+                     t.last_progress, t.result, json.dumps(t.meta),
+                     t.description, t.priority, t.deadline, t.progress),
                 )
         except sqlite3.Error as e:
             logger.warning(f"task queue: persist failed ({e})")
@@ -114,15 +182,28 @@ class TaskQueue:
             pass
 
     def _load(self) -> None:
-        """Reload unfinished tasks after a restart (so 'what's pending?' survives)."""
+        """Reload the owner's open to-do items after a restart (so the list survives).
+
+        Background WORK jobs are in-process asyncio tasks — they CANNOT survive a restart, so a
+        persisted ``running`` row is always from a dead process. The old code reloaded those as
+        ``running``, so every crash left a fake-"running" job forever (the 20-orphan pile-up). We now
+        expire them to ``failed`` on load and reload only real persistent to-dos.
+        """
         try:
             with self._conn() as c:
-                for r in c.execute("SELECT * FROM tasks WHERE status='running'"):
+                c.execute("UPDATE tasks SET status='failed', last_progress='abandoned on restart' "
+                          "WHERE status='running'")
+                rows = c.execute("SELECT * FROM tasks WHERE kind='todo' AND status='open'")
+                for r in rows:
                     self._tasks[r["id"]] = Task(
                         id=r["id"], title=r["title"], kind=r["kind"], status=r["status"],
                         started_at=r["started_at"], updated_at=r["updated_at"],
                         last_progress=r["last_progress"] or "", result=r["result"] or "",
                         meta=json.loads(r["meta"] or "{}"),
+                        description=(r["description"] or "") if "description" in r.keys() else "",
+                        priority=(r["priority"] or "normal") if "priority" in r.keys() else "normal",
+                        deadline=r["deadline"] if "deadline" in r.keys() else None,
+                        progress=int(r["progress"] or 0) if "progress" in r.keys() else 0,
                     )
         except sqlite3.Error:
             pass
@@ -172,6 +253,103 @@ class TaskQueue:
     def drop(self, task_id: str) -> None:
         self._tasks.pop(task_id, None)
         self._delete_row(task_id)
+
+    # ---- manageable to-do list --------------------------------------------------------
+    # These are owner-facing tasks (kind == "todo") the model can add, describe, prioritise,
+    # give a deadline, track progress on, complete, and delete — distinct from the background
+    # execution jobs above (which the fleet runner drives).
+    def add_todo(
+        self,
+        title: str,
+        *,
+        description: str = "",
+        priority: str = "normal",
+        deadline: float | None = None,
+        meta: dict | None = None,
+    ) -> Task:
+        t = Task(
+            id=uuid.uuid4().hex[:8],
+            title=title.strip()[:200],
+            kind="todo",
+            status="open",
+            description=(description or "").strip()[:1000],
+            priority=normalize_priority(priority),
+            deadline=deadline,
+            meta=meta or {},
+        )
+        self._tasks[t.id] = t
+        self._persist(t)
+        return t
+
+    def edit_todo(self, task_id: str, **fields: Any) -> Task | None:
+        """Update any of title/description/priority/deadline/progress/status on a to-do.
+
+        Only keys explicitly present in ``fields`` are touched (so a caller can clear the
+        deadline by passing ``deadline=None`` and leave everything else alone)."""
+        t = self._tasks.get(task_id)
+        if t is None:
+            return None
+        if "title" in fields and fields["title"]:
+            t.title = str(fields["title"]).strip()[:200]
+        if "description" in fields:
+            t.description = str(fields["description"] or "").strip()[:1000]
+        if "priority" in fields and fields["priority"]:
+            t.priority = normalize_priority(fields["priority"])
+        if "deadline" in fields:
+            t.deadline = fields["deadline"]
+        if "progress" in fields and fields["progress"] is not None:
+            t.progress = max(0, min(100, int(fields["progress"])))
+        if "note" in fields and fields["note"]:
+            t.last_progress = str(fields["note"]).strip()[:500]
+        if "status" in fields and fields["status"]:
+            t.status = str(fields["status"])
+        t.updated_at = time.time()
+        self._persist(t)
+        return t
+
+    def complete_todo(self, task_id: str) -> Task | None:
+        t = self._tasks.get(task_id)
+        if t is None:
+            return None
+        t.status = "done"
+        t.progress = 100
+        t.updated_at = time.time()
+        self._persist(t)  # keep it as a record; todos() filters it out of the OPEN list
+        return t
+
+    def todos(self, include_done: bool = False) -> list[Task]:
+        """Open to-do items, most-urgent first: higher priority, then nearest deadline."""
+        items = [t for t in self._tasks.values()
+                 if t.kind == "todo" and (include_done or t.status == "open")]
+        items.sort(key=lambda t: (-t.prio_rank, t.deadline if t.deadline is not None else 9e18,
+                                  t.started_at))
+        return items
+
+    def find_todo(self, topic: str) -> list[Task]:
+        """Match open to-dos by id or a word in the title/description."""
+        q = (topic or "").strip().lower()
+        if not q:
+            return self.todos()
+        exact = self._tasks.get(q)
+        if exact is not None and exact.kind == "todo":
+            return [exact]
+        return [t for t in self.todos()
+                if q in t.id or any(w in (t.title + " " + t.description).lower() for w in q.split())]
+
+    def todo_summary_line(self, t: Task) -> str:
+        """A spoken one-liner for a to-do: title, priority, deadline, progress."""
+        bits = [f"'{t.title}'"]
+        if t.priority != "normal":
+            bits.append(f"[{t.priority}]")
+        dl = t.human_deadline()
+        if dl:
+            bits.append(dl)
+        if t.status == "open" and t.progress:
+            bits.append(f"{t.progress}% done")
+        if t.status == "done":
+            bits.append("✓ done")
+        tail = f" — {t.last_progress}" if (t.last_progress and t.status == "open") else ""
+        return " ".join(bits) + f" (id {t.id[:8]})" + tail
 
     # ---- the runner -------------------------------------------------------------------
     def run(

@@ -35,9 +35,6 @@ _TOP_APPS = (
     "googlecalendar", "googledocs", "linear", "stripe", "notion",
     "youtube", "airtable",
 )
-_MAX_ACTIONS_PER_TOP_APP = 8  # how many top slugs to surface for a top app
-
-
 def _catalog_path() -> Path:
     _CACHE.parent.mkdir(parents=True, exist_ok=True)
     return _CACHE
@@ -90,51 +87,27 @@ def _load_cache() -> dict:
         return {}
 
 
-def _format_action_line(tool: dict) -> str:
-    slug = tool.get("slug", "")
-    desc = tool.get("desc", "")
-    # Truncate description to one line for compactness.
-    desc = desc.split("\n")[0][:120]
-    required = tool.get("required") or []
-    req = f" (needs: {', '.join(required)})" if required else ""
-    return f"  - `{slug}` — {desc}{req}"
-
-
 def compact_summary(catalog: dict | None = None) -> str:
-    """Build a tiered markdown summary of the catalog for the system prompt (~3K tokens).
+    """A COMPACT app-list pointer for the system prompt (~200 tokens, was ~4.2K).
 
-    Top apps get full action lists; long-tail apps get one line + a pointer to
-    ``composio_find_tools`` for the full action list on demand.
+    The old version dumped every top app's action slugs inline (~4.2K tokens EVERY turn — 60% of
+    the whole system prompt and ~1s of first-token latency). But ``composio_find_tools(query=...)``
+    already discovers action slugs on demand (``long_tail_lookup`` over the full cached catalog), so
+    prefilling the actions was redundant. Progressive disclosure: name every app so the model knows
+    what exists, and defer action detail to the lookup tool. Same awareness, a fraction of the cost.
     """
     cat = catalog or _load_cache()
     toolkits = cat.get("toolkits") or {}
     if not toolkits:
-        return ("## Available Composio apps\n"
-                "(catalog not yet loaded — the first turn will fetch it; use "
-                "`composio_find_tools(query=...)` to discover actions on demand.)\n")
-    lines = ["## Available Composio apps\n",
-             f"{len(toolkits)} apps active. Use `composio_run_tool(tool_slug=..., arguments={{...}})` to execute; "
-             "`composio_find_tools(query=...)` to discover the right slug for an action not listed here.\n"]
-    for app in _TOP_APPS:
-        tools = toolkits.get(app)
-        if not tools:
-            continue
-        lines.append(f"### {app} ({len(tools)} actions)")
-        for tool in tools[:_MAX_ACTIONS_PER_TOP_APP]:
-            lines.append(_format_action_line(tool))
-        if len(tools) > _MAX_ACTIONS_PER_TOP_APP:
-            lines.append(f"  - … +{len(tools) - _MAX_ACTIONS_PER_TOP_APP} more — "
-                         f"use `composio_find_tools(query='{app} <action>')` to discover.")
-        lines.append("")
-    # Long-tail: all other apps in one line each.
-    others = [a for a in sorted(toolkits) if a not in _TOP_APPS]
-    if others:
-        lines.append("### Other apps")
-        for app in others:
-            lines.append(f"- **{app}** ({len(toolkits[app])} actions) — "
-                         f"use `composio_find_tools(query='{app} <what you want>')` to pick a slug.")
-        lines.append("")
-    return "\n".join(lines)
+        return ("## External apps (Composio)\n"
+                "(catalog not yet loaded — use `composio_find_tools(query=...)` to discover actions.)\n")
+    apps = sorted(toolkits, key=lambda a: (a not in _TOP_APPS, a))  # common apps first
+    app_list = ", ".join(f"{a} ({len(toolkits[a])})" for a in apps)
+    return ("## External apps (Composio)\n"
+            f"{len(toolkits)} apps connected (number = actions available). To act on one, call "
+            "`composio_find_tools(query=\"<app> <action>\")` for the exact slug, then "
+            "`composio_run_tool(tool_slug=..., arguments={...})`.\n"
+            f"Apps: {app_list}.\n")
 
 
 def long_tail_lookup(query: str, limit: int = 8) -> list[dict]:

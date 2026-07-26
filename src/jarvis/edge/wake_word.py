@@ -156,6 +156,11 @@ class WakeWordGate(FrameProcessor):
             ).astype(np.int16)
         scores = self._model.predict(samples)
         min_score = threshold if threshold is not None else self._threshold
+        # ponytail: near-miss log so "it never wakes" is debuggable — shows the best score when the
+        # wake phrase almost landed. Only fires on a real near-miss (rare), so no per-frame spam.
+        best_name, best = max(scores.items(), key=lambda kv: kv[1], default=("", 0.0))
+        if 0.2 <= best < min_score:
+            logger.info(f"wake near-miss: '{best_name}' {best:.2f} < {min_score:.2f} threshold")
         for name, score in scores.items():
             if score >= min_score:
                 return name

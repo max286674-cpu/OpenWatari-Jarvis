@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -68,6 +69,13 @@ _TOOL_PROGRESS = {
     "ha_state": "Checking that device",
     "ha_call": "On it",
 }
+
+# Generic instant acknowledgements (G1) — spoken before the LLM runs to kill first-token dead air.
+# Rotated so Watari doesn't say the identical line every turn (the old code only had one each). WORK =
+# a clear command/tool turn; CHAT = a request that tripped a tool-group but reads more conversational.
+_WORK_ACKS = ("Right away, sir.", "On it, sir.", "Of course, sir.", "Let me take care of that, sir.",
+              "Consider it done, sir.")
+_CHAT_ACKS = ("Yes, sir.", "Certainly, sir.", "Of course, sir.", "One moment, sir.")
 
 # Args whose value gives a natural tail for the acknowledgement ("Looking that up — <query>, sir.").
 _ACK_CONTEXT_KEYS = ("query", "task", "song", "title", "city", "location", "to", "name", "topic",
@@ -251,6 +259,65 @@ def _is_work_intent(user_text: str) -> bool:
     return bool(_WORK_INTENT_RE.search(user_text or ""))
 
 
+# NOTE: the per-turn "flaky tool" reliability note was REMOVED. Telling a non-thinking model that its
+# tools are unreliable made it DODGE tool calls (parroting "the tools have been flaky, I won't promise
+# they'll work") — the opposite of the intent. Tool-reliability is now handled where it belongs: in code
+# via the B4 fallback retry (a dodged forced call re-runs on a reliable tool-caller), and surfaced to the
+# owner on the HUD via tool_reliability.reliability_summary(). The prompt no longer discourages tool use.
+
+
+# B1: on a narrowed intent we advertise ONLY the right tool and force tool_choice="required". We tried
+# forcing the specific tool BY NAME ({"type":"function",...}) too, but MiniMax-Text-01 honours it no
+# better than "required" (it dodged define/telegram under both) while adding a failure mode — so we keep
+# the simpler "required". The single-tool surface is what actually stops mis-selection.
+
+# B3 degrade set: a dodged forced call becomes an honest "couldn't pull that up" ONLY for live/personal-
+# data or side-effect tools, where speaking without the tool = fabrication or a false "I did it". For
+# pure-KNOWLEDGE tools the model legitimately answers inline (define knows "ephemeral"; recall is backed
+# by the auto-RAG note), so degrading there is worse than the correct inline answer.
+_NO_DEGRADE = frozenset({"define_word", "recall"})
+
+
+def _should_degrade(narrowed: bool, seen_tools: set, forced_name: str | None) -> bool:
+    """B3: narrowed+forced intent fired NO tool, and it wasn't a knowledge tool that may answer inline."""
+    return narrowed and not seen_tools and forced_name not in _NO_DEGRADE
+
+
+# B3 — anti-fabrication hard stop. If B1 narrowed a turn to the one right tool and forced it, yet the
+# turn still ended with ZERO tools fired (a model in the chain rejected `required` and fell back to auto,
+# then narrated instead of calling), the spoken reply is unreliable — the classic "you have 5 unread"
+# hallucination. We drop it for an honest degrade rather than let a fabricated number/claim through.
+_FABRICATION_DEGRADE = (
+    "I wasn't able to pull that up just now, sir — let me try again in a moment rather than guess."
+)
+
+
+def _narrowed_tools(user_text: str, turn_tools: list[dict[str, Any]], multi_intent: bool):
+    """B1 router: on a high-precision single intent, replace the turn's tool surface with just the
+    one right tool so a forced call cannot mis-select (get_time) or fabricate. Returns
+    (tools, narrowed?, forced_name). ``forced_name`` is the tool to force by NAME when the intent
+    resolves to exactly one tool — a stronger signal than tool_choice="required", which MiniMax-Text-01
+    honours inconsistently (it dodged define_word/set_reminder under plain "required"). Skipped on
+    multi-intent turns (they need the full surface). Fail-quiet."""
+    if multi_intent:
+        return turn_tools, False, None
+    try:
+        from jarvis.brain.intent_router import forced_tools
+        from jarvis.brain.tools import schemas_by_name
+        names = forced_tools(user_text)
+        if not names:
+            return turn_tools, False, None
+        narrowed = schemas_by_name(names)
+        if narrowed:
+            forced_name = narrowed[0]["function"]["name"] if len(narrowed) == 1 else None
+            logger.info(f"B1 intent router: narrowing turn to {[s['function']['name'] for s in narrowed]}"
+                        + (f" (forcing {forced_name} by name)" if forced_name else ""))
+            return narrowed, True, forced_name
+    except Exception as e:  # noqa: BLE001 — routing must never break a turn
+        logger.debug(f"intent router skipped: {type(e).__name__}: {e}")
+    return turn_tools, False, None
+
+
 # A short affirmation that grants a pending confirmation ("yes", "go ahead", "do it", "send it").
 # Used by the confirm-tier gate: a held-back outward/destructive tool runs only after one of these.
 _AFFIRM_RE = re.compile(
@@ -263,6 +330,37 @@ _AFFIRM_RE = re.compile(
 
 def _is_affirmation(text: str) -> bool:
     return bool(_AFFIRM_RE.match(text or ""))
+
+
+# Pure conversational turns (greetings, thanks, small talk, opinions, a joke) never call a tool. Yet the
+# model is otherwise handed the full ~56-tool surface every turn — a ~10k-token (~31KB) prefill that adds
+# ~1.7s of first-word latency (measured: MiniMax TTFT 0.5s with no tools vs ~2.2s with the full surface)
+# for nothing. On a high-confidence chatter turn we carry NO tools, so the model answers immediately.
+# ANCHORED to the whole utterance + length-capped, so it can NEVER swallow a tool-needing turn
+# ("what do you think about my calendar?" is 7 words but fails the ^…$ match → keeps its tools).
+_PURE_CHAT_RE = re.compile(
+    r"^\s*(hi|hey+|hello|hiya|yo|howdy|good\s*(morning|afternoon|evening|night)|greetings|"
+    r"how\s*(are|'?re)\s*(you|ya|things)|how\s*(are\s*)?you\s*doing|how'?s\s*it\s*going|"
+    r"how\s*have\s*you\s*been|what'?s\s*up|sup|"
+    r"thank(s| you)( so much| a lot| very much)?|cheers|much appreciated|appreciate it|"
+    r"well done|good job|nice(\s*(work|one))?|awesome|great(\s*job)?|amazing|brilliant|perfect|excellent|"
+    r"good\s*night|goodnight|bye|goodbye|see\s*(you|ya)( later| soon)?|talk\s*(to\s*you\s*)?later|"
+    r"tell me a joke|say something funny|you'?re (funny|hilarious|great|the best)|that'?s funny|ha+|lol|lmao|"
+    r"how do you feel|are you (ok|okay|there|alright|awake|listening)|you good|you there|"
+    r"i (love|like|appreciate) you|love you|"
+    r"cool|nice|neat|got it|gotcha|i see|makes sense|no worries|my bad|of course|"
+    r"never\s*mind|nevermind|forget it|just (saying|checking|kidding))"
+    r"[\s,.!'?]*(watari|jarvis|sir|buddy|mate|man|dude|please|then|too|though|there|everyone|all)?[\s,.!'?]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_pure_chat(text: str) -> bool:
+    """High-confidence conversational turn that needs no tool (so we advertise none → fast first word)."""
+    t = (text or "").strip()
+    if not t or len(t.split()) > 7:
+        return False
+    return bool(_PURE_CHAT_RE.match(t))
 
 
 def _clean_reply(text: str) -> str:
@@ -310,6 +408,12 @@ _SPEAKABLE_DIRECT = frozenset({
 # trade-off, so it's OPT-IN via settings.direct_speak_channel_reads, and only for SHORT results.
 _SPEAKABLE_CHANNEL_READS = frozenset({"list_events", "read_email", "notion_tasks", "check_telegram"})
 _CHANNEL_DIRECT_MAX = 360   # chars; longer channel reads still get the summary pass even when opted in
+
+# B5-lite: router-narrowed reads that take NO required args (calendar/email/telegram/tasks). When the
+# intent router pins the turn to exactly one of these, there's nothing for the model to decide — so we
+# fire it deterministically instead of asking a dodgy tool-caller to. Kills the Channels/Tasks-read
+# "tool didn't fire → 50" swing at its root (the scorer only needs the read to actually happen).
+_ZERO_ARG_READS = frozenset({"list_events", "read_email", "check_telegram", "notion_tasks"})
 
 
 def _direct_speakable(calls: list[dict[str, Any]], outcomes: list[dict[str, Any]]) -> str | None:
@@ -359,6 +463,62 @@ WORK_ON_TASK_SCHEMA = {
     },
 }
 
+IMPROVE_CODE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "improve_own_code",
+        "description": "Improve your OWN source code, autonomously but safely: on a fresh branch, read "
+                       "the code, make a minimal change, run the tests, and commit locally if green. "
+                       "Branch-only — you NEVER push; the branch is left for the owner to review and "
+                       "approve. Off by default; only runs when armed. Use when the owner asks you to "
+                       "'improve yourself / fix your own code / change how you work' at the code level.",
+        "parameters": {"type": "object", "properties": {
+            "objective": {"type": "string",
+                          "description": "The improvement to make, in one clear sentence."}},
+            "required": ["objective"]},
+    },
+}
+
+
+PLAN_TASK_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "plan_task",
+        "description": "Plan a task WITH the owner before doing it (the co-pilot dry-run): produce a "
+                       "step-by-step plan, surface any clarifying questions, flag steps that will need "
+                       "his approval, and recommend whether you or the fleet should do it — WITHOUT "
+                       "executing anything. Use when he wants help thinking a task through, or before "
+                       "you take on a to-do ('how would you tackle X?', 'plan the website relaunch', "
+                       "'let's map out X'). Identify an existing to-do by a word from its title, or "
+                       "pass a fresh task string.",
+        "parameters": {"type": "object", "properties": {
+            "topic": {"type": "string", "description": "A word from an existing to-do's title, or its id."},
+            "task": {"type": "string", "description": "A fresh task to plan (if it's not on the list yet)."}},
+            "required": []},
+    },
+}
+
+EXECUTE_TASK_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "execute_task",
+        "description": "Actually DO a planned to-do for the owner: run it in the background via your "
+                       "bounded worker (or the fleet, for deep-domain work), linking progress back to "
+                       "the task and reporting when done. Outward/destructive steps (send, delete, "
+                       "push, pay) are DEFERRED for his approval — never done unattended. Use after "
+                       "he's approved a plan, or when he says 'go ahead and do X', 'take care of X', "
+                       "'you handle it'. If the task is still unclear it will ask first unless he says "
+                       "to just proceed.",
+        "parameters": {"type": "object", "properties": {
+            "topic": {"type": "string", "description": "A word from the to-do's title, or its id."},
+            "task": {"type": "string", "description": "A fresh task to execute (if not on the list)."},
+            "proceed_anyway": {"type": "boolean",
+                               "description": "Set true when the owner says to proceed despite open "
+                                              "questions ('just do it', 'proceed anyway')."}},
+            "required": []},
+    },
+}
+
 
 class JarvisAgent:
     def __init__(self, max_history_turns: int = 12, max_tool_iters: int = 4) -> None:
@@ -375,6 +535,7 @@ class JarvisAgent:
         # Self-improvement loop (background_review): count turns; every N, spawn a background pass
         # that learns durable facts into L1 memory. Off the hot path, so it never slows a reply.
         self._turns_since_review = 0
+        self._turns_since_digest = 0     # Fix #2: rebuild the learned-digest every N turns (not startup-frozen)
         self._review_every = max(2, _s.self_improve_every_turns)
         self._self_improve = _s.self_improve_enabled
         # Confirmation tier ENFORCEMENT (not just a prompt rule): an outward-facing / destructive
@@ -394,13 +555,19 @@ class JarvisAgent:
         # turn needs (fine-tuning.md Item 2). _core_tools = built-ins + core schemas (the typical
         # per-turn surface). Lazy groups light up via _active_groups (with a one-turn warm decay so
         # an immediate follow-up like "reply to it" still has the tools).
-        self._core_tools = [GET_TIME_SCHEMA, FLEET_TOOL_SCHEMA, WORK_ON_TASK_SCHEMA, *core_tool_schemas()]
+        self._core_tools = [GET_TIME_SCHEMA, FLEET_TOOL_SCHEMA, WORK_ON_TASK_SCHEMA,
+                            PLAN_TASK_SCHEMA, EXECUTE_TASK_SCHEMA, *core_tool_schemas()]
+        # improve_own_code is advertised only alongside the coding lazy group (see _tools_for_turn),
+        # so it never bloats the every-turn surface — it appears when the turn is about code.
         self._group_ttl: dict[str, int] = {}     # group -> turns it stays advertised
         self._tools = list(self._core_tools)     # current advertised set (core until a turn needs more)
         self._registry: dict[str, Callable] = {
             "get_time": self._tool_get_time,
             "delegate_to_fleet": self._tool_delegate,
             "work_on_task": self._tool_work_on_task,
+            "plan_task": self._tool_plan_task,
+            "execute_task": self._tool_execute_task,
+            "improve_own_code": self._tool_improve_own_code,
             **tool_handlers(),
         }
         logger.info(f"tools: {len(self._core_tools)} core advertised; "
@@ -410,6 +577,14 @@ class JarvisAgent:
         """Core surface + any lazy group this turn activates (or is still warm from last turn)."""
         for g in self._group_ttl:                # decay previous activations by one turn
             self._group_ttl[g] -= 1
+        # Pure chatter (greeting/thanks/joke/opinion) needs no tool — carry NONE so the ~10k-token tool
+        # prefill (≈1.7s of first-word latency) is skipped and the model speaks immediately. Suppressed
+        # unconditionally: chatter never needs a group, and a broad trigger ("how are" arms the graph
+        # group on "how are you?") would otherwise defeat the fast path.
+        if _is_pure_chat(user_text):
+            self._group_ttl = {g: ttl for g, ttl in self._group_ttl.items() if ttl > 0}
+            self._tools = []
+            return []
         for g in groups_for_text(user_text):     # (re)arm groups the utterance calls for
             self._group_ttl[g] = 2               # this turn + one follow-up
         active = [g for g, ttl in self._group_ttl.items() if ttl > 0]
@@ -417,6 +592,8 @@ class JarvisAgent:
         tools = list(self._core_tools)
         for g in active:
             tools.extend(group_tool_schemas(g))
+        if "coding" in active:                    # code self-improve rides with the coding group only
+            tools.append(IMPROVE_CODE_SCHEMA)
         if active:
             logger.info(f"lazy tool groups active this turn: {active} (+{len(tools) - len(self._core_tools)} tools)")
         self._tools = tools
@@ -432,6 +609,25 @@ class JarvisAgent:
         if self._pending_confirm and not self._confirm_granted:
             self._pending_confirm = None
         self._last_turn_at = now
+        self._maybe_refresh_digest()                      # Fix #2: unfreeze the startup digest
+
+    def _maybe_refresh_digest(self) -> None:
+        """Fix #2 — the system-prompt learned-digest is built once at startup, so on a 24/7 brain a
+        fact learned mid-session (by the background reviewer or the remember tool) wouldn't surface
+        for days. Rebuild the prompt every N turns so recent facts reach the model without a restart.
+        Cheap (reads a few small files); fail-quiet so a rebuild hiccup never blocks a turn."""
+        every = settings.memory_digest_refresh_every_turns
+        if every <= 0:
+            return
+        self._turns_since_digest += 1
+        if self._turns_since_digest < every:
+            return
+        self._turns_since_digest = 0
+        try:
+            self._system = {"role": "system", "content": build_system_prompt()}
+            logger.debug("system prompt digest refreshed (mid-session learned facts now in prompt)")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"digest refresh skipped: {type(e).__name__}: {e}")
 
     def _maybe_idle_reset(self, now: datetime) -> None:
         if not self._idle_reset_min or not self._history or self._last_turn_at is None:
@@ -557,7 +753,10 @@ class JarvisAgent:
         NOT recursion into itself or another blocking fleet delegation."""
         from jarvis.brain.tools import tool_schemas
 
-        skip = {"work_on_task", "delegate_to_fleet"}
+        # SAFETY (Phase 4.2): approve_action/reject_action are withheld from the autonomous worker. It
+        # defers outward steps INTO the approval queue; if it could also approve them it would be waving
+        # through its own deferrals and the human-in-the-loop gate would be worthless.
+        skip = {"work_on_task", "delegate_to_fleet", "approve_action", "reject_action", "list_approvals"}
         return [GET_TIME_SCHEMA, *(s for s in tool_schemas()
                                    if s["function"]["name"] not in skip)]
 
@@ -570,6 +769,29 @@ class JarvisAgent:
 
         n = settings.backlog_max_tasks if max_tasks is None else max_tasks
         return await attempt_backlog(self._llm, self._registry, self._worker_tools(), max_tasks=n)
+
+    async def backlog_report(self, attempts: list[dict]) -> str:
+        """Spoken report of the autonomous backlog pass — what he did, why, and his reasoning — so a
+        proactive action is never silent. Delivered by the scheduler via the proactive path (edge voice
+        → Telegram voice note → push). '' when nothing was actually done."""
+        from jarvis.brain.proactive_report import spoken_action_report
+
+        done = [a for a in (attempts or []) if a.get("commented") or a.get("result")]
+        return await spoken_action_report(
+            self._llm, done,
+            trigger="these were overdue or sitting undated in your Notion inbox")
+
+    async def advance_objectives(self) -> list[dict]:
+        """Phase 4.1 daily driver: advance the owner's multi-day objectives one safe step each and log
+        progress. Safe by construction (the bounded worker defers every outward step). Returns what
+        moved (``[{id, text, summary}]``). Wired to the scheduler in ``server.serve()`` when
+        ``JARVIS_OBJECTIVES_ENABLED`` is set."""
+        from jarvis.brain.objectives import advance_objectives
+
+        return await advance_objectives(
+            self._llm, self._registry, self._worker_tools(),
+            max_objectives=settings.objectives_max, max_steps=settings.objectives_max_steps,
+        )
 
     async def _tool_work_on_task(self, args: dict) -> str:
         """Fire an autonomous, bounded work loop in the BACKGROUND and return at once with a task id.
@@ -592,6 +814,121 @@ class JarvisAgent:
             "you'll report back the moment it's done — he can ask 'how's that going?' anytime."
         )
 
+    # ---- task co-pilot (Phase 3): clarify -> plan -> confirm -> execute -> report ----------
+    def _resolve_todo(self, topic: str):
+        """Find one open to-do by id/word (None if no/ambiguous match). Mirrors tools/tasks._resolve."""
+        from jarvis.brain.tasks import TASKS
+
+        matches = TASKS.find_todo((topic or "").strip())
+        return matches[0] if len(matches) == 1 else None
+
+    async def _tool_plan_task(self, args: dict) -> str:
+        """Plan a task WITH the owner (dry-run): build a step plan + clarifying questions + who does it,
+        store it on the to-do so execute_task can reuse it, and read it back for approval. Runs nothing."""
+        from jarvis.brain.copilot import build_plan, plan_to_meta, spoken_plan
+        from jarvis.brain.tasks import TASKS
+
+        topic = (args.get("topic") or "").strip()
+        raw = (args.get("task") or "").strip()
+        todo = self._resolve_todo(topic) if topic else None
+        if todo is None and topic and not raw:
+            raw = topic  # a word that didn't match a to-do — plan it as a fresh task
+        title = todo.title if todo else raw
+        description = todo.description if todo else ""
+        if not title:
+            return "What task should I plan, sir?"
+        plan = await build_plan(title, description, self._llm, fleet_available=self.fleet_authorized)
+        if todo is not None:  # persist the plan on the to-do so execute_task reuses it
+            todo.meta["plan"] = plan_to_meta(plan)
+            TASKS.edit_todo(todo.id)
+        return spoken_plan(plan, title)
+
+    async def _tool_execute_task(self, args: dict) -> str:
+        """Execute a (planned) task in the BACKGROUND via the bounded worker or the fleet, link progress
+        back to the to-do, and report on completion. Outward/destructive steps are always deferred."""
+        from jarvis.brain.copilot import build_plan, execution_objective, plan_from_meta, plan_to_meta
+        from jarvis.brain.tasks import TASKS
+        from jarvis.brain.worker import TaskWorker
+
+        topic = (args.get("topic") or "").strip()
+        raw = (args.get("task") or "").strip()
+        proceed = bool(args.get("proceed_anyway")) or settings.copilot_autopilot_enabled
+        todo = self._resolve_todo(topic) if topic else None
+        if todo is None and topic and not raw:
+            raw = topic
+        title = todo.title if todo else raw
+        description = todo.description if todo else ""
+        if not title:
+            return "Which task should I take on, sir?"
+
+        # Reuse an approved plan if we have one; otherwise plan on the spot.
+        plan = plan_from_meta(todo.meta.get("plan")) if todo else None
+        if plan is None:
+            plan = await build_plan(title, description, self._llm, fleet_available=self.fleet_authorized)
+            if todo is not None:
+                todo.meta["plan"] = plan_to_meta(plan)
+                TASKS.edit_todo(todo.id)
+        # Still-underspecified and no explicit go-ahead -> ask first (don't guess).
+        if plan.needs_clarification and not proceed:
+            return ("Before I start on '" + title + "', sir — " +
+                    " ".join(q.rstrip("?") + "?" for q in plan.questions) +
+                    " Answer those, or say 'just proceed'.")
+
+        objective = execution_objective(title, description, plan)
+        use_fleet = plan.executor == "fleet" and self.fleet_authorized
+        todo_id = todo.id if todo else None
+
+        async def _run_and_link(on_progress):
+            if use_fleet:
+                result = await delegate_to_fleet(objective, on_progress=on_progress)
+            else:
+                worker = TaskWorker(self._llm, self._registry, self._worker_tools(),
+                                    max_steps=settings.copilot_max_steps)
+                result = await worker.run(objective, on_progress=on_progress)
+            if todo_id is not None:  # link the outcome back onto the to-do before completion fires
+                try:
+                    TASKS.edit_todo(todo_id, note="Watari worked on it: " + result[:400])
+                except Exception:  # noqa: BLE001
+                    pass
+            return result
+
+        t = TASKS.run(title=f"execute: {title}", coro_factory=_run_and_link, kind="work",
+                      meta={"todo_id": todo_id} if todo_id else None)
+        if todo_id is not None:
+            todo.meta["exec_job"] = t.id
+            TASKS.edit_todo(todo_id, note="Watari is working on it now.")
+        who = "the fleet" if use_fleet else "it myself"
+        downgraded = (plan.executor == "fleet" and not self.fleet_authorized)
+        note = " (the fleet isn't authorized this session, so I'll do the safe parts myself)" if downgraded else ""
+        return (f"BACKGROUNDED: I'm on '{title}' now via {who}{note} (task id {t.id}). Tell the owner "
+                "you'll report back the moment it's done — he can ask 'how's that going?' anytime.")
+
+    async def _tool_improve_own_code(self, args: dict) -> str:
+        """Run one bounded, branch-only code self-improvement pass in the BACKGROUND (off by default).
+        Watari branches, edits, tests, and commits locally; he never pushes — the branch waits for the
+        owner's review. Returns at once with a task id; completion is announced by voice."""
+        from jarvis.brain.code_improve import run_code_self_improve
+        from jarvis.brain.tasks import TASKS
+
+        objective = (args.get("objective") or "").strip()
+        if not objective:
+            return "What would you like me to improve in my own code, sir?"
+        from jarvis.config import settings as _s
+        if not _s.code_self_improve_enabled:
+            # Answer inline (no background task) so the owner immediately hears it's disarmed.
+            return ("Code self-improvement is switched off by default, sir — it edits my own source, so "
+                    "it only runs when you arm it (JARVIS_CODE_SELF_IMPROVE_ENABLED=true).")
+        t = TASKS.run(
+            title=f"self-improve: {objective}",
+            coro_factory=lambda on_progress: run_code_self_improve(
+                objective, self._llm, self._registry, on_progress=on_progress),
+            kind="work",
+        )
+        return (
+            f"BACKGROUNDED: I'm improving that on a fresh branch now (task id {t.id}) — I'll test and "
+            "commit locally, then leave it for your review; I won't push. Tell the owner you're on it."
+        )
+
     def _refuse_catastrophic(self, user_text: str) -> str:
         """Record a catastrophic-command turn (the user request + a hard refusal) and return the
         refusal. No tool runs and the model is never called — deterministic safety on top of the
@@ -605,6 +942,8 @@ class JarvisAgent:
     # ---- main loop --------------------------------------------------------------------
     async def respond(self, user_text: str, on_progress: Callable | None = None) -> str:
         """Run one full turn (with tool calls) and return Jarvis's spoken reply text."""
+        from jarvis.brain.metrics import METRICS
+        METRICS.incr("turns")
         self._begin_turn(user_text)
         if _catastrophic(user_text):
             return self._refuse_catastrophic(user_text)
@@ -619,25 +958,79 @@ class JarvisAgent:
             messages.append({"role": "system", "content": _WORK_INTENT_NUDGE})
         elif multi_intent:
             messages.append({"role": "system", "content": _MULTI_INTENT_NUDGE})
+        recall_note = await self._recall_note(user_text)   # Fix #1: auto-RAG (ephemeral, not stored)
+        if recall_note:
+            messages.append({"role": "system", "content": recall_note})
+        rel_note = self._relational_note(user_text)   # Phase 6: affect-aware manner + relationship memory
+        if rel_note:
+            messages.append({"role": "system", "content": rel_note})
+        world_note = self._world_note()   # G5: fresh integration events reach the reactive turn
+        if world_note:
+            messages.append({"role": "system", "content": world_note})
         turn_tools = self._tools_for_turn(user_text)
+        # B1: narrow to the one right tool on a high-precision intent (calendar/email/telegram/notion/
+        # define/remember/…) so a forced call can't mis-select or fabricate. Skipped on multi-intent.
+        turn_tools, narrowed, forced_name = _narrowed_tools(user_text, turn_tools, multi_intent)
         # Force a tool on pass 1 for clear commands/read-intents AND research-and-write-up requests, so
         # a weak model can't fake a command or answer a background-work request inline.
-        force_first = (_wants_forced_tool(user_text) or work_intent) and bool(turn_tools)
+        force_first = (narrowed or _wants_forced_tool(user_text) or work_intent) and bool(turn_tools)
+
+        # B5-lite: a narrowed zero-arg read needs no model round-trip — fire it and answer, guaranteed.
+        if narrowed and forced_name in _ZERO_ARG_READS:
+            reply = await self._forced_zero_arg_read(messages, forced_name, on_progress)
+            self._history.append({"role": "assistant", "content": reply})
+            self._trim()
+            self._spawn_review()
+            return reply
 
         completion_pending = False   # force ONE extra pass to finish a multi-intent turn
         completion_done = False
+        b4_retried = False           # B4: one fallback-model retry per turn when the primary dodges
+        b5_escalated = False         # B5: one thinking-tier escalation per turn on a persistent dodge
         seen_tools: set[str] = set()
         for i in range(self._max_tool_iters):
             force_this = (i == 0 and force_first) or completion_pending
             completion_pending = False
             choice = "required" if force_this else "auto"
+            # Tool-tier: on a forced tool pass, go STRAIGHT to the reliable fallback tool-caller (groq)
+            # instead of the primary, which dodges ~half its forced calls. Conversational turns keep the
+            # primary. This removes the wasted primary round-trip that B4 otherwise pays after a dodge.
+            # EXCLUDES work_intent — work_on_task is a background-delegation meta-tool the primary handles
+            # better (routing it to groq regressed Autonomy); tool-tier is for data/command tools.
+            prefer_fb = force_this and settings.tool_turns_prefer_fallback and not work_intent
             try:
-                msg = await self._llm.complete(messages, tools=turn_tools, tool_choice=choice)
+                msg = await self._llm.complete(messages, tools=turn_tools, tool_choice=choice,
+                                               skip_primary=prefer_fb)
             except RuntimeError:
                 # A model in the chain may reject forced tool_choice — retry this pass on "auto".
                 if choice == "auto":
                     raise
-                msg = await self._llm.complete(messages, tools=turn_tools, tool_choice="auto")
+                msg = await self._llm.complete(messages, tools=turn_tools, tool_choice="auto",
+                                               skip_primary=prefer_fb)
+            # B4: if a forced pass STILL fired no tool (the primary was used and dodged, or a rare
+            # fallback dodge), retry ONCE past the primary onto the reliable tool-caller before giving up.
+            # Skipped when we already started at the fallback (prefer_fb) — that retry would be identical.
+            if (force_this and not getattr(msg, "tool_calls", None) and not b4_retried and not prefer_fb):
+                b4_retried = True
+                try:
+                    alt = await self._llm.complete(messages, tools=turn_tools,
+                                                   tool_choice="required", skip_primary=True)
+                    if getattr(alt, "tool_calls", None):
+                        logger.info(f"B4: primary dodged {forced_name}; fallback tool-caller fired it")
+                        msg = alt
+                except (RuntimeError, TypeError):
+                    # RuntimeError: the fallback also rejected forcing. TypeError: an injected test-double
+                    # LLM lacks the skip_primary kwarg (the real client always has it). Either way, no
+                    # fallback available — fall through to the honest degrade.
+                    pass
+            # B5 thinking-tier: forced turn the fast models still dodged → escalate ONCE to a MiniMax
+            # reasoning model before giving up. This is what rescues arg-bearing tools (set_reminder,
+            # create_event, notion_create) that the non-thinking primary + groq miss.
+            if force_this and not getattr(msg, "tool_calls", None) and not b5_escalated:
+                b5_escalated = True
+                alt = await self._escalate_thinking(messages, turn_tools)
+                if alt is not None:
+                    msg = alt
             tool_calls = getattr(msg, "tool_calls", None)
             if not tool_calls:
                 # Multi-intent completion: the user asked for >1 thing but only ONE tool ran. Give the
@@ -648,6 +1041,12 @@ class JarvisAgent:
                     messages.append({"role": "system", "content": _MULTI_INTENT_COMPLETE})
                     continue
                 reply = _clean_reply(msg.content or "")
+                # B3: a narrowed+forced live-data/side-effect intent that fired NO tool means the model
+                # dodged the call and is about to speak an unverified answer — degrade honestly. Knowledge
+                # tools (define/recall) are exempt: the inline answer there is legitimate.
+                if _should_degrade(narrowed, seen_tools, forced_name):
+                    logger.info(f"B3 anti-fabrication: forced {forced_name} dodged (0 tools) — honest degrade")
+                    reply = _FABRICATION_DEGRADE
                 # Never persist an empty assistant turn: with no content AND no tool_calls it's an
                 # invalid message that some upstream models reject (400) when the history is replayed
                 # next turn. Fall back to a spoken acknowledgement instead.
@@ -687,6 +1086,44 @@ class JarvisAgent:
         self._trim()
         self._spawn_review()
         return reply
+
+    async def _escalate_thinking(self, messages: list[dict[str, Any]], turn_tools: list[dict[str, Any]]):
+        """B5 thinking-tier: a forced tool turn the fast primary AND the reliable fallback both dodged is
+        retried ONCE on a MiniMax reasoning model — a stronger tool-caller that fires the arg-bearing
+        tools (set_reminder/create_event/notion_create) the fast models miss. Returns the message if it
+        fired a tool, else None (fall through to honest degrade). Fail-quiet."""
+        model = settings.llm_thinking_model
+        if not model:
+            return None
+        try:
+            alt = await self._llm.complete(messages, tools=turn_tools, tool_choice="required",
+                                           prepend_model=model)
+        except (RuntimeError, TypeError):
+            return None
+        if getattr(alt, "tool_calls", None):
+            logger.info(f"B5 thinking-tier: {model} fired a tool the fast models dodged")
+            return alt
+        return None
+
+    async def _forced_zero_arg_read(
+        self, messages: list[dict[str, Any]], forced_name: str,
+        on_progress: Callable | None,
+    ) -> str:
+        """Deterministically run a router-narrowed zero-arg read and return the spoken reply. The tool
+        result is a natural sentence; speak it verbatim when short, else one no-tool summary pass for
+        polish. Shared by both respond paths so the guarantee (the read always fires) is identical."""
+        calls = [{"id": f"b5-{forced_name}", "name": forced_name, "arguments": "{}"}]
+        outcomes = await self._execute_calls(messages, calls, "", on_progress)
+        text = _clean_reply(outcomes[0]["result"]) if outcomes and outcomes[0]["ok"] else ""
+        if text and len(text) <= _CHANNEL_DIRECT_MAX and not re.search(r"[A-Z]{4,}_[A-Z]{3,}", text):
+            return text
+        messages.append({
+            "role": "system",
+            "content": "Now tell the owner what you found, in one or two spoken sentences. "
+                       "Do NOT call or write any tool calls.",
+        })
+        msg = await self._llm.complete(messages)
+        return _clean_reply(msg.content or "") or text or "Here's what I found, sir."
 
     async def _execute_calls(
         self,
@@ -782,6 +1219,11 @@ class JarvisAgent:
                           "Tell the owner briefly that it failed and carry on.")
                 ok = False
         logger.info(f"tool {name}({args}) -> {str(result)[:80]}")
+        from jarvis.brain.metrics import METRICS
+        METRICS.incr("tool_calls")
+        METRICS.incr(f"tool.{name}")
+        if not ok:
+            METRICS.incr("tool_errors")
         return {"name": name, "result": result, "ok": ok, "args": args}
 
     async def _await_with_progress(self, coro, on_progress: Callable | None, name: str = ""):
@@ -811,13 +1253,25 @@ class JarvisAgent:
     def _immediate_ack(self, user_text: str, on_progress: Callable | None) -> None:
         """Speak an instant acknowledgement the moment a work-like request arrives — BEFORE the LLM
         even runs — so there's no dead air during the model's first-token latency. Only for requests
-        that clearly mean work (a command or a tool-group trigger), so plain chatter stays snappy."""
+        that clearly mean work (a command or a tool-group trigger), so plain chatter stays snappy.
+
+        Polished (G1): rotates a small phrase set (never the same line twice running) and STAYS SILENT
+        when a specific per-tool ack is imminent — a router-narrowed zero-arg read fires its own
+        "Checking your calendar, sir." near-instantly, so a generic "Right away" here would just
+        double up. Non-instant turns still get the filler (real dead air during arg-extraction)."""
         if not (on_progress and settings.ack_before_tools):
             return
-        if _wants_forced_tool(user_text) or groups_for_text(user_text):
-            on_progress("Right away, sir.")
-        else:
-            on_progress("Yes, sir.")
+        if _is_pure_chat(user_text):
+            return  # chatter now answers in ~0.5s (no tools) — a "Yes, sir." filler would just precede it
+        from jarvis.brain.intent_router import forced_tools
+        fn = forced_tools(user_text)
+        if len(fn) == 1 and fn[0] in _ZERO_ARG_READS:
+            return  # specific ack ("Checking your Telegram, sir.") lands in milliseconds — no double-up
+        pool = _WORK_ACKS if (_wants_forced_tool(user_text) or groups_for_text(user_text)) else _CHAT_ACKS
+        choices = [p for p in pool if p != getattr(self, "_last_ack", None)] or list(pool)
+        line = random.choice(choices)
+        self._last_ack = line
+        on_progress(line)
 
     async def respond_stream(self, user_text: str, on_progress: Callable | None = None):
         """Streaming twin of ``respond``: yields spoken sentences AS they generate, so TTS can
@@ -856,8 +1310,18 @@ class JarvisAgent:
             messages.append({"role": "system", "content": _WORK_INTENT_NUDGE})
         elif multi_intent:
             messages.append({"role": "system", "content": _MULTI_INTENT_NUDGE})
+        recall_note = await self._recall_note(user_text)   # Fix #1: auto-RAG (ephemeral, not stored)
+        if recall_note:
+            messages.append({"role": "system", "content": recall_note})
+        rel_note = self._relational_note(user_text)   # Phase 6: affect-aware manner + relationship memory
+        if rel_note:
+            messages.append({"role": "system", "content": rel_note})
+        world_note = self._world_note()   # G5: fresh integration events reach the reactive turn
+        if world_note:
+            messages.append({"role": "system", "content": world_note})
         turn_tools = self._tools_for_turn(user_text)
-        force_first = (_wants_forced_tool(user_text) or work_intent) and bool(turn_tools)
+        turn_tools, narrowed, forced_name = _narrowed_tools(user_text, turn_tools, multi_intent)  # B1 router
+        force_first = (narrowed or _wants_forced_tool(user_text) or work_intent) and bool(turn_tools)
         spoken: list[str] = []
 
         def _finish(default: str) -> None:
@@ -867,20 +1331,30 @@ class JarvisAgent:
             self._spawn_review()
             self._stream_done = True
 
+        # B5-lite: a narrowed zero-arg read fires deterministically — no model round-trip to dodge.
+        if narrowed and forced_name in _ZERO_ARG_READS:
+            reply = await self._forced_zero_arg_read(messages, forced_name, on_progress)
+            spoken.append(reply)
+            yield reply
+            _finish(reply)
+            return
+
         completion_pending = False   # force ONE extra pass to finish a multi-intent turn
         completion_done = False
+        b5_escalated = False         # B5: one thinking-tier escalation per turn on a persistent dodge
         seen_tools: set[str] = set()
         for i in range(self._max_tool_iters):
             force_this = (i == 0 and force_first) or completion_pending
             completion_pending = False
             choice = "required" if force_this else "auto"
             attempts = [choice] if choice == "auto" else [choice, "auto"]
+            prefer_fb = force_this and settings.tool_turns_prefer_fallback and not work_intent  # tool-tier
             buf, calls, preamble = "", None, []
             for attempt in attempts:
                 buf, calls, preamble = "", None, []
                 try:
                     async for kind, payload in self._llm.stream_with_tools(
-                        messages, tools=turn_tools, tool_choice=attempt
+                        messages, tools=turn_tools, tool_choice=attempt, skip_primary=prefer_fb
                     ):
                         if kind == "text":
                             buf += payload
@@ -900,6 +1374,15 @@ class JarvisAgent:
                     continue  # forced tool_choice rejected by every model — retry on auto
 
             if not calls:
+                # B5 thinking-tier: a forced turn the fast models dodged → escalate ONCE to a MiniMax
+                # reasoning model. Only when nothing's been spoken yet, so we never double up on speech.
+                if force_this and not b5_escalated and not spoken:
+                    b5_escalated = True
+                    alt = await self._escalate_thinking(messages, turn_tools)
+                    if alt is not None and getattr(alt, "tool_calls", None):
+                        calls = [{"id": tc.id, "name": tc.function.name,
+                                  "arguments": tc.function.arguments or "{}"} for tc in alt.tool_calls]
+            if not calls:
                 # Multi-intent completion: only one tool ran but the user asked for >1 thing — force ONE
                 # pass to finish the remaining part (e.g. remember it) before ending the turn.
                 if multi_intent and len(seen_tools) == 1 and not completion_done:
@@ -907,6 +1390,13 @@ class JarvisAgent:
                     completion_pending = True
                     messages.append({"role": "system", "content": _MULTI_INTENT_COMPLETE})
                     continue
+                # B3: a narrowed+forced live-data intent that fired no tool → don't speak an unverified
+                # tail (knowledge tools exempt — they may answer inline).
+                if _should_degrade(narrowed, seen_tools, forced_name) and not spoken:
+                    yield _FABRICATION_DEGRADE
+                    spoken.append(_FABRICATION_DEGRADE)
+                    _finish(_FABRICATION_DEGRADE)
+                    return
                 tail = _clean_reply(buf)
                 if tail:
                     spoken.append(tail)
@@ -990,6 +1480,65 @@ class JarvisAgent:
             logger.info(f"resumed conversation thread: {len(history)} messages ({age_min:.0f}m old)")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"session restore skipped: {e}")
+
+    def _world_note(self) -> str | None:
+        """G5 connectivity — surface FRESH integration events (webhooks/world-model) into the reactive
+        turn so the owner asking 'anything new?' gets the Stripe payout / CI failure / reply that landed,
+        not only the proactive loop. Usually empty (events are rare) → ~zero token cost. Fail-quiet."""
+        try:
+            from jarvis.brain.world_model import WORLD
+            events = WORLD.recent_events()
+        except Exception:  # noqa: BLE001
+            return None
+        if not events:
+            return None
+        return "Fresh updates from your integrations (mention only if relevant): " + "; ".join(events)
+
+    def _relational_note(self, user_text: str) -> str | None:
+        """Phase 6 — read the room. Infer the owner's affect from this utterance (6.1), log it into the
+        relationship memory (6.2), and return one per-turn system note that adapts Watari's manner and
+        surfaces mood-over-time / sensitivities / running jokes. Cheap (no LLM) and fail-quiet — reading
+        the room must never break a turn."""
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            from jarvis.brain.affect import infer_affect, manner_note
+            from jarvis.brain.relationship import RELATIONSHIP
+
+            now = datetime.now(ZoneInfo(settings.user_tz))
+            affect = infer_affect(user_text, now=now)
+            RELATIONSHIP.note_affect(affect.tags(), now=now)   # builds the mood-over-time log
+            parts = [p for p in (manner_note(affect), RELATIONSHIP.render()) if p]
+            return "\n".join(parts) or None
+        except Exception as e:  # noqa: BLE001 — reading the room must never break a turn
+            logger.debug(f"relational note skipped: {type(e).__name__}")
+            return None
+
+    async def _recall_note(self, user_text: str) -> str | None:
+        """Fix #1 — auto-RAG. Retrieve memory relevant to THIS utterance and return a compact system
+        note, so durable facts reach the model every turn without it having to call `recall`. Keyword
+        L1 + L2 only (fast, local, free); the explicit recall tool still does the semantic + vault
+        search. Skips trivial turns (too short, a bare affirmation) — nothing to ground there."""
+        if not (settings.memory_enabled and settings.memory_autorecall_enabled):
+            return None
+        t = (user_text or "").strip()
+        if len(t.split()) < settings.memory_autorecall_min_words or _is_affirmation(t):
+            return None
+        try:
+            from jarvis.brain.memory import STORE
+
+            hits = await STORE.fused_recall(t, limit=settings.memory_autorecall_limit,
+                                            layers=("L1", "L2"))
+        except Exception as e:  # noqa: BLE001 — recall must never break a turn
+            logger.debug(f"auto-recall skipped: {type(e).__name__}: {e}")
+            return None
+        if not hits:
+            return None
+        tag = {"L1": "learned", "L2": "journal"}
+        lines = [f"- [{tag.get(h['layer'], h['layer'])}] {h['text'].rstrip('.')}." for h in hits]
+        return ("Relevant things you already know about the owner (from memory — draw on them only if "
+                "pertinent; don't recite them):\n" + "\n".join(lines))
 
     def _spawn_review(self) -> None:
         """Self-improvement: every N turns, kick off a background pass that learns durable facts into

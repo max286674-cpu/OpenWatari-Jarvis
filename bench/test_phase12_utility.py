@@ -64,6 +64,11 @@ def main() -> None:
     check("wiki without topic asks", "look up" in asyncio.run(u.wiki_lookup({})).lower())
     check("define without word asks", "word" in asyncio.run(u.define_word({})).lower())
     check("convert without number asks", "number" in asyncio.run(u.convert({"from": "km", "to": "mi"})).lower())
+    check("travel_time without destination asks", "where" in asyncio.run(u.travel_time({})).lower())
+    # travel mode aliases map to OSRM profiles (pure, no network).
+    check("travel mode 'car' -> driving", u._TRAVEL_MODES.get("car") == "driving")
+    check("travel mode 'walk' -> walking", u._TRAVEL_MODES.get("walk") == "walking")
+    check("travel mode 'bike' -> cycling", u._TRAVEL_MODES.get("bike") == "cycling")
 
     print("\n[5] convert routes 3-letter currency codes to fx (and unit codes to maths)")
     out = asyncio.run(u.convert({"value": 10, "from": "km", "to": "mi"}))
@@ -75,7 +80,7 @@ def main() -> None:
     print("\n[6] all eight belt tools are registered")
     names = set(tool_names())
     expected = {"weather", "crypto_price", "stock_price", "fx_rate", "news_brief",
-                "wiki_lookup", "define_word", "convert"}
+                "wiki_lookup", "define_word", "convert", "travel_time"}
     check("every utility is registered", expected <= names, str(sorted(expected - names)))
 
     print(f"\n=== {passed}/{passed + failed} checks passed ===")

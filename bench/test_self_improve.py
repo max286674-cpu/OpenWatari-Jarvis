@@ -35,7 +35,7 @@ class FakeLLM:
         self.content = content
         self.calls = 0
 
-    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto"):
+    async def complete(self, messages, tools=None, temperature=0.6, tool_choice="auto", skip_primary=False):
         self.calls += 1
         return SimpleNamespace(content=self.content, tool_calls=None)
 

@@ -6,11 +6,58 @@ later fire and get spoken (if he's running) and/or pushed to the phone via ntfy.
 
 from __future__ import annotations
 
+import re
+
 from loguru import logger
 
 from jarvis.brain.scheduler import SCHEDULER
 from jarvis.brain.tools.base import tool_error
 from jarvis.config import settings
+
+# A relative delay phrase a model may put anywhere ("in 90 minutes", "90 min", "in 2 hours", "in a day").
+_REL_DELAY_RE = re.compile(r"\b(?:in\s+)?(\d+(?:\.\d+)?)\s*(month|week|day|hour|hr|minute|min|sec|h|m|d)s?\b", re.I)
+_REL_UNIT_MIN = {"month": 43200, "week": 10080, "day": 1440, "d": 1440, "hour": 60, "hr": 60, "h": 60,
+                 "minute": 1, "min": 1, "m": 1, "sec": 1 / 60}
+
+
+def _rel_to_minutes(text: str | None) -> float | None:
+    """Parse a relative delay ('in 90 minutes', '2 hours') to minutes, or None if it isn't one."""
+    m = _REL_DELAY_RE.search(text or "")
+    if not m:
+        return None
+    return float(m.group(1)) * _REL_UNIT_MIN[m.group(2).lower()]
+
+
+def _normalize_reminder_args(args: dict) -> tuple[str, float | None, str | None, str | None]:
+    """Tolerate the arg shapes different models emit so a reminder never fails on formatting.
+
+    The non-thinking primary + fallbacks variously send the text as message/text/reminder/task, the
+    delay as a numeric string, or a relative phrase ('in 90 minutes') in `at`/`when` — which the old code
+    fed straight to `datetime.fromisoformat`, raising 'I couldn't set your reminder'. Returns
+    (message, in_minutes, at, daily) with a relative `at`/`when` folded into in_minutes and `at` kept
+    only if it's an absolute time."""
+    message = ""
+    for k in ("message", "text", "reminder", "task", "about", "what", "content"):
+        if (v := (args.get(k) or "").strip()):
+            message = v
+            break
+    in_minutes = args.get("in_minutes")
+    if in_minutes in (None, "") and args.get("minutes") not in (None, ""):
+        in_minutes = args.get("minutes")
+    if isinstance(in_minutes, str):
+        in_minutes = float(in_minutes) if re.fullmatch(r"\d+(?:\.\d+)?", in_minutes.strip()) else None
+    at = (args.get("at") or args.get("time") or args.get("when") or "").strip() or None
+    daily = (args.get("daily") or "").strip() or None
+    # A relative phrase landed in at/when: fold it into a delay so it never reaches fromisoformat.
+    if in_minutes is None and at:
+        try:
+            from datetime import datetime
+            datetime.fromisoformat(at)          # already an absolute ISO time -> leave it for the scheduler
+        except ValueError:
+            rel = _rel_to_minutes(at)
+            if rel is not None:
+                in_minutes, at = rel, None
+    return message, in_minutes, at, daily
 
 
 async def _register_daily_with_ticker(job_id: str, message: str, daily: str) -> bool:
@@ -56,12 +103,9 @@ async def _cancel_on_ticker(job_id: str) -> None:
 
 
 async def set_reminder(args: dict) -> str:
-    message = (args.get("message") or "").strip()
+    message, in_minutes, at, daily = _normalize_reminder_args(args)
     if not message:
         return "What should I remind you about, sir?"
-    in_minutes = args.get("in_minutes")
-    at = (args.get("at") or "").strip() or None
-    daily = (args.get("daily") or "").strip() or None
     if in_minutes is None and not at and not daily:
         return "When should I remind you, sir? Give me a delay, a time, or a daily time."
     try:

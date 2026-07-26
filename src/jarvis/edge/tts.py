@@ -33,9 +33,20 @@ def _build_elevenlabs():
             "JARVIS_TTS_PROVIDER=piper (offline, no key)."
         )
     from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+    from pipecat.frames.frames import ErrorFrame
+    from jarvis.edge import voice_health
 
     logger.info(f"TTS: ElevenLabs {settings.elevenlabs_model} (cloud, streaming)")
-    return ElevenLabsTTSService(
+
+    class _MonitoredElevenLabs(ElevenLabsTTSService):
+        """Records escalated errors so the watchdog can fail over to local Piper when the cloud
+        WebSocket keeps timing out (handshake/keepalive deaths a REST probe can't detect)."""
+
+        async def push_error_frame(self, error: ErrorFrame) -> None:
+            voice_health.record_cloud_error(str(getattr(error, "error", "")))
+            await super().push_error_frame(error)
+
+    return _MonitoredElevenLabs(
         api_key=settings.elevenlabs_api_key,
         settings=ElevenLabsTTSService.Settings(
             voice=settings.elevenlabs_voice_id,
@@ -97,10 +108,19 @@ def build_tts():
     comes up instead of dying. Non-cloud providers raise their own clear, actionable error.
     """
     prov = settings.tts_provider
+    fb = settings.tts_fallback_provider
+    # Startup health gate (mirrors build_stt): only build cloud TTS if it actually answers now (or
+    # isn't in post-failure cooldown); else come up on local Piper so the edge can always speak.
+    if prov in _CLOUD and settings.voice_local_fallback and fb not in _CLOUD:
+        from jarvis.edge import voice_health
+
+        if not voice_health.cloud_tts_healthy():
+            logger.warning(f"cloud TTS '{prov.value}' unhealthy at startup — using local '{fb.value}'")
+            return _BUILDERS[fb]()
+        voice_health.mark_cloud_active(True)
     try:
         return _BUILDERS.get(prov, _build_elevenlabs)()
     except Exception as e:  # noqa: BLE001
-        fb = settings.tts_fallback_provider
         if prov in _CLOUD and settings.voice_local_fallback and fb not in _CLOUD:
             logger.warning(f"cloud TTS '{prov.value}' unavailable ({e}); falling back to local '{fb.value}'")
             return _BUILDERS[fb]()

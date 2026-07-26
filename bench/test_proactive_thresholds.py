@@ -1,0 +1,92 @@
+"""Guard: every registered proactive SOURCE, when it fires, must emit an urgency that can clear the
+engine's relevance threshold — otherwise the capability is DORMANT (built + registered but silently
+filtered out every tick). This is the 2026-07-25 finding: anticipation/wellbeing/presence/pattern/
+memory-resurface were all authored on a ~0.5 scale while the threshold is 0.60, so none could speak.
+"""
+import sys
+import types
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from jarvis.config import settings  # noqa: E402
+
+THRESH = settings.proactive_relevance_threshold
+_ok = _fail = 0
+
+
+def check(cond, label):
+    global _ok, _fail
+    if cond:
+        _ok += 1
+    else:
+        _fail += 1
+        print(f"  FAIL: {label}")
+
+
+def clears(sigs, label):
+    check(bool(sigs) and all(s.urgency >= THRESH for s in sigs),
+          f"{label}: fires AND clears threshold {THRESH} (got {[round(s.urgency,2) for s in sigs]})")
+
+
+# --- wellbeing: force a long unbroken session -----------------------------------------------
+import jarvis.brain.presence as presence_mod  # noqa: E402
+import jarvis.brain.proactive_signals as ps  # noqa: E402
+
+
+class _FakePresence:
+    enabled = True
+
+    def continuous_active_minutes(self):
+        return settings.wellbeing_session_minutes + 60
+
+    def arrival(self):
+        return True
+
+
+ps.PRESENCE = _FakePresence()               # wellbeing_signals imports PRESENCE from presence
+presence_mod.PRESENCE = _FakePresence()     # presence_signals uses the module-level PRESENCE
+clears(ps.wellbeing_signals(datetime(2026, 7, 15, 14, tzinfo=timezone.utc)), "wellbeing (long session)")
+clears(ps.wellbeing_signals(datetime(2026, 7, 15, 2, tzinfo=timezone.utc)), "wellbeing (small hours)")
+clears(presence_mod.presence_signals(), "presence (welcome back)")
+
+# --- memory_resurface: force one salient, un-resurfaced note --------------------------------
+import jarvis.brain.memory as memory_mod  # noqa: E402
+import tempfile  # noqa: E402
+
+ps._RESURFACED_PATH = Path(tempfile.gettempdir()) / "test_resurfaced.json"
+ps._RESURFACED_PATH.unlink(missing_ok=True)
+memory_mod.STORE.salient_notes = lambda now=None: [{"note_id": "n1", "text": "ship the rabbit-farm plan"}]
+clears(ps.memory_resurface_signals(), "memory_resurface")
+
+# --- pattern_suggestion: force a note matching the current UTC hour --------------------------
+hour = datetime.now(timezone.utc).hour
+note = types.SimpleNamespace(text=f"user often mentions 'lofi' around {hour:02d}:00 utc")
+memory_mod.STORE._iter_notes = lambda: [note]
+clears(ps.pattern_suggestion(), "pattern_suggestion")
+
+# --- anticipation: stub the LLM to return one useful line -----------------------------------
+import asyncio  # noqa: E402
+from jarvis.brain.anticipation import make_anticipation_source  # noqa: E402
+
+
+class _FakeLLM:
+    async def complete(self, messages, **kw):
+        return types.SimpleNamespace(content="Your visa deadline is Friday, sir — worth starting today.")
+
+
+async def _noop():
+    return None
+
+
+fake_world = types.SimpleNamespace(render=lambda owner="": "GOAL: file the visa (due Friday)")
+src = make_anticipation_source(llm=_FakeLLM(), world=fake_world, recent=lambda: "coding",
+                               refresh=_noop, clock=lambda: 10_000.0)
+clears(asyncio.run(src()), "anticipation (LLM-reasoned)")
+
+# --- the invariant, stated directly ---------------------------------------------------------
+check(THRESH <= 0.66, f"threshold {THRESH} is not above the companion sources' ceiling")
+
+print(f"=== {_ok}/{_ok + _fail} checks passed ===")
+sys.exit(1 if _fail else 0)

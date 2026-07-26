@@ -3,8 +3,10 @@
 The owner asked for smart-home; Home Assistant is the privacy-respecting, local choice. Talks to his
 HA instance's REST API with a long-lived token (``JARVIS_HA_URL`` / ``JARVIS_HA_TOKEN``).
 ``ha_state`` reads ("is the front door locked?"); ``ha_call`` actuates (lights, scenes, climate,
-locks). Locks / alarms / covers are security-sensitive, so the persona confirms before those.
-Degrades to a spoken note when HA isn't configured.
+locks). Security-sensitive domains (see ``SENSITIVE_DOMAINS``) are ENFORCED as confirm-gated in
+``proactive.confirm_required`` — a lock/alarm/cover/garage call is held until the owner affirms —
+while a light or scene flows without friction (a voice home shouldn't nag to turn on a lamp).
+Degrades to a spoken note when HA isn't configured. See docs/home-assistant.md for setup + checks.
 """
 
 from __future__ import annotations

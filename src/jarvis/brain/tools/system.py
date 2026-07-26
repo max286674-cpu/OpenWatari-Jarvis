@@ -54,6 +54,36 @@ def _win_exe(name: str) -> str:
     return p if (p and os.path.isfile(p)) else name
 
 
+# The edge host is pythonw.exe, which has NO console — so every console child (powershell, tasklist,
+# taskkill) POPS A VISIBLE WINDOW unless suppressed. Worse, the task runs ELEVATED, so those show as
+# "Administrator:" windows. CREATE_NO_WINDOW alone proved insufficient from the elevated context, so
+# every spawn also gets a STARTUPINFO with SW_HIDE (belt-and-suspenders). It's 0/None off Windows.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+# Shell metacharacters that chain one "launch this app" request into several commands. The process-
+# `start` path runs the model's string via cmd.exe (shell=True), so a chained/garbled/injected string
+# (e.g. a webhook or non-owner message that reached the reasoning loop) could run destructive ops after
+# the launch. A launch only ever needs ONE executable — any of these => refuse and make the owner
+# confirm. NOT applied to the PowerShell tool, whose whole purpose is arbitrary pipelines (`;`/`|` are
+# normal there). ponytail: a rare dir name containing `&` is a false positive — confirm and it runs.
+_SHELL_CHAIN_OPS = (";", "&", "|", ">", "<", "`", "$(", "\n", "\r")
+
+
+def _has_shell_chain(command: str) -> bool:
+    return any(op in command for op in _SHELL_CHAIN_OPS)
+
+
+def _hidden_startupinfo():
+    """A STARTUPINFO that forces the child's window hidden (SW_HIDE) — pairs with CREATE_NO_WINDOW so
+    even an elevated console child never shows. None off Windows."""
+    if sys.platform != "win32":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return si
+
+
 async def _dispatch(op: str, args: dict, local) -> str:
     """Run a PC op on the laptop executor if one is connected to THIS brain (the VPS case); else run
     it locally (correct when the brain itself runs on the laptop). This is what gives the 24/7 VPS
@@ -158,7 +188,7 @@ async def _process_op_local(args: dict) -> str:
             r = await asyncio.to_thread(
                 subprocess.run,
                 [_win_exe("tasklist"), "/FO", "CSV", "/NH"],
-                capture_output=True, text=True, timeout=20,
+                capture_output=True, text=True, timeout=20, creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo(),
             )
             lines = [ln for ln in r.stdout.splitlines() if (not name or name.lower() in ln.lower())]
             return clip(f"{len(lines)} process(es)" + (f" matching '{name}'" if name else "")
@@ -170,13 +200,44 @@ async def _process_op_local(args: dict) -> str:
                 cmd = [_win_exe("taskkill"), "/IM", name, "/T", "/F"]
             else:
                 return "Tell me the process name or pid to kill, sir."
-            r = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=20)
+            r = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=20,
+                                        creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo())
             ok = r.returncode == 0
             return (f"Killed {name or pid}, sir." if ok
                     else f"Couldn't kill {name or pid}: {clip(r.stderr or r.stdout, 160)}")
+        if action in ("suspend", "resume"):
+            # Pause/continue an app WITHOUT killing it (freeze a game/video while the owner steps away,
+            # then resume) — used by proactive interventions and by voice ("pause my game"). Suspends
+            # ALL processes matching the name (a browser/game is often several). ntdll NtSuspend/Resume
+            # is undocumented but present on every Windows and needs no external tool. ponytail: name/pid
+            # match only; upgrade to window-scoped freeze if a workflow ever needs a single tab.
+            if not (name or pid):
+                return f"Tell me the process name or pid to {action}, sir."
+            fn = "NtSuspendProcess" if action == "suspend" else "NtResumeProcess"
+            sel = f"Get-Process -Id {int(pid)}" if pid else f"Get-Process -Name '{name.replace(chr(39), '')}'"
+            ps = (
+                "Add-Type -Namespace N -Name P -MemberDefinition '"
+                "[DllImport(\"ntdll.dll\")] public static extern uint NtSuspendProcess(System.IntPtr h);"
+                "[DllImport(\"ntdll.dll\")] public static extern uint NtResumeProcess(System.IntPtr h);';"
+                f"$ps=@({sel} -ErrorAction Stop);foreach($p in $ps){{[N.P]::{fn}($p.Handle)|Out-Null}};"
+                "Write-Output $ps.Count"
+            )
+            r = await asyncio.to_thread(subprocess.run,
+                                        [_win_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps],
+                                        capture_output=True, text=True, timeout=15,
+                                        creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo())
+            if r.returncode != 0:
+                return f"Couldn't {action} {name or pid}: {clip(r.stderr or r.stdout, 160)}"
+            n = (r.stdout or "0").strip().splitlines()[-1:] or ["0"]
+            verb = "Paused" if action == "suspend" else "Resumed"
+            return f"{verb} {name or pid} ({n[0]} process(es)), sir."
         if action == "start":
             if not command:
                 return "What should I start, sir? Give me a command or executable."
+            if _has_shell_chain(command):
+                return (f"That start command chains shell operations ({clip(command, 120)}) — I won't "
+                        "auto-run a chained command. Give me one executable to launch, or confirm it "
+                        "explicitly as a PowerShell command, sir.")
             # Detached so it outlives this turn.
             flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0  # DETACHED|NEW_GROUP
             await asyncio.to_thread(
@@ -204,7 +265,7 @@ async def _run_powershell_local(args: dict) -> str:
             await asyncio.to_thread(
                 subprocess.run,
                 [_win_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", launcher],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo(),
             )
             return ("I launched that as administrator, sir — accept the Windows prompt to let it run. "
                     "(Elevated output runs in its own window.)")
@@ -213,6 +274,7 @@ async def _run_powershell_local(args: dict) -> str:
             [_win_exe("powershell"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-Command", command],
             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo(),
         )
         out = (r.stdout or "").strip() or (r.stderr or "").strip()
         return clip(out or "Done, sir — no output.", 1800)
@@ -262,7 +324,159 @@ async def _open_app_local(args: dict) -> str:
         return tool_error("open app", e)
 
 
+async def _screenshot_local(args: dict) -> str:
+    """Capture the primary screen laptop-side and return it as JSON ``{"dims","b64"}`` (JPEG bytes,
+    base64). Runs entirely on the machine with the display (the pc_agent host), so the brain — even
+    on the VPS — gets the actual IMAGE back instead of a path it can't read. '{}' on error/non-Win.
+
+    The PowerShell is a plain capture-to-file (same shape as the long-standing screenshot); the
+    base64 is done here in Python, not in the scanned script, to keep the AV signature low."""
+    if sys.platform != "win32":
+        return "{}"
+    import base64
+    import json as _json
+    import os
+    import tempfile
+
+    shot = os.path.join(tempfile.gettempdir(), "watari_screen.jpg")
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+        "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
+        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+        "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+        "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+        f"$bmp.Save('{shot}',[System.Drawing.Imaging.ImageFormat]::Jpeg);"
+        "Write-Output (\"{0}x{1}\" -f $b.Width,$b.Height)"
+    )
+    try:
+        proc = await asyncio.to_thread(lambda: subprocess.run(
+            [_win_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo()))
+        dims = (proc.stdout or "").strip().splitlines()[-1:] or [""]
+        with open(shot, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        try:
+            os.remove(shot)
+        except OSError:
+            pass
+        return _json.dumps({"dims": dims[0], "b64": b64})
+    except Exception:  # noqa: BLE001 — capture must never raise into the caller
+        return "{}"
+
+
+async def _media_pause_local(args: dict) -> str:
+    """Toggle play/pause on whatever is playing on the laptop by sending the media key
+    (VK_MEDIA_PLAY_PAUSE, 0xB3) — works for browser video (YouTube/Netflix), Spotify, VLC, etc.
+    Runs on the machine with the display. Returns a short note; never raises."""
+    if sys.platform != "win32":
+        return "media control isn't available on this host, sir."
+    ps = (
+        "Add-Type -Namespace W -Name K -MemberDefinition '[DllImport(\"user32.dll\")] public "
+        "static extern void keybd_event(byte b, byte s, uint f, System.IntPtr e);';"
+        "[W.K]::keybd_event(0xB3,0,0,[IntPtr]::Zero);"
+        "[W.K]::keybd_event(0xB3,0,2,[IntPtr]::Zero)"
+    )
+    try:
+        await asyncio.to_thread(lambda: subprocess.run(
+            [_win_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW, startupinfo=_hidden_startupinfo()))
+        return "Toggled play/pause on your media, sir."
+    except Exception as e:  # noqa: BLE001
+        return tool_error("media pause", e)
+
+
+def _activity_snapshot_ctypes() -> str:
+    """Foreground window (process + title) + idle seconds via DIRECT Win32 calls — no subprocess.
+
+    The presence poller runs this every ~45s. Spawning PowerShell that often popped an (elevated)
+    console window each time and occasionally left hung processes; ctypes does it IN-PROCESS, so there
+    is no window, no spawn, and nothing to hang. Returns the same JSON the PS version did."""
+    import ctypes
+    import json as _json
+    import os
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    # Set proper 64-bit types: HWND is a pointer, so the default c_int restype would TRUNCATE a
+    # high handle on 64-bit Windows and corrupt every downstream call. This is the likely cause of the
+    # intermittent failures that fell back to PowerShell.
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+
+    hwnd = user32.GetForegroundWindow()
+    # Title.
+    n = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(hwnd, buf, n + 1)
+    title = buf.value or ""
+    # Owning process id -> process name.
+    pid = wintypes.DWORD(0)
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    app = ""
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+    if h:
+        try:
+            size = wintypes.DWORD(260)
+            pbuf = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(h, 0, pbuf, ctypes.byref(size)):
+                app = os.path.splitext(os.path.basename(pbuf.value))[0]
+        finally:
+            kernel32.CloseHandle(h)
+    # Idle seconds since the last user input.
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+    lii = LASTINPUTINFO()
+    lii.cbSize = ctypes.sizeof(lii)
+    idle = 0.0
+    if user32.GetLastInputInfo(ctypes.byref(lii)):
+        idle = max(0.0, (kernel32.GetTickCount() - lii.dwTime) / 1000.0)
+    return _json.dumps({"app": app, "title": title, "idle": round(idle, 1)})
+
+
+async def _activity_snapshot_local(args: dict) -> str:
+    """Return a compact JSON snapshot of the active window + idle seconds, e.g.
+    ``{"app":"chrome","title":"YouTube - …","idle":3.2}``. '{}' on non-Windows or any error.
+    Read-only perception op — the presence poller calls this (not the LLM). Pure in-process ctypes:
+    it NEVER spawns a subprocess, so there is no window and nothing to hang. If a call ever fails we
+    just skip the sample ('{}') — the presence layer tolerates a gap; we do NOT fall back to spawning
+    PowerShell (the old Add-Type path popped elevated windows and hung)."""
+    if sys.platform != "win32":
+        return "{}"
+    try:
+        return await asyncio.to_thread(_activity_snapshot_ctypes)
+    except Exception as e:  # noqa: BLE001 — perception must never raise into the poller
+        from loguru import logger
+        logger.debug(f"activity_snapshot ctypes skipped ({type(e).__name__}: {e})")
+        return "{}"
+
+
 # ---- Public handlers: forward to the laptop executor if connected, else run locally -------------
+async def activity_snapshot(args: dict) -> str:
+    """Perception op: forwards to the laptop executor (VPS case), else runs locally."""
+    return await _dispatch("activity_snapshot", args, _activity_snapshot_local)
+
+
+async def screenshot(args: dict) -> str:
+    """Capture the screen and return JSON {dims,b64}. Forwards to the laptop so the VPS brain gets
+    the actual image bytes (fixes the old capture-on-laptop / read-on-brain split)."""
+    return await _dispatch("screenshot", args, _screenshot_local)
+
+
+async def media_pause(args: dict) -> str:
+    """Pause/resume the owner's media (sends the media play/pause key on the laptop)."""
+    return await _dispatch("media_pause", args, _media_pause_local)
+
+
 async def file_op(args: dict) -> str:
     return await _dispatch("file_op", args, _file_op_local)
 
@@ -290,6 +504,9 @@ LOCAL_HANDLERS = {
     "run_powershell": _run_powershell_local,
     "open_url": _open_url_local,
     "open_app": _open_app_local,
+    "activity_snapshot": _activity_snapshot_local,
+    "screenshot": _screenshot_local,
+    "media_pause": _media_pause_local,
 }
 
 
@@ -321,16 +538,17 @@ SCHEMAS = [
         "function": {
             "name": "process_op",
             "description": (
-                "Manage processes: list running processes (optionally filtered by name), kill a "
-                "process by name or pid, or start a new process/app. Killing apps is disruptive — "
-                "confirm first."
+                "Manage processes on the owner's PC: list (optionally filtered by name), kill by name "
+                "or pid, start a new process/app, or SUSPEND/RESUME an app to pause then continue it "
+                "without losing its state (e.g. freeze a game/video while he steps away, then resume). "
+                "Killing apps is disruptive — confirm first; suspend/resume is safe and reversible."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "kill", "start"]},
-                    "name": {"type": "string", "description": "Process image name, e.g. 'chrome.exe'."},
-                    "pid": {"type": "integer", "description": "Process id (for kill)."},
+                    "action": {"type": "string", "enum": ["list", "kill", "start", "suspend", "resume"]},
+                    "name": {"type": "string", "description": "Process image/name, e.g. 'chrome' or 'chrome.exe'."},
+                    "pid": {"type": "integer", "description": "Process id (for kill/suspend/resume)."},
                     "command": {"type": "string", "description": "Command/executable to start."},
                 },
                 "required": ["action"],
@@ -382,9 +600,19 @@ SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "media_pause",
+            "description": "Pause (or resume) whatever media is playing on the owner's PC — a browser "
+                           "video, Spotify, VLC, etc. Toggles play/pause. Use for 'pause the video', "
+                           "'pause my music', 'resume it'.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 HANDLERS = {
     "file_op": file_op, "process_op": process_op, "run_powershell": run_powershell,
-    "open_url": open_url, "open_app": open_app,
+    "open_url": open_url, "open_app": open_app, "media_pause": media_pause,
 }

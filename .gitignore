@@ -24,7 +24,10 @@ models/
 .piper-voices/
 
 # --- Runtime / generated state (machine-local, not source) ---
-jarvis_jobs.sqlite
+# ALL runtime DBs (tasks/jobs/vectors/graph/coaching/presence — personal data)
+jarvis_*.sqlite
+# runtime delivery state
+daily_digest_state.json
 audit/
 backups/
 .jarvis-browser/
@@ -70,6 +73,9 @@ bench/_behavioral_scorecard.json
 bench/_artifacts/
 # Personal contact book (Phase 4.3) — private, never tracked
 contacts.md
+
+# Personal VPS deploy target — keeps the host out of the public repo
+scripts/deploy_vps.env
 
 # wake-word training scratch (195MB model, 17GB data, synthetic clips) — never commit
 .wakeword-training/

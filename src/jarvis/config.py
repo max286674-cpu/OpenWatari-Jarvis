@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # failing the whole pipeline. The local fallback engines need the `local-voice` extra installed.
     voice_local_fallback: bool = True
     tts_fallback_provider: TTSProvider = TTSProvider.piper
+    # C3: adapt the ElevenLabs voice (stability/style/speed) to the owner's inferred mood on the live
+    # path — steadier when stressed, livelier when upbeat. Off = one fixed voice. ElevenLabs only.
+    tts_affect_enabled: bool = True
     stt_fallback_provider: STTProvider = STTProvider.whisper
     llm_backend: LLMBackend = LLMBackend.freellmapi   # Jarvis's OWN reasoning model
 
@@ -90,6 +93,10 @@ class Settings(BaseSettings):
     # No need to repeat the wake word for follow-ups; VAD + endpointing drive utterance boundaries.
     hot_mic_after_wake: bool = False
     hot_mic_idle_minutes: int = 30        # close the window after this many minutes of silence
+    # Edge reflexes (subsystem #24): answer truly-local read-now turns (time/date) ON THE EDGE with no
+    # brain WS round-trip — the biggest perceived-latency cut for the most common quick queries, and it
+    # works offline. High-precision match; anything else falls through to the brain unchanged.
+    edge_reflexes_enabled: bool = True
     # Spoken acknowledgement the instant a wake word fires, so you KNOW Watari heard you and is
     # actively listening — before you say the command. Pipe-separated choices are picked at random
     # for natural variety; set empty ("") to disable.
@@ -114,6 +121,12 @@ class Settings(BaseSettings):
     # force it. See edge/device_profile.py. (barge_in_enabled above is the legacy hard switch
     # honoured when mode='auto' can't tell — e.g. a forced True still wins for AEC setups.)
     barge_in_mode: str = "auto"           # auto | on | off
+    # Phase 1.2 — acoustic echo cancellation, for full-duplex barge-in on OPEN speakers. 'none' keeps
+    # the speaker-safe half-duplex behaviour. A real echo-canceller ('krisp' / 'aic') removes Watari's
+    # own TTS from the mic so 'auto' barge-in turns ON even on shared speakers — but each is a
+    # PROPRIETARY, license-gated SDK you install (krisp_audio / aic_sdk); without it, this degrades to
+    # half-duplex. See edge/aec.py. (rnnoise is noise suppression, not echo — it does NOT enable this.)
+    aec_filter: str = "none"              # none | krisp | aic
     # For remote transports (Mentra glasses, iPhone/Android client) the local audio device name says
     # nothing about how YOU hear Watari, so the client declares it: 'glasses', 'phone-headphones',
     # 'android-headphones', 'phone-speaker', 'android', 'headphones', 'speakers'. A local Mac/laptop
@@ -166,6 +179,12 @@ class Settings(BaseSettings):
     # Auto-route to a connected private endpoint (AirPods Pro Max / headphones) when no explicit
     # output is set: "if they're connected to the laptop, send everything to my headphones".
     auto_route_headphones: bool = True
+    # Smart per-device MIC routing: when a RELIABLE wired/USB headset mic is plugged in, listen through
+    # it; otherwise keep the built-in mic. Deliberately EXCLUDES AirPods/Bluetooth "Hands-Free" — that
+    # HFP mic is telephone-grade AND intermittently drops the stream (Watari goes deaf), so AirPods use
+    # the built-in mic for input while output still auto-routes to them. Takes precedence over the pinned
+    # name below when a headset mic is present. Off = always use the pin / built-in.
+    auto_route_headset_mic: bool = True
 
     # --- Local engine assets (used when provider == local) ------------------------------
     whisper_model: str = "base"           # faster-whisper size; "small" for more accuracy
@@ -176,6 +195,11 @@ class Settings(BaseSettings):
     # Moonshine (STT_PROVIDER=moonshine): English-only but ~3x faster than whisper base on CPU
     # (~0.4s vs ~1.4s). 'moonshine/tiny' is fastest; 'moonshine/base' a touch more accurate, slower.
     moonshine_model: str = "moonshine/tiny"
+    # Proper-noun biasing (Phase 1.5): names/places/projects the STT should favour so "Yerevan"
+    # stops becoming "your event". Comma-separated; the assistant/owner names, the owner's address,
+    # and contact names are added automatically (see edge.proper_nouns.hotwords_list). Passed to
+    # Whisper as `hotwords=` and to Deepgram nova-3 as `keyterm=`.
+    stt_hotwords: str = ""
     # Software boost for quiet mics (Intel Smart Sound arrays capture ~3% full-scale at mono 16k,
     # too quiet for openWakeWord). 1.0 = off. Raise the Windows mic level too, then lower this.
     mic_gain: float = 1.0
@@ -197,6 +221,12 @@ class Settings(BaseSettings):
     # extracts durable facts about the owner into L1 learned memory. Off the hot path; never slows a turn.
     self_improve_enabled: bool = True
     self_improve_every_turns: int = 6
+    # CODE self-improvement (4.12): a bounded loop that lets Watari improve his OWN source — branch,
+    # edit, run tests, commit locally. OFF by default (opt-in): it edits real code, so it only runs
+    # when explicitly armed. It is branch-only and NEVER pushes autonomously — the push stays a
+    # human-confirmed step. Arm per-deploy via JARVIS_CODE_SELF_IMPROVE_ENABLED=true.
+    code_self_improve_enabled: bool = False
+    code_self_improve_max_steps: int = 8
 
     # DEDICATED inbound bot for the 24/7 Telegram bridge (DM Watari from any device). MUST be a
     # SEPARATE bot from telegram_bot_token — that one is OpenClaw's, and two pollers fighting over
@@ -229,11 +259,23 @@ class Settings(BaseSettings):
     freellmapi_base_url: str = "http://localhost:3001/v1"
     freellmapi_api_key: str | None = None
     # Primary + ordered fallbacks (rate-limit/error -> next model). See bench/llm_bench.py.
-    # Primary is the FASTEST quality-correct model (TTFT is what a voice turn feels like —
-    # fine-tuning.md Item 3): 8b-instant benched ~300-700ms faster than 70b and still correct.
-    # 70b-versatile is the first fallback for quality escalation when 8b errors/rate-limits.
-    llm_primary_model: str = "llama-3.1-8b-instant"
-    llm_fallback_models: str = "llama-3.3-70b-versatile,groq/compound,mistral-small-latest,openai/gpt-oss-20b:free"
+    # Primary is MiniMax-Text-01 (owner's paid token plan) — NON-thinking, native tool-calling, no <think>
+    # block, and (critically) high daily limits so it can carry the full per-turn tool surface. groq
+    # llama-3.3-70b has a lower TTFT but a free-tier 100k tokens/DAY cap that the ~10k-token tool schema
+    # exhausts in a handful of turns (429), so it CAN'T be the always-on primary — it's the fast first
+    # fallback, reached for NARROWED (small-surface) tool turns via the tool-tier. Reasoning models are
+    # deliberately absent here — reached ONLY via the B5 thinking-tier on a dodged forced tool. The real
+    # latency lever is not the model but the tool-surface size (see _tools_for_turn / conversational
+    # suppression): a chat turn carries no tools and answers in ~0.5s, tool turns narrow to a few.
+    llm_primary_model: str = "minimax:MiniMax-Text-01"
+    llm_fallback_models: str = ("groq:llama-3.3-70b-versatile,"
+                                "groq:llama-3.1-8b-instant,gemini-3.5-flash")
+    # Vision (Phase 3 — Perception): models that accept images (screen/camera). Provider-prefixed like
+    # the LLM chain. `minimax:MiniMax-Text-01` is a PAID, reliable vision model on the owner's token
+    # plan (verified: correctly reads images via the OpenAI image_url path) — the dependable primary;
+    # gemini via the freellmapi proxy is the fallback. First that answers a `see()` call wins. (groq
+    # has no vision model on this plan — 'MiniMax-VL-01'/'abab6.5s-chat' are 400 unknown-model here.)
+    vision_models: str = "minimax:MiniMax-Text-01,gemini-3.5-flash"
     # Per-model attempt cap. A real-time voice turn must never block a full minute on one hung
     # model, so this is tight: a stalled attempt is abandoned and the chain fails over to the next
     # model within this window. The fast primary (Groq) normally answers in 1-2s, so this only
@@ -256,6 +298,12 @@ class Settings(BaseSettings):
     #                           JARVIS_LLM_FALLBACK_MODELS=...,ollama:llama3.2 keeps a fully-offline
     #                           tail on the chain. Pull the model first (`ollama pull llama3.2`).
     ollama_base_url: str = "http://localhost:11434/v1"
+    # MiniMax: a DIRECT, OpenAI-compatible provider (api.minimax.io) — a paid, reliable reasoning
+    # model, independent of Groq's free-tier daily quota and the freellmapi proxy. Use as e.g.
+    # "minimax:MiniMax-M2.5-highspeed" (highspeed = lower TTFT, better for a voice turn) or
+    # "minimax:MiniMax-M3" for max quality. Needs JARVIS_MINIMAX_API_KEY + account credits.
+    minimax_api_key: str | None = None
+    minimax_base_url: str = "https://api.minimax.io/v1"
     # If no FIRST token arrives within this many seconds, cancel and fail over to the next model —
     # turns a slow/hung primary into a fast recovery instead of a full-timeout stall.
     llm_first_token_timeout_seconds: float = 4.0
@@ -265,6 +313,23 @@ class Settings(BaseSettings):
     # Optional two-tier: a fast model tried FIRST (prepended to the chain) for snappier first words;
     # the normal chain stays as the quality fallback. Blank = single-tier. e.g. "llama-3.1-8b-instant".
     llm_fast_model: str | None = None
+    # Tool-tier routing: on a FORCED tool turn (a clear command / data-read / narrowed intent), start
+    # the chain PAST the primary. The non-thinking primary (MiniMax-Text-01, chosen for conversational
+    # speed/cost) is a poor tool-caller — it dodges ~half of forced calls, so every tool turn otherwise
+    # pays a wasted round-trip before the B4 fallback rescues it. The first fallback (groq 70B) is a fast,
+    # reliable native tool-caller, so forced turns go straight to it; conversational turns keep the primary.
+    # Objectively measured (behavioural audit): lifts Tasks/Channels/Web/Combination and cuts tool latency.
+    tool_turns_prefer_fallback: bool = True
+    # B5 thinking-tier (last resort): when a FORCED tool turn is dodged by BOTH the fast primary and the
+    # reliable fallback caller, escalate ONCE to a MiniMax REASONING model — a much stronger tool-caller
+    # that reliably fires arg-bearing tools (set_reminder / create_event / notion_create) the fast models
+    # miss. Only on the dodge path, so the ~+1s reasoning cost is paid on the few turns that need it, never
+    # on conversation. Blank = disabled. M2.5-highspeed = lowest TTFT of the reasoning line (best for voice).
+    llm_thinking_model: str | None = "minimax:MiniMax-M2.5-highspeed"
+
+    # Shared secret for inbound integration webhooks (Stripe/GitHub/Gmail → /webhook/<source>). The
+    # sender signs the raw body HMAC-SHA256 with this; the brain rejects anything unsigned/mismatched.
+    webhook_secret: str | None = None
 
     # --- Channels & knowledge -----------------------------------------------------------
     telegram_bot_token: str | None = None
@@ -324,16 +389,37 @@ class Settings(BaseSettings):
     # (above) is L3 and should ALWAYS be configured so he can read it; it's validated at start.
     memory_enabled: bool = True
     memory_recall_limit: int = 5        # facts returned by the recall tool
-    memory_digest_max: int = 12         # recent learned facts injected into the system prompt
+    memory_digest_max: int = 10         # recent learned facts injected into the system prompt
+    memory_digest_fact_chars: int = 80  # per-fact char cap in the digest (keeps the prompt bounded)
     #                                     (capped so a full digest keeps the prompt <=2000 tok)
+    # Auto-recall (RAG per turn): before each turn, retrieve the facts/journal relevant to what the
+    # owner just said and inject them as an ephemeral system note, so durable memory reaches the model
+    # WITHOUT it having to decide to call `recall`. Keyword L1+L2 on the hot path (fast, local, free);
+    # the explicit recall tool still offers the full semantic + vault search. Skips trivial turns.
+    memory_autorecall_enabled: bool = True
+    memory_autorecall_limit: int = 4       # max hits injected per turn
+    memory_autorecall_min_words: int = 3   # utterances shorter than this are skipped (no grounding)
+    # Rebuild the system-prompt learned-digest every N turns so facts learned mid-session (by the
+    # background reviewer) surface without waiting for a brain restart (the digest was startup-frozen).
+    memory_digest_refresh_every_turns: int = 8
     redis_url: str | None = None        # L4 hot-cache (Phase 9b); blank = no cache (graceful)
-    # L5 semantic recall (Phase 9c): rank learned facts by meaning, not just keywords. Needs a local
-    # embedder (`sentence-transformers` + torch, ~1GB). OFF by default: keyword recall over the L1
-    # fact set (tens of facts) + the L3 vault is already strong, and the torch install isn't worth it
-    # on a small VPS. Flip True AFTER `uv pip install sentence-transformers` or it's a silent no-op.
-    memory_semantic_enabled: bool = False
+    # L5 semantic recall (Phase 9c): rank learned facts by MEANING, not just keywords, so "how are my
+    # bunnies?" finds "rabbit farm". Powers the explicit `recall` tool (auto-recall stays keyword-only
+    # for hot-path speed). ON by default but fully GRACEFUL: it uses a local `sentence-transformers`
+    # model if installed, else the Jina embeddings API when JARVIS_JINA_API_KEY is set (the small-VPS
+    # path — no ~1GB torch), else it silently degrades to keyword recall. Query embeddings are cheap;
+    # per-fact embeddings are cached persistently (jarvis_vectors.sqlite) so a fact re-embeds only when
+    # it changes. Set False to force keyword-only.
+    memory_semantic_enabled: bool = True
     memory_semantic_model: str = "all-MiniLM-L6-v2"
     memory_semantic_weight: float = 4.0
+    # Semantic FLOOR: cosine similarity below this doesn't count toward a fact's score. Without it,
+    # every fact scores slightly > 0 (cosine is essentially never 0), so recall would surface weak,
+    # unrelated facts for any query ("submarines" -> a random fact). The floor keeps meaning-only hits
+    # honest — only a genuinely related fact (e.g. "bunnies" -> "rabbit farm", ~0.34) clears it.
+    memory_semantic_min_score: float = 0.25
+    memory_vector_db_path: str | None = None   # persistent L5 embedding cache; blank = <repo>/jarvis_vectors.sqlite
+    memory_graph_db_path: str | None = None     # L5b entity-relation graph; blank = <repo>/jarvis_graph.sqlite
 
     # Web search (Tavily) + page scrape (Jina Reader) + headless interactive browse (Browserbase).
     tavily_api_key: str | None = None
@@ -407,10 +493,12 @@ class Settings(BaseSettings):
     # integration, then set its id here so Watari can read what's due today / overdue / upcoming and
     # brief you by voice. The id is the 32-hex chunk in the database URL. Degrades until set.
     notion_tasks_db_id: str | None = None
-    # Daily proactive VOICE briefing of today's tasks/deadlines (HH:MM, user timezone). Speaks to a
-    # listening device, else sends a Telegram voice note, else an ntfy push. Only scheduled when a
-    # tasks DB is configured. Blank ("") disables the automatic briefing (on-demand still works).
-    task_briefing_time: str = "08:30"
+    # Daily consolidated catch-up (past-due tasks + important email) delivered ONCE per day (HH:MM,
+    # user timezone): speaks to a listening device, else a Telegram voice note, else an ntfy push.
+    # The SAME digest is also appended to the owner's first live-edge turn of the day (see
+    # brain/daily_digest.py). Blank ("") disables the timed briefing (the first-turn addendum still
+    # works). Default 06:00 — a morning heads-up before the day starts.
+    task_briefing_time: str = "06:00"
     # Autonomous daily BACKLOG pass (Phase 3.1): pull overdue + undated-inbox Notion tasks and have the
     # bounded worker attempt the SAFE work (research/draft/summarise), posting its result as a Notion
     # comment. Outward/destructive steps are always DEFERRED by the worker. OFF by default (it acts
@@ -418,6 +506,20 @@ class Settings(BaseSettings):
     backlog_enabled: bool = False
     backlog_time: str = "09:30"            # HH:MM, user timezone
     backlog_max_tasks: int = 2            # how many tasks to attempt per daily pass
+    # Multi-day OBJECTIVES (Phase 4.1): objectives the owner hands Watari to DRIVE across days. A daily
+    # job advances the top active ones ONE safe step each (bounded worker; outward steps deferred), logs
+    # dated progress, and reports unprompted. OFF by default (it acts unattended, like the backlog pass).
+    objectives_enabled: bool = False
+    objectives_time: str = "09:45"        # HH:MM, user timezone (just after the backlog pass)
+    objectives_max: int = 2               # how many objectives to advance per daily pass
+    objectives_max_steps: int = 6         # bounded worker step budget per objective
+    # Task co-pilot (Phase 3): plan_task / execute_task let Watari plan a to-do WITH the owner
+    # (clarify -> plan -> confirm) and then execute it via the bounded worker or the fleet, linking
+    # progress back to the to-do. Execution always DEFERS outward/destructive steps. AUTO-PILOT (acting
+    # on a plan without an explicit go-ahead) is opt-in and OFF by default — Watari asks before doing.
+    copilot_autopilot_enabled: bool = False
+    # Cap on how many steps the co-pilot's background worker takes per execution (bounded work loop).
+    copilot_max_steps: int = 6
 
     # --- System control (files / processes / PowerShell) --------------------------------
     # Jarvis can manage the local machine: create/delete files & folders, list/kill/start
@@ -435,6 +537,11 @@ class Settings(BaseSettings):
     skills_enabled: bool = True
     git_author_name: str = "Watari"              # the author on Watari's own (self-improvement) commits
     git_author_email: str = "watari@vazghen.local"
+    # A fine-grained GitHub PAT (Issues: read/write) + the default "owner/repo". Lets Watari file an
+    # issue in ONE tool call (create_github_issue) instead of the 2-step Composio router — the most
+    # common dev action by voice. Blank = the tool degrades to a spoken "not configured" note.
+    github_token: str | None = None
+    github_repo: str | None = None               # e.g. "iamvazghen/OpenWatari"
 
     # --- Local interactive browser (visible window, persistent login) -------------------
     # A real Chromium Jarvis drives with Playwright: open windows, click, type (incl.
@@ -473,6 +580,10 @@ class Settings(BaseSettings):
     # ON by default for the 24/7 production companion (he initiates within budget + quiet hours).
     # For a quiet testing session, set JARVIS_PROACTIVE_ENABLED=false.
     proactive_enabled: bool = True
+    # When an autonomous driver (e.g. the daily backlog pass) TAKES an action on the owner's behalf,
+    # report it unprompted — what he did, why, and his reasoning — via the proactive path (edge voice →
+    # Telegram voice note → push). Set false to let autonomous work run silently.
+    proactive_action_reports: bool = True
     proactive_tick_seconds: int = 300            # how often the tick evaluates signals
     proactive_quiet_hours: str = "23:00-07:00"   # no unprompted voice in this window (local time)
     proactive_daily_budget: int = 6              # max unprompted interjections per day
@@ -481,13 +592,64 @@ class Settings(BaseSettings):
     # An exceptionally urgent signal (>= this) may still reach him in quiet hours — as a silent
     # phone push, never spoken aloud. Everything below it waits until quiet hours end.
     proactive_quiet_override_urgency: float = 0.95
+    # Persisted proactive state (last-fired per signal key + today's used-budget + per-kind feedback
+    # penalties) so a 24/7 brain RESTART doesn't reset suppression, budget, or what it learned. Blank
+    # -> a file next to the tasks DB. In-memory only in tests (engine constructed without a path).
+    proactive_state_path: str | None = None
+    # Phase 1 context-gating: a ROUTINE interjection is HELD for a better moment while the owner is
+    # busy (deep in code/docs, in a meeting, watching media). A signal whose urgency clears THIS is
+    # important enough to interrupt anyway (below quiet_override, which also overrides quiet hours).
+    proactive_context_override_urgency: float = 0.85
+    # Phase 4 — conflict-only interventions. Watari may INTERRUPT the owner (pausing his media) ONLY
+    # when he's watching/listening to something AND a real, timed calendar commitment is imminent — a
+    # concrete named conflict, one-word dismissible, subject to the same dismissal-learning as any
+    # nudge. This is the most intrusive behaviour, so it's OFF by default (arm it deliberately). Its
+    # urgency clears the context-override (so it interrupts media) but stays below quiet_override (so
+    # it never fires in quiet hours).
+    interventions_enabled: bool = False
+    intervention_lead_minutes: int = 10          # fire when a commitment starts within this many min
+    intervention_urgency: float = 0.9            # > context_override (interrupts), < quiet_override
     # Where "what's the weather" and the morning briefing default to when no place is named.
     home_location: str | None = None
+
+    # --- Phase 0 companion: activity/presence perception (laptop screen-time + context) ---------
+    # Watari polls the laptop's foreground window + idle time so he KNOWS what you're doing (context
+    # for proactivity) and can report screen-time. Local-only (a SQLite DB on the brain host); no
+    # data leaves the machine. Privacy off-switch: JARVIS_ACTIVITY_TRACKING_ENABLED=false, or say
+    # "pause activity tracking" at runtime. Phone usage is intentionally NOT tracked (no clean API).
+    activity_tracking_enabled: bool = True
+    presence_poll_seconds: int = 45              # how often to sample the active window
+    presence_idle_threshold_seconds: int = 90    # idle beyond this = "away" (not counted as screen time)
+    presence_engaged_idle_seconds: int = 25      # idle below this while in an editor/doc = deep-work (don't interrupt)
+    presence_retention_days: int = 30            # prune activity samples older than this
+    presence_away_seconds: int = 300             # idle beyond this = genuinely "away" -> greet on return (Phase 3 Perception)
+    presence_db_path: str | None = None          # blank -> a file next to the tasks DB
+    # Phase 6.3 — calibrated wellbeing pushback: after this many minutes of unbroken heads-down work,
+    # the proactive engine may gently suggest a break (kind='wellbeing', so etiquette-learning tunes it).
+    wellbeing_session_minutes: int = 180
+    # Owner face recognition (Phase 3 — Perception). Local LBP-histogram match on haar-detected faces
+    # (no cloud, no dlib). Histogram-intersection similarity 0..1; >= this = "it's the owner". NOT
+    # identity-grade — a lighting/pose-tolerant "owner-at-desk vs stranger" heuristic. TUNE to your
+    # face + lighting: raise to reject look-alikes, lower if it fails to recognise you. Upgrade path:
+    # a real face-embedding model (dlib/insightface) if this proves too coarse.
+    face_match_threshold: float = 0.62
+
+    # --- Phase 2 companion: field coaching (skill reviews + progress in your focus areas) --------
+    # Watari tracks your LEVEL + progress in skill fields (e.g. German) and offers an evening review
+    # at your level. The quiz itself is conversational; this just tunes when he offers it.
+    coaching_enabled: bool = True
+    coaching_fields: str = "german"              # comma-list of skill fields to coach (lowercase)
+    coaching_evening_hours: str = "18:00-22:00"  # window in which he offers a review (local time)
+    coaching_db_path: str | None = None          # blank -> a file next to the tasks DB
 
     # --- Phase 5: speaker biometrics (respond only to the owner's voice) ------------------
     speaker_id_enabled: bool = False      # gate commands by speaker match (off until enrolled)
     speaker_profile_path: str | None = None  # default: <repo>/voiceprint.json
-    speaker_threshold: float = 0.25       # ECAPA cosine-similarity accept threshold (~EER point)
+    speaker_threshold: float = 0.30       # ECAPA cosine accept threshold. Live data (2026-07-25): owner
+    #                                       on the built-in far-field array scores 0.34-0.45 (AirPods-
+    #                                       enrolled profile, so depressed); TV/guests 0.16-0.31. 0.30
+    #                                       hears the owner with margin + rejects the TV. Re-enrolling on
+    #                                       THIS mic would lift the owner to ~0.6 and allow a higher bar.
 
     # --- Latency / behaviour ------------------------------------------------------------
     # NB: "directed only" (ignore ambient speech & own playback) is enforced by the wake-word gate,
@@ -524,6 +686,13 @@ class Settings(BaseSettings):
         ]
         seen: set[str] = set()
         return [m for m in chain if not (m in seen or seen.add(m))]
+
+    @property
+    def vision_chain(self) -> list[str]:
+        """Ordered vision-capable models (provider-prefixed), deduped, blanks dropped."""
+        seen: set[str] = set()
+        return [m for m in (x.strip() for x in self.vision_models.split(","))
+                if m and not (m in seen or seen.add(m))]
 
 
 settings = Settings()

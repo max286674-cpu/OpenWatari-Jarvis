@@ -17,6 +17,10 @@ deterministic stub — no heavy dependency needed to verify the ranking maths.
 from __future__ import annotations
 
 import math
+import sqlite3
+import struct
+import threading
+from pathlib import Path
 from typing import Callable, Sequence
 
 from loguru import logger
@@ -25,6 +29,72 @@ from jarvis.config import settings
 
 Vector = Sequence[float]
 EmbedFn = Callable[[list[str]], list[Vector]]
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _vector_db_path() -> Path:
+    return Path(settings.memory_vector_db_path) if settings.memory_vector_db_path \
+        else _REPO_ROOT / "jarvis_vectors.sqlite"
+
+
+class VectorStore:
+    """Persistent (key, mtime) -> embedding cache in sqlite so restarts don't re-embed everything.
+
+    ponytail: dead simple. One table, key is the primary key, vector stored as packed float32 bytes.
+    A row is only reused when its mtime matches (a changed fact re-embeds). All failures degrade to
+    "not cached" — a broken DB never blocks recall, it just means we recompute. Thread-safe via a
+    lock + per-call connection (the HTTP thread and agent thread both touch it).
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path or _vector_db_path()
+        self._lock = threading.Lock()
+        self._ready = False
+
+    def _conn(self) -> sqlite3.Connection:
+        c = sqlite3.connect(self._path, timeout=5)
+        if not self._ready:
+            c.execute("CREATE TABLE IF NOT EXISTS embeddings "
+                      "(key TEXT PRIMARY KEY, mtime REAL NOT NULL, vec BLOB NOT NULL)")
+            c.commit()
+            self._ready = True
+        return c
+
+    def get_many(self, keys_mtimes: list[tuple[str, float]]) -> dict[str, Vector]:
+        """Return {key: vector} for rows whose stored mtime matches the requested mtime."""
+        if not keys_mtimes:
+            return {}
+        want = {k: m for k, m in keys_mtimes}
+        out: dict[str, Vector] = {}
+        try:
+            with self._lock, self._conn() as c:
+                qs = ",".join("?" * len(want))
+                rows = c.execute(
+                    f"SELECT key, mtime, vec FROM embeddings WHERE key IN ({qs})",
+                    list(want.keys()),
+                ).fetchall()
+            for key, mtime, blob in rows:
+                if abs(mtime - want[key]) < 1e-6:
+                    out[key] = list(struct.unpack(f"{len(blob) // 4}f", blob))
+        except sqlite3.Error as e:  # noqa: BLE001
+            logger.debug(f"vector store read failed ({type(e).__name__}); recomputing")
+        return out
+
+    def put_many(self, rows: list[tuple[str, float, Vector]]) -> None:
+        if not rows:
+            return
+        try:
+            packed = [(k, m, struct.pack(f"{len(v)}f", *v)) for k, m, v in rows]
+            with self._lock, self._conn() as c:
+                c.executemany(
+                    "INSERT INTO embeddings(key, mtime, vec) VALUES(?,?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET mtime=excluded.mtime, vec=excluded.vec",
+                    packed,
+                )
+                c.commit()
+        except sqlite3.Error as e:  # noqa: BLE001
+            logger.debug(f"vector store write failed ({type(e).__name__}); staying in-memory only")
 
 
 def _cosine(a: Vector, b: Vector) -> float:
@@ -41,12 +111,16 @@ def _cosine(a: Vector, b: Vector) -> float:
 class SemanticIndex:
     """Lazy, optional embedding ranker. ``available`` is False until an embedder loads."""
 
-    def __init__(self, embed_fn: EmbedFn | None = None, model_name: str | None = None) -> None:
+    def __init__(self, embed_fn: EmbedFn | None = None, model_name: str | None = None,
+                 store: "VectorStore | None" = None, persist: bool = True) -> None:
         self._embed_fn = embed_fn          # injected (tests) — skips model loading entirely
         self._model = None                 # lazily-loaded sentence-transformers model
         self._model_name = model_name or settings.memory_semantic_model
         self._load_failed = False
-        self._cache: dict[tuple[str, float], Vector] = {}  # (key, mtime) -> embedding
+        self._cache: dict[tuple[str, float], Vector] = {}  # (key, mtime) -> embedding (hot, in-proc)
+        # Persistent L5 cache: survives restarts so we don't re-embed (or re-hit the Jina API) every
+        # boot. Tests pass persist=False (pure in-memory) or inject their own store.
+        self._store = store if store is not None else (VectorStore() if persist else None)
 
     # ---- embedder plumbing ------------------------------------------------------------
     def _ensure_embedder(self) -> EmbedFn | None:
@@ -97,20 +171,29 @@ class SemanticIndex:
         """Embed each (cache_key, mtime, text), reusing cached vectors when unchanged."""
         out: dict[str, Vector] = {}
         to_compute: list[tuple[str, str]] = []  # (cache_key, text)
+        mtime_by_key = {k: m for k, m, _ in items}
         for key, mtime, text in items:
             cached = self._cache.get((key, mtime))
             if cached is not None:
                 out[key] = cached
             else:
                 to_compute.append((key, text))
+        # Second chance: the persistent store may have a vector from a prior run (before restart).
+        if to_compute and self._store is not None:
+            hits = self._store.get_many([(k, mtime_by_key[k]) for k, _ in to_compute])
+            for key, vec in hits.items():
+                out[key] = vec
+                self._cache[(key, mtime_by_key[key])] = vec  # warm the hot cache
+            to_compute = [(k, t) for k, t in to_compute if k not in hits]
         if to_compute:
             vecs = embed([t for _, t in to_compute])
+            fresh: list[tuple[str, float, Vector]] = []
             for (key, _), vec in zip(to_compute, vecs):
                 out[key] = vec
-            # refresh cache with current mtimes (drop stale entries for these keys)
-            mtime_by_key = {k: m for k, m, _ in items}
-            for key, _ in to_compute:
-                self._cache[(key, mtime_by_key[key])] = out[key]
+                self._cache[(key, mtime_by_key[key])] = vec
+                fresh.append((key, mtime_by_key[key], vec))
+            if self._store is not None:
+                self._store.put_many(fresh)  # persist so the next boot skips this work
         return out
 
     def scores(self, query: str, items: list[tuple[str, float, str]]) -> dict[str, float]:

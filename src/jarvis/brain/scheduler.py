@@ -31,28 +31,59 @@ _BRIEFING_EMIT: Callable | None = None
 
 # Set by the brain server to the agent's autonomous backlog pass (agent.run_backlog) — Phase 3.1.
 _BACKLOG_RUNNER: Callable | None = None
+_OBJECTIVES_RUNNER: Callable | None = None
+# Set by the brain server to agent.backlog_report: a proactive action report (what+why+reasoning) so
+# the autonomous backlog pass is never silent. None = report disabled (the pass still runs + comments).
+_BACKLOG_REPORTER: Callable | None = None
+
+
+async def _emit_proactive(msg: str, urgency: float, title: str) -> None:
+    """Deliver an unprompted line the proactive way: listening edge → Telegram voice note → ntfy push,
+    with a speak+push fallback if no emitter is wired. Shared by the autonomous report jobs."""
+    if not msg:
+        return
+    if _BRIEFING_EMIT is not None:
+        try:
+            r = _BRIEFING_EMIT(msg, urgency, True)
+            if hasattr(r, "__await__"):
+                await r
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"proactive-emit failed ({e}); falling back to speak+push")
+    if _LIVE_SPEAK is not None:
+        try:
+            _LIVE_SPEAK(msg)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from jarvis.brain.tools.notify import push
+
+        await push(msg, title=title)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _fire_briefing() -> None:
-    """Top-level job target (importable for the SQLite jobstore): the daily task briefing.
+    """Top-level job target (importable for the SQLite jobstore): the daily consolidated catch-up.
 
-    Builds today's overdue+due summary from the Notion tasks DB at fire time, then delivers it the
-    proactive way — spoken to a listening device, else a Telegram voice note, else an ntfy push.
+    Builds ONE digest at fire time (past-due tasks + important unread email — see daily_digest),
+    delivers it the proactive way (spoken to a listening device, else Telegram voice note, else
+    ntfy push), and marks the 'push' channel delivered for today so it can't repeat. The same digest
+    is separately appended to the owner's first live-edge turn (server._daily_digest_addendum).
     """
-    try:
-        from jarvis.brain.tools.notion import notion_tasks
+    from jarvis.brain import daily_digest
 
-        # 'open' = overdue + due-today + this-week deadlines + recurring, so the morning briefing
-        # covers what's due today AND upcoming deadlines AND standing recurring tasks (not today only).
-        body = await notion_tasks({"scope": "open"})
+    try:
+        body = await daily_digest.build_body()
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"task briefing build failed: {e}")
+        logger.warning(f"daily digest build failed: {e}")
         return
-    if not body or "Nothing due" in body or "not configured" in body:
-        msg = "Good morning, sir. Nothing's due today — you're clear."
+    if not body:
+        msg = "Good morning, sir. Nothing past due and no important mail — you're all clear."
     else:
-        msg = "Good morning, sir. Here's your day. " + body
-    logger.info("firing daily task briefing")
+        msg = "Good morning, sir. Here's your catch-up. " + body
+    daily_digest.mark_delivered("push", datetime.now(USER_TZ))
+    logger.info("firing daily digest briefing")
     if _BRIEFING_EMIT is not None:
         try:
             res = _BRIEFING_EMIT(msg, 0.6, True)
@@ -90,6 +121,62 @@ async def _fire_backlog() -> None:
         logger.info(f"daily backlog pass attempted {len(done) if done else 0} task(s)")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"daily backlog pass failed: {e}")
+        return
+    # Report it UNPROMPTED: what he did, why, and his reasoning — so an autonomous action is never
+    # silent (the owner's ask). Skipped when nothing was done or no reporter is wired.
+    if not done or _BACKLOG_REPORTER is None:
+        return
+    try:
+        rr = _BACKLOG_REPORTER(done)
+        msg = await rr if hasattr(rr, "__await__") else rr
+    except Exception as e:  # noqa: BLE001 — a report must never break the pass
+        logger.warning(f"daily backlog report failed: {e}")
+        return
+    logger.info(f"backlog pass done: {len(done)} task(s) — reporting proactively")
+    await _emit_proactive(msg, 0.55, "Watari — backlog")
+
+
+async def _fire_objectives() -> None:
+    """Top-level job target: the daily multi-day OBJECTIVES advance (Phase 4.1).
+
+    Calls the runner the brain wired to ``agent.advance_objectives`` — it advances the top active
+    objectives one SAFE step each (bounded worker; outward steps deferred), logs dated progress, and
+    returns what moved. This job then reports it UNPROMPTED via the proactive briefing path. No runner
+    wired -> no-op; any error is logged, never raised."""
+    if _OBJECTIVES_RUNNER is None:
+        return
+    logger.info("firing daily objectives advance")
+    try:
+        res = _OBJECTIVES_RUNNER()
+        advanced = await res if hasattr(res, "__await__") else res
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"daily objectives advance failed: {e}")
+        return
+    from jarvis.brain.objectives import spoken_objectives_report
+
+    msg = spoken_objectives_report(advanced or [])
+    if not msg:
+        return
+    logger.info(f"objectives advanced: {len(advanced)} — reporting")
+    if _BRIEFING_EMIT is not None:
+        try:
+            r = _BRIEFING_EMIT(msg, 0.55, True)
+            if hasattr(r, "__await__"):
+                await r
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"objectives proactive-emit failed ({e}); falling back to speak+push")
+    if _LIVE_SPEAK is not None:
+        try:
+            _LIVE_SPEAK(msg)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from jarvis.brain.tools.notify import push
+
+        await push(msg, title="Watari — objectives")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _fire_pattern_scan() -> None:
@@ -239,6 +326,33 @@ class Scheduler:
         """Register the async callable the daily backlog job runs (server wires agent.run_backlog)."""
         global _BACKLOG_RUNNER
         _BACKLOG_RUNNER = runner
+
+    def set_backlog_reporter(self, reporter: Callable | None) -> None:
+        """Register the async callable that turns the pass's attempts into a proactive spoken report
+        (server wires agent.backlog_report). None = the pass runs + comments but stays silent."""
+        global _BACKLOG_REPORTER
+        _BACKLOG_REPORTER = reporter
+
+    def set_objectives_runner(self, runner: Callable | None) -> None:
+        """Register the async callable the daily objectives job runs (server wires
+        agent.advance_objectives)."""
+        global _OBJECTIVES_RUNNER
+        _OBJECTIVES_RUNNER = runner
+
+    def schedule_daily_objectives(self, hhmm: str) -> str | None:
+        """(Re)register the daily multi-day objectives advance at HH:MM. Fixed id so restarts refresh,
+        not duplicate. Returns the job id, or None if disabled/invalid."""
+        if not (hhmm or "").strip():
+            return None
+        from apscheduler.triggers.cron import CronTrigger
+
+        hh, mm = _parse_hhmm(hhmm)
+        sched = self._ensure()
+        sched.add_job(_fire_objectives, trigger=CronTrigger(hour=hh, minute=mm, timezone=USER_TZ),
+                      id="daily-objectives", name="daily objectives advance",
+                      misfire_grace_time=3600, coalesce=True, replace_existing=True)
+        logger.info(f"daily objectives advance scheduled for {hh:02d}:{mm:02d}")
+        return "daily-objectives"
 
     def schedule_daily_backlog(self, hhmm: str) -> str | None:
         """(Re)register the daily autonomous backlog pass at HH:MM. Fixed id so restarts refresh,

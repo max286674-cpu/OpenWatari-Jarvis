@@ -5,12 +5,18 @@ from loguru import logger
 
 
 async def _fire_reliability_probe() -> None:
-    """Run health_probe_and_surface; never raises into the loop."""
+    """Probe critical organs, self-repair what's fixable, and page the owner on a SUSTAINED
+    outage (Phase 0.1). Never raises into the loop."""
     try:
-        from jarvis.brain.reliability import health_probe_and_surface
-        msg = await health_probe_and_surface()
-        if msg and "All systems green" not in msg:
-            logger.warning(f"reliability probe: {msg}")
+        from jarvis.brain.reliability import health_probe, attempt_repair_and_escalate
+        probes = await health_probe()
+        summary = await attempt_repair_and_escalate(probes)
+        still_bad = [n for n, s in summary.items() if not s["ok"]]
+        repaired = [n for n, s in summary.items() if s.get("repaired")]
+        if repaired:
+            logger.info(f"reliability probe: self-repaired {repaired}")
+        if still_bad:
+            logger.warning(f"reliability probe: still degraded after repair: {still_bad}")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"reliability probe failed: {type(e).__name__}: {e}")
 

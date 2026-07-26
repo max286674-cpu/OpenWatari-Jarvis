@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watari · HUD</title>
+<style>
+  :root {
+    --ink:#05080a; --panel:#0d1418; --panel2:#111c22; --line:#1e2e37;
+    --text:#dfe7e9; --dim:#8ba0a7; --faint:#5b6c74;
+    --cyan:#35c6da; --cyan-bright:#5fe0f2; --good:#45c088; --warn:#e0a24a; --crit:#f0687f;
+    --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body {
+    background:radial-gradient(circle at 84% -8%, rgba(53,198,218,.10), transparent 46%), var(--ink);
+    color:var(--text); font-family:var(--sans); line-height:1.5;
+    -webkit-font-smoothing:antialiased; padding:24px; max-width:1100px; margin:0 auto;
+  }
+  header { display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; margin-bottom:22px; padding-bottom:16px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:1.5rem; font-weight:800; letter-spacing:-.02em; margin:0; }
+  header h1 .r { color:var(--cyan-bright); }
+  header .presence { color:var(--dim); font-size:.95rem; flex:1; min-width:200px; }
+  header .stamp { font-family:var(--mono); font-size:11px; color:var(--faint); letter-spacing:.05em; }
+  .live { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--good); }
+  .live .pulse { width:8px; height:8px; border-radius:50%; background:var(--good); box-shadow:0 0 0 0 rgba(69,192,136,.6); animation:pulse 2.4s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(69,192,136,.55);} 70%{box-shadow:0 0 0 7px rgba(69,192,136,0);} 100%{box-shadow:0 0 0 0 rgba(69,192,136,0);} }
+  @media (prefers-reduced-motion:reduce){ .live .pulse{animation:none;} }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
+  .card { background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line); border-radius:14px; padding:18px 20px; }
+  .card h2 { font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--cyan); margin:0 0 14px; display:flex; align-items:center; gap:9px; }
+  .card h2 .count { color:var(--faint); }
+  .item { padding:11px 0; border-top:1px solid var(--line); }
+  .item:first-of-type { border-top:none; padding-top:0; }
+  .item .t { font-weight:640; font-size:.98rem; }
+  .item .t .proj { font-family:var(--mono); font-size:10px; letter-spacing:.05em; color:var(--cyan); border:1px solid color-mix(in srgb,var(--cyan) 30%,transparent); border-radius:5px; padding:1px 6px; margin-right:7px; vertical-align:1px; }
+  .item .sub { color:var(--dim); font-size:.86rem; margin-top:3px; }
+  .item .await { color:var(--warn); font-size:.82rem; margin-top:5px; }
+  .item .elapsed { font-family:var(--mono); font-size:11px; color:var(--faint); float:right; }
+  .empty { color:var(--faint); font-size:.9rem; font-style:italic; }
+  .approve h2 { color:var(--warn); }
+  .approve h2 .count { color:var(--warn); }
+  .systems { display:flex; gap:10px 22px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--dim); margin-top:22px; padding-top:16px; border-top:1px solid var(--line); }
+  .systems b { color:var(--text); font-weight:500; }
+  .systems .ok { color:var(--good); }
+  .metrics { display:grid; grid-template-columns:repeat(2,1fr); gap:10px 16px; margin-bottom:4px; }
+  .metrics .m { display:flex; flex-direction:column; gap:2px; }
+  .metrics .m .v { font-family:var(--mono); font-size:1.15rem; font-weight:600; color:var(--text); font-variant-numeric:tabular-nums; }
+  .metrics .m .v.warn { color:var(--warn); } .metrics .m .v.crit { color:var(--crit); }
+  .metrics .m .k { font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); }
+  .hrow { display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--line); font-size:.86rem; }
+  .hrow .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .hrow .dot.ok { background:var(--good); } .hrow .dot.bad { background:var(--crit); }
+  .hrow .name { font-family:var(--mono); font-size:12px; color:var(--dim); }
+  .hrow .detail { color:var(--faint); font-size:.78rem; margin-left:auto; }
+  .flaky { color:var(--warn); font-size:.82rem; padding:5px 0; border-top:1px solid var(--line); font-family:var(--mono); }
+  .err { color:var(--crit); font-family:var(--mono); font-size:12px; margin-top:16px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>W<span class="r">A</span>TARI · HUD</h1>
+    <div class="presence" id="presence">…</div>
+    <div style="text-align:right">
+      <div class="live"><span class="pulse"></span> Live</div>
+      <div class="stamp" id="stamp"></div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Objectives he's driving <span class="count" id="c-obj"></span></h2>
+      <div id="objectives"></div>
+    </div>
+    <div class="card">
+      <h2>Working on now <span class="count" id="c-work"></span></h2>
+      <div id="working"></div>
+    </div>
+    <div class="card approve">
+      <h2>Awaiting your approval <span class="count" id="c-appr"></span></h2>
+      <div id="approvals"></div>
+    </div>
+    <div class="card">
+      <h2>Vitals</h2>
+      <div class="metrics" id="metrics"></div>
+      <div id="health"></div>
+      <div id="reliability"></div>
+    </div>
+  </div>
+
+  <div class="systems" id="systems"></div>
+  <div class="err" id="err"></div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const token = window.JARVIS_TOKEN || new URLSearchParams(location.search).get("token") || "";
+
+  function empty(el, msg) { el.innerHTML = '<div class="empty">' + msg + '</div>'; }
+
+  function render(d) {
+    $("err").textContent = "";
+    $("presence").textContent = d.presence || "";
+    $("stamp").textContent = "updated " + (d.generated || "").replace("T", " ").replace("+00:00", " UTC");
+    document.title = "Watari · HUD" + (d.awaiting_approval && d.awaiting_approval.length ? " (" + d.awaiting_approval.length + ")" : "");
+
+    const obj = d.objectives || [];
+    $("c-obj").textContent = obj.length || "";
+    if (!obj.length) empty($("objectives"), "Nothing on his plate — hand him a goal.");
+    else $("objectives").innerHTML = obj.map(o =>
+      '<div class="item"><div class="t">' + (o.project ? '<span class="proj">' + esc(o.project) + '</span>' : '') + esc(o.text) + '</div>' +
+      '<div class="sub">latest: ' + esc(o.latest) + '</div>' +
+      ((o.awaiting && o.awaiting.length) ? '<div class="await">⏳ awaiting you: ' + o.awaiting.map(esc).join("; ") + '</div>' : '') +
+      '</div>').join("");
+
+    const work = d.working_on || [];
+    $("c-work").textContent = work.length || "";
+    if (!work.length) empty($("working"), "Idle — no background tasks running.");
+    else $("working").innerHTML = work.map(w =>
+      '<div class="item"><span class="elapsed">' + esc(w.elapsed) + '</span><div class="t">' + esc(w.title) + '</div>' +
+      (w.note ? '<div class="sub">' + esc(w.note) + '</div>' : '') + '</div>').join("");
+
+    const appr = d.awaiting_approval || [];
+    $("c-appr").textContent = appr.length || "";
+    if (!appr.length) empty($("approvals"), "Nothing waiting on you.");
+    else $("approvals").innerHTML = appr.map(a =>
+      '<div class="item"><div class="t">' + esc(a.summary) + '</div>' +
+      (a.origin ? '<div class="sub">from ' + esc(a.origin) + '</div>' : '') + '</div>').join("");
+
+    const p = d.performance || {};
+    const upH = p.uptime_s ? (p.uptime_s / 3600).toFixed(1) + "h" : "—";
+    const p95 = p.llm_p95_ms || 0;
+    const p95cls = p95 > 4000 ? "crit" : p95 > 2000 ? "warn" : "";   // spoken-latency budget
+    const errRate = p.tool_calls ? Math.round(100 * (p.tool_errors || 0) / p.tool_calls) : 0;
+    $("metrics").innerHTML =
+      metric("LLM p50", (p.llm_p50_ms || 0) + " ms") +
+      metric("LLM p95", p95 + " ms", p95cls) +
+      metric("Turns", p.turns || 0) +
+      metric("Tool errors", errRate + "%", errRate > 15 ? "warn" : "") +
+      metric("Uptime", upH) + metric("Tool calls", p.tool_calls || 0);
+
+    const health = d.health || [];
+    $("health").innerHTML = health.map(h =>
+      '<div class="hrow"><span class="dot ' + (h.ok ? "ok" : "bad") + '"></span>' +
+      '<span class="name">' + esc(h.name) + '</span>' +
+      (h.ok ? '' : '<span class="detail">' + esc(h.detail || "down") + '</span>') + '</div>').join("");
+
+    const flaky = d.reliability || [];
+    $("reliability").innerHTML = flaky.map(f =>
+      '<div class="flaky">⚠ ' + esc(f.tool) + ' — ' + Math.round(f.rate * 100) + '% ok (' + f.calls + ' calls)</div>').join("");
+
+    const s = d.systems || {};
+    $("systems").innerHTML =
+      'brain <b class="ok">' + esc(s.brain || "?") + '</b>' +
+      ' · llm <b>' + esc(s.llm || "?") + '</b>' +
+      ' · <b>' + esc(s.fallbacks || 0) + '</b> fallbacks';
+  }
+
+  function metric(k, v, cls) {
+    return '<div class="m"><span class="v ' + (cls || "") + '">' + esc(v) + '</span><span class="k">' + esc(k) + '</span></div>';
+  }
+
+  async function tick() {
+    try {
+      const r = await fetch("/hud.json" + (token ? "?token=" + encodeURIComponent(token) : ""), { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      render(await r.json());
+    } catch (e) {
+      $("err").textContent = "Can't reach the brain: " + e.message + " — retrying…";
+    }
+  }
+  tick();
+  setInterval(tick, 15000);
+</script>
+</body>
+</html>

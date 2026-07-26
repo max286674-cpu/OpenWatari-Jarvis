@@ -85,6 +85,27 @@ async def email_signals():
     return [Signal(key=f"email-{date.today()}", kind="thread", urgency=0.6, message=msg)]
 
 
+async def important_email_phrase() -> str:
+    """A one-line phrase about important unread mail ('3 important emails unread, the latest from
+    Jane') for the daily digest, or '' if none / not configured. Fail-quiet."""
+    if not configured():
+        return ""
+    try:
+        listing = await api_get(f"{_GMAIL}/messages",
+                                params={"q": "is:important is:unread newer_than:1d", "maxResults": 5})
+        ids = [m["id"] for m in (listing.get("messages") or [])]
+        if not ids:
+            return ""
+        msg = await api_get(f"{_GMAIL}/messages/{ids[0]}",
+                            params={"format": "metadata", "metadataHeaders": ["From"]})
+        headers = {h["name"].lower(): h["value"] for h in (msg.get("payload", {}).get("headers") or [])}
+        frm = headers.get("from", "someone").split("<")[0].strip()
+    except Exception:  # noqa: BLE001 — never throw into the digest
+        return ""
+    n = len(ids)
+    return f"{n} important email{'s' if n != 1 else ''} unread, the latest from {frm}"
+
+
 async def draft_email(args: dict) -> str:
     if not configured():
         return not_configured("Gmail", _NEEDS)

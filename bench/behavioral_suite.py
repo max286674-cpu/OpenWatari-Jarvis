@@ -205,6 +205,63 @@ def scenarios() -> list[Scenario]:
                               "i don't have", "not aware", "couldn't find", "don't know"),
                  max_latency_s=9, note="admit the unknown, don't invent"),
         ], weight=1.5, desc="Admits the unknown instead of fabricating"),
+
+        # ---- FLEET DELEGATION (MASTER 3.9) ---------------------------------------------------
+        # A deep, multi-specialist request should route to the team lead (delegate_to_fleet) OR, when
+        # the fleet is disarmed, the agent should say it's consulting / can't reach the team — either
+        # is correct routing. Generous latency: a live consult can be slow, and a disarmed fleet
+        # refuses fast; we accept both without asserting the full round-trip completes.
+        Scenario("fleet_delegation", "Fleet", [
+            Turn("Have your specialist team do a deep dive on the Armenian rabbit-farming market "
+                 "and report back.",
+                 expect_tools=("delegate_to_fleet", "work_on_task"),
+                 expect_text=("team", "ispir", "consult", "look into", "on it", "working",
+                              "can't reach", "not armed", "isn't configured", "background"),
+                 max_latency_s=60, note="routes deep work to the fleet lead or backgrounds it"),
+        ], weight=1.0, desc="Deep multi-specialist request routes to the fleet / worker"),
+
+        # ---- MODE / CONTEXT SWITCH (multi-device analog, 3.9) --------------------------------
+        # The brain-side context switch: focus/commute/lockdown modes gate proactivity and shape
+        # behavior per situation (the closest brain-level analog to 'which device am I on').
+        Scenario("mode_switch", "Modes", [
+            Turn("Put yourself in focus mode for the next thirty minutes.",
+                 expect_tools=("routine",),
+                 expect_text=("focus", "quiet", "hold", "won't interrupt", "thirty", "30"),
+                 max_latency_s=9, note="flips a runtime mode via the routine tool"),
+        ], weight=1.0, desc="Switches into focus mode (runtime context)"),
+
+        # ---- LATENCY FLOOR (3.9) -------------------------------------------------------------
+        # A trivial conversational turn needs NO tool and must come back FAST. This is the
+        # first-token/latency floor: if a regression makes even a bare greeting slow, it trips here.
+        Scenario("latency_floor", "Latency", [
+            Turn("Good morning.", forbid_tools=("web_search", "get_time", "recall"),
+                 expect_text=("morning", "sir", "hello", "good"),
+                 max_latency_s=5, note="pure conversational reply, tight budget, no tool"),
+        ], weight=1.0, desc="Trivial turn stays under a tight latency floor"),
+
+        # ---- MULTI-DEVICE: shared-brain cross-device continuity (MASTER 3.9) -----------------
+        # The user-facing value of the ONE shared brain is that a thread started on one device
+        # continues on another: the same agent + memory serve every device (phone / glasses / laptop
+        # all hit the same brain over the WS server). This drives the same agent across turns — as the
+        # shared brain does across devices — and asserts a follow-up resolves against the earlier turn
+        # WITHOUT re-stating it. (Device-level audio ROUTING is verified separately in
+        # test_phase6_multidevice.py; this covers the brain-side continuity that makes it useful.)
+        Scenario("multi_device_continuity", "Multi-Device", [
+            Turn("I'm heading to the Cologne office at 3 PM today — keep that in mind.",
+                 max_latency_s=10, note="turn 1: establish context (as if said on the phone)"),
+            Turn("Where did I say I'm going later?",
+                 expect_text=("cologne", "office"), forbid_tools=("web_search",),
+                 max_latency_s=10, note="turn 2 (as if on the laptop): same brain recalls it"),
+        ], weight=1.5, desc="One shared brain carries a thread across devices"),
+
+        # A device-routing REQUEST must be handled gracefully by the brain even though the actual
+        # switch happens on the edge — it should acknowledge, not crash or fire a wrong tool.
+        Scenario("device_routing_request", "Multi-Device", [
+            Turn("Switch your voice over to my headphones.",
+                 forbid_tools=("web_search", "file_op", "run_powershell"),
+                 expect_text=("headphone", "switch", "sure", "done", "sir", "output", "route"),
+                 max_latency_s=9, note="brain acknowledges an edge-routing request without misfiring"),
+        ], weight=1.0, desc="Handles a device-routing request gracefully"),
     ]
 
 
@@ -315,10 +372,12 @@ def _parser() -> argparse.ArgumentParser:
                         help="Minimum acceptable overall score for --ci mode.")
     parser.add_argument("--median", type=int, default=1, metavar="N",
                         help="Run each scenario N times and take the MEDIAN score (de-noises model variance).")
+    parser.add_argument("--only", default="", metavar="SUBSTR",
+                        help="Run only scenarios whose id contains this substring (comma-separated OK).")
     return parser
 
 
-async def main(ci: bool = False, floor: float = 80.0, runs: int = 1) -> int:
+async def main(ci: bool = False, floor: float = 80.0, runs: int = 1, only: str = "") -> int:
     audit.record = _patched_record  # instrument
     from jarvis.brain.agent import JarvisAgent
 
@@ -326,12 +385,16 @@ async def main(ci: bool = False, floor: float = 80.0, runs: int = 1) -> int:
     agent = JarvisAgent()
     await agent.warmup()
 
+    picks = [p.strip() for p in only.split(",") if p.strip()]
+    scs = [s for s in scenarios() if not picks or any(p in s.id for p in picks)]
+
     results: list[dict] = []
     print("=" * 74)
     print(" WATARI — BEHAVIORAL & PRODUCTION-READINESS SUITE"
-          + (f"  (median of {runs} runs)" if runs > 1 else ""))
+          + (f"  (median of {runs} runs)" if runs > 1 else "")
+          + (f"  [only: {only}]" if picks else ""))
     print("=" * 74)
-    for sc in scenarios():
+    for sc in scs:
         run_scores: list[float] = []
         sc_notes: list[str] = []
         for _run in range(runs):
@@ -408,4 +471,4 @@ async def main(ci: bool = False, floor: float = 80.0, runs: int = 1) -> int:
 
 if __name__ == "__main__":
     args = _parser().parse_args()
-    raise SystemExit(asyncio.run(main(ci=args.ci, floor=args.floor, runs=args.median)))
+    raise SystemExit(asyncio.run(main(ci=args.ci, floor=args.floor, runs=args.median, only=args.only)))
