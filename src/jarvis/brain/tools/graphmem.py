@@ -56,8 +56,8 @@ SCHEMAS = [
             "name": "link_memory",
             "description": (
                 "Record a structured relationship between two things in the knowledge graph "
-                "(subject -> relation -> object), e.g. ('Lpstrak', 'located in', 'Armenia') or "
-                "('Vazghen', 'owns', 'Lpstrak'). Use when the owner states a durable connection "
+                "(subject -> relation -> object), e.g. ('Acme', 'located in', 'Berlin') or "
+                "('the owner', 'owns', 'Acme'). Use when the owner states a durable connection "
                 "between entities that later associative recall should traverse. Complements "
                 "'remember' (which stores free-text facts)."
             ),
