@@ -27,19 +27,24 @@ def check(cond, label):
 
 
 async def _run():
-    # A) a DEAD mic (gap past silence_limit) MUST trip a restart so Watari recovers from deafness
+    # A) a DEAD mic (gap past silence_limit) MUST trip a restart so Watari recovers from deafness.
+    # auto_route=False: this tests the MIC path only — otherwise real headphones on the dev machine
+    # (AirPods connected) make route_should_change want to re-route, which is a different trip reason.
     dead = asyncio.Event()
     stalled = AudioLivenessProbe()
     stalled.last_input = time.monotonic() - 100
-    await watch_audio_liveness(stalled, dead, None, silence_limit_s=20, grace_s=0, poll_s=0.05)
+    await watch_audio_liveness(stalled, dead, None, silence_limit_s=20, grace_s=0, poll_s=0.05,
+                               auto_route=False)
     check(dead.is_set(), "a dead mic (long gap) trips a restart")
 
-    # B) does NOT trip on a live mic
+    # B) does NOT trip on a live mic (auto_route=False so the dev machine's real headphone state can't
+    # false-trip this: with auto-route ON and AirPods connected the watchdog legitimately re-routes).
     dead2 = asyncio.Event()
     live = AudioLivenessProbe()  # last_input = now
     try:
         await asyncio.wait_for(
-            watch_audio_liveness(live, dead2, None, silence_limit_s=20, grace_s=0, poll_s=0.05),
+            watch_audio_liveness(live, dead2, None, silence_limit_s=20, grace_s=0, poll_s=0.05,
+                                 auto_route=False),
             timeout=0.4,
         )
     except asyncio.TimeoutError:
