@@ -26,7 +26,7 @@ async def attempt_backlog(
     registry: dict[str, Callable[[dict], Awaitable[str]]],
     worker_tools: list[dict[str, Any]],
     max_tasks: int = 2,
-    max_steps: int = 4,
+    max_steps: int = 6,   # room to VERIFY online + scrape the task's links + draft (4 was too tight)
     fetch: Callable[..., Awaitable[list[dict]]] | None = None,
     comment: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> list[dict]:
@@ -40,12 +40,37 @@ async def attempt_backlog(
     if fetch is None:
         from jarvis.brain.tools.notion import fetch_backlog_tasks as fetch
     tasks = await fetch(limit=max_tasks)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from jarvis.config import settings
+    today = datetime.now(ZoneInfo(settings.user_tz)).strftime("%B %d, %Y")
     attempted: list[dict] = []
     for t in tasks:
         title = (t.get("title") or "(untitled)").strip()
+        page_id = (t.get("id") or "").strip()
+        # Read the task's OWN content first (links, buy-lists, prior notes) so the worker grounds its
+        # work in what the owner already wrote — not just the title. The generic fluff the owner saw
+        # ("wait for FIFA 26 to release") came from working off the bare title with STALE model knowledge
+        # and never opening the task, which already held the reseller link + the player buy-list.
+        body = ""
+        if page_id:
+            try:
+                from jarvis.brain.tools.notion import notion_read_page
+                b = await notion_read_page({"page_id": page_id})
+                if b and "no readable text" not in b.lower() and "not configured" not in b.lower():
+                    body = b
+            except Exception:  # noqa: BLE001 — no body just means work off the title
+                pass
         objective = (
-            f"Work on this task from the owner's backlog: '{title}'. Do the safe research and drafting "
-            "needed to move it forward. Do NOT take any outward-facing or destructive action."
+            f"Today is {today}. Work on this task from the owner's backlog: '{title}'.\n"
+            + (f"\nThe task's OWN notes — read and USE these; follow any link, honour any list:\n{body}\n"
+               if body else "")
+            + "\nGround your work in facts, not memory: before stating anything that changes over time "
+            "(release dates, prices, availability, current events), VERIFY it with web_search across a "
+            "couple of sources — your training knowledge is stale and must not be trusted for these. If "
+            "the task contains a URL, scrape_url it and base your work on what it actually says. THEN do "
+            "the safe research and drafting to move the task forward. Do NOT take any outward-facing or "
+            "destructive action."
         )
         worker = TaskWorker(llm, registry, worker_tools, max_steps=max_steps)
         try:
@@ -54,7 +79,6 @@ async def attempt_backlog(
             logger.warning(f"backlog worker failed on '{title}': {type(e).__name__}")
             continue
         commented = False
-        page_id = (t.get("id") or "").strip()
         if page_id:
             try:
                 if comment is not None:

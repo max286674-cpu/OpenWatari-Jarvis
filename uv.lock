@@ -1334,6 +1334,7 @@ edge = [
 ]
 identity = [
     { name = "pyaudio" },
+    { name = "soxr" },
     { name = "speechbrain" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -1369,6 +1370,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'brain'", specifier = ">=5.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "soxr", marker = "extra == 'identity'", specifier = ">=0.3" },
     { name = "speechbrain", marker = "extra == 'identity'", specifier = ">=1.0" },
     { name = "sqlalchemy", marker = "extra == 'brain'", specifier = ">=2.0" },
     { name = "telethon", marker = "extra == 'channels'", specifier = ">=1.36" },
