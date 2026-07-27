@@ -56,10 +56,12 @@ async def health_probe() -> list[dict]:
         return bool(r and "couldn't" not in r.lower()[:30])
 
     async def _telegram() -> bool:
-        from jarvis.brain.telegram_bridge import TelegramBridge
+        # Mirror TelegramBridge.enabled (token AND authorized chat) via settings directly. The old code
+        # constructed TelegramBridge(token=…, default_chat=…) — wrong kwargs (no default_chat param,
+        # missing the required `respond`), so it raised TypeError every probe → a perpetual false
+        # "telegram degraded" that spuriously paged the owner even though the bot is live.
         from jarvis.config import settings
-        b = TelegramBridge(token=settings.telegram_bridge_bot_token, default_chat=settings.telegram_default_chat)
-        return bool(b._token)
+        return bool(settings.telegram_bridge_bot_token and settings.telegram_default_chat)
 
     async def _composio() -> bool:
         from jarvis.brain.tools.composio import _configured

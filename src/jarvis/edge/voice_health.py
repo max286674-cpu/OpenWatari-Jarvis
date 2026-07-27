@@ -47,7 +47,14 @@ _PERMANENT_CUES = ("quota", "credit", "insufficient", "unauthorized", "payment",
 
 def record_cloud_error(detail: str = "") -> None:
     """A monitored cloud STT/TTS service escalated an error (called from its push_error_frame).
-    ``detail`` is the error text; a quota/auth match flips the permanent flag for immediate failover."""
+    ``detail`` is the error text; a quota/auth match flips the permanent flag for immediate failover.
+
+    Trips the LOCAL cooldown HERE the instant the cloud is judged failing — NOT only from the watchdog.
+    When pipecat's TTS service exhausts its own reconnects it tears the pipeline down (and main()'s
+    finally cancels the watchdog) before the watchdog can call note_failover(); the supervisor then
+    restarts straight back onto the dead cloud → a flap loop the owner hears as silence/garbled output.
+    Writing the cooldown at the moment of failure makes the next restart come up on LOCAL regardless of
+    which teardown path wins the race. Idempotent with the watchdog's note_failover()."""
     global _permanent
     now = time.monotonic()
     _errors.append(now)
@@ -56,6 +63,10 @@ def record_cloud_error(detail: str = "") -> None:
         logger.error(f"cloud voice PERMANENT error (out of credits / bad key) — failing over: {detail[:120]}")
     recent = sum(1 for t in _errors if now - t <= _ERR_WINDOW_S)
     logger.warning(f"cloud voice error recorded ({recent} in {_ERR_WINDOW_S:.0f}s)")
+    if _permanent or recent >= _ERR_THRESHOLD:
+        trip_cooldown(_PERMANENT_COOLDOWN_S if _permanent else _COOLDOWN_S)
+        logger.error("cloud voice failing — tripped LOCAL cooldown so the next (re)start comes up on "
+                     "local Piper/Whisper (survives a pipeline crash that skips the watchdog)")
 
 
 def cloud_failing() -> bool:

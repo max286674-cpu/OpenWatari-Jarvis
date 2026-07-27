@@ -90,8 +90,12 @@ def pattern_suggestion() -> list[Signal]:
         return []
 
 
-def weekly_digest(now: datetime | None = None) -> list[Signal]:
-    """T4a: Sunday 20:00 UTC, surface a one-line weekly summary (tasks done + memory learned + upcoming)."""
+async def weekly_digest(now: datetime | None = None) -> list[Signal]:
+    """T4a: Sunday 20:00 UTC, surface a one-line weekly summary (tasks done + memory learned + upcoming).
+
+    Async so the calendar look-ahead is awaited on the engine's loop — the old sync body bridged via
+    asyncio_run(), which on a running loop always raised (leaking the list_events coroutine unawaited),
+    so 'Upcoming: …' never appeared. _gather() awaits awaitable sources, so this just works."""
     try:
         now = now or _utc_now()
         if now.weekday() != 6 or now.hour != 20:  # only fire on Sun 20:00 UTC (local TZ filtering is the
@@ -107,8 +111,8 @@ def weekly_digest(now: datetime | None = None) -> list[Signal]:
             from datetime import timedelta
             tomorrow = (now + timedelta(days=1)).replace(hour=9, minute=0)
             day_end = tomorrow + timedelta(hours=12)
-            res = asyncio_run(list_events({"from": tomorrow.isoformat(),
-                                            "to": day_end.isoformat(), "limit": 10}))
+            res = await list_events({"from": tomorrow.isoformat(),
+                                     "to": day_end.isoformat(), "limit": 10})
             if res and "nothing" not in res.lower()[:30]:
                 first = res.splitlines()[0][:120]
                 msg += f" Upcoming: {first}."
@@ -204,13 +208,5 @@ def _within_days(text: str, days: int) -> bool:
     return True  # For now, weekly_digest just uses recent_digest which already sorts by mtime.
 
 
-def asyncio_run(coro):
-    import asyncio
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is None:
-        return asyncio.run(coro)
-    # We're already in a loop — schedule the coroutine and wait on it.
-    return loop.run_until_complete(coro)
+# (removed asyncio_run: its running-loop branch called loop.run_until_complete on the live loop, which
+# always raises — the only caller, weekly_digest, is now async and awaits list_events directly.)
