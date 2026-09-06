@@ -31,7 +31,6 @@ def _catastrophic(user_text: str) -> bool:
     if not text:
         return False
     if not _CATASTROPHIC_RE.search(text):
-        # Explicit Russian high-risk forms with flexible word order.
         destructive = re.search(r"\\b(удали|удалить|стирай|стереть|сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b", text)
         system_target = re.search(r"(диск\\s*[cс]|[cс]\\s*диск|системн(?:ый|ого)\\s*диск|весь\\s*(?:диск|компьютер|комп|систем)|всё\\s*(?:с|на|в)\\s*(?:диска|диск|компьютера|компе|системы)|windows|виндовс|system32|реестр|registry)", text)
         if destructive and system_target:
@@ -52,6 +51,25 @@ _AFFIRM_RE = re.compile(
 def _is_affirmation(text: str) -> bool:
     t = re.sub(r"[\\s,.!?;:]+", " ", (text or "").strip().lower()).strip()
     return bool(_AFFIRM_RE.fullmatch(t))
+
+'''
+
+PURE_CHAT_BLOCK = '''# High-confidence pure-chat matcher. Keep this helper present because _immediate_ack calls _is_pure_chat.
+_PURE_CHAT_RE = re.compile(
+    r"^\\s*(hi|hey+|hello|hiya|yo|howdy|good\\s*(morning|afternoon|evening|night)|greetings|"
+    r"how\\s*(are|'?re)\\s*(you|ya|things)|how\\s*(are\\s*)?you\\s*doing|how'?s\\s*it\\s*going|"
+    r"how\\s*have\\s*you\\s*been|what'?s\\s*up|sup|"
+    r"thank(s| you)( so much| a lot| very much)?|cheers|much appreciated|appreciate it|"
+    r"well done|good job|nice(\\s*(work|one))?|awesome|great(\\s*job)?|amazing|brilliant|perfect|excellent|"
+    r"good\\s*night|goodnight|bye|goodbye|see\\s*(you|ya)( later| soon)?|talk\\s*(to\\s*you\\s*)?later|"
+    r"tell me a joke|say something funny|you'?re (funny|hilarious|great|the best)|that'?s funny|ha+|lol|lmao|"
+    r"how do you feel|are you (ok|okay|there|alright|awake|listening)|you good|you there|"
+    r"i (love|like|appreciate) you|love you|"
+    r"cool|nice|neat|got it|gotcha|i see|makes sense|no worries|my bad|of course|"
+    r"never\\s*mind|nevermind|forget it|just (saying|checking|kidding))"
+    r"[\\s,.!'?]*(watari|jarvis|sir|buddy|mate|man|dude|please|then|too|though|there|everyone|all)?[\\s,.!'?]*$",
+    re.IGNORECASE,
+)
 
 '''
 
@@ -88,6 +106,17 @@ def patch_affirmation(s: str) -> str:
     after = s.find("\n\ndef ", pos)
     section_end = len(s) if after < 0 else after + 2
     return s[:section_start] + AFFIRM_BLOCK + s[section_end:]
+
+
+def patch_pure_chat(s: str) -> str:
+    """Repair the dependency used by _immediate_ack after any affirmation rewrite."""
+    if "_PURE_CHAT_RE = re.compile(" in s:
+        return s
+    marker = "def _is_pure_chat(text: str) -> bool:"
+    pos = s.find(marker)
+    if pos < 0:
+        raise RuntimeError("cannot restore pure-chat helper: function not found")
+    return s[:pos] + PURE_CHAT_BLOCK + s[pos:]
 
 
 def patch_spoken_english(s: str) -> str:
@@ -151,7 +180,7 @@ def patch_config(s: str) -> str:
 
 def patch_wake(s: str) -> str:
     s = s.replace('threshold: float = 0.5,', 'threshold: float = 0.32,')
-    s = s.replace('"jarvis": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",', '"jarvis": "hey_jarvis",\n    "джарвис": "hey_jarvis",\n    "джарвис": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",')
+    s = s.replace('"jarvis": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",', '"jarvis": "hey_jarvis",\n    "джарвис": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",')
     return s
 
 
@@ -160,6 +189,7 @@ def patch_agent() -> None:
     s = read(p)
     s = patch_catastrophic(s)
     s = patch_affirmation(s)
+    s = patch_pure_chat(s)
     s = patch_spoken_english(s)
     write(p, s)
 
