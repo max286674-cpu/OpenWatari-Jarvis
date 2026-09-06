@@ -1,8 +1,8 @@
 """One-shot local rebuild for the Windows voice runtime.
 
-Reuses mature project components and the official Pipecat Whisper implementation instead of keeping
-custom speech plumbing on the critical voice path. Also repairs confirmation friction and local app
-launch/close policy.
+Reuses mature project components and official Pipecat Whisper instead of keeping custom speech plumbing
+on the critical voice path. Repairs confirmation friction, local app launch/close, and raw-English news
+speech.
 """
 from __future__ import annotations
 
@@ -49,21 +49,18 @@ def patch_agent() -> None:
     text, n = re.subn(r'_AFFIRM_RE = re\.compile\(.*?\n\)\n\n\ndef _is_affirmation', new + '\n\n\ndef _is_affirmation', text, count=1, flags=re.S)
     if n != 1:
         raise RuntimeError("Could not locate _AFFIRM_RE in agent.py")
+    # News is a web result, not a safe direct-to-TTS sentence. Force the normal Russian summarisation
+    # pass so English headlines/snippets never get read verbatim in a Russian session.
+    text = text.replace('    "define_word", "wiki_lookup", "news_brief",', '    "define_word", "wiki_lookup",')
     p.write_text(text, encoding="utf-8")
 
 
 def patch_stt() -> None:
-    """Replace the custom Whisper subclass with the official Pipecat service.
-
-    Current Pipecat's WhisperSTTService already consumes raw 16-bit PCM, uses Faster-Whisper,
-    emits TranscriptionFrame, and supports Russian. The old custom subclass duplicated that plumbing
-    and made failures silent. The official implementation is the safer critical-path choice.
-    """
     p = SRC / "edge" / "stt.py"
     text = p.read_text(encoding="utf-8")
     start = text.index("def _auto_whisper(model: str):")
     end = text.index("\n\ndef _build_whisper():", start)
-    replacement = '''def _auto_whisper(model: str):\n    """Use Pipecat's maintained Faster-Whisper service for Russian speech."""\n    from pipecat.services.whisper.stt import WhisperSTTService\n    from pipecat.transcriptions.language import Language\n\n    hot = ""\n    try:\n        from jarvis.edge.proper_nouns import hotwords_str\n        hot = hotwords_str() or ""\n    except Exception:\n        pass\n    logger.info(f"STT: official Pipecat Whisper ({model}, Russian, CPU int8)")\n    try:\n        stt = WhisperSTTService(\n            model=model,\n            language=Language.RU,\n            device="cpu",\n            compute_type="int8",\n            no_speech_prob=0.30,\n            settings=WhisperSTTService.Settings(hotwords=hot or None),\n        )\n    except TypeError:\n        # Compatibility with older Pipecat versions that don't accept the Settings hotwords field.\n        stt = WhisperSTTService(\n            model=model, language=Language.RU, device="cpu", compute_type="int8", no_speech_prob=0.30\n        )\n    logger.info("STT: official Whisper service ready")\n    return stt\n'''
+    replacement = '''def _auto_whisper(model: str):\n    """Use Pipecat's maintained Faster-Whisper service for Russian speech."""\n    from pipecat.services.whisper.stt import WhisperSTTService\n    from pipecat.transcriptions.language import Language\n\n    hot = ""\n    try:\n        from jarvis.edge.proper_nouns import hotwords_str\n        hot = hotwords_str() or ""\n    except Exception:\n        pass\n    logger.info(f"STT: official Pipecat Whisper ({model}, Russian, CPU int8)")\n    try:\n        stt = WhisperSTTService(\n            model=model, language=Language.RU, device="cpu", compute_type="int8",\n            no_speech_prob=0.30, settings=WhisperSTTService.Settings(hotwords=hot or None),\n        )\n    except TypeError:\n        stt = WhisperSTTService(\n            model=model, language=Language.RU, device="cpu", compute_type="int8", no_speech_prob=0.30\n        )\n    logger.info("STT: official Whisper service ready")\n    return stt\n'''
     text = text[:start] + replacement + text[end:]
     text = text.replace(
         'Either way the brain always **replies in English** (see ``personality/jarvis.md``); STT only\ndecides which spoken languages Jarvis can *understand*.',
@@ -74,12 +71,8 @@ def patch_stt() -> None:
 
 def validate() -> None:
     files = [
-        SRC / "brain" / "agent.py",
-        SRC / "brain" / "proactive.py",
-        SRC / "brain" / "computer_direct.py",
-        SRC / "brain" / "tools" / "computer_use.py",
-        SRC / "edge" / "brain_bridge.py",
-        SRC / "edge" / "stt.py",
+        SRC / "brain" / "agent.py", SRC / "brain" / "proactive.py", SRC / "brain" / "computer_direct.py",
+        SRC / "brain" / "tools" / "computer_use.py", SRC / "edge" / "brain_bridge.py", SRC / "edge" / "stt.py",
         SRC / "config.py",
     ]
     for p in files:
@@ -88,13 +81,13 @@ def validate() -> None:
     for word in ("да", "ага", "подтверждаю", "разрешаю", "делай", "выполняй"):
         assert _is_affirmation(word), word
     from jarvis.brain.proactive import confirm_required
-    assert confirm_required("process_op", {"action": "kill"}) is False
-    assert confirm_required("process_op", {"action": "start"}) is False
-    assert confirm_required("browser", {}) is False
-    assert confirm_required("create_event", {}) is False
-    assert confirm_required("file_op", {"action": "delete_file"}) is True
-    assert confirm_required("file_op", {"action": "create_file"}) is False
-    print("AST + Russian confirmation + friction policy validation: OK")
+    assert not confirm_required("process_op", {"action": "kill"})
+    assert not confirm_required("process_op", {"action": "start"})
+    assert not confirm_required("browser", {})
+    assert not confirm_required("create_event", {})
+    assert not confirm_required("file_op", {"action": "create_file"})
+    assert confirm_required("file_op", {"action": "delete_file"})
+    print("AST + Russian confirmation + friction + news policy validation: OK")
 
 
 def main() -> None:
