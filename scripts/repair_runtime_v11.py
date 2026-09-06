@@ -1,8 +1,4 @@
-"""Safe runtime consistency repair.
-
-Restores known-good canonical files, applies exact small patches, and validates syntax. Re-running is
-idempotent and cannot delete unrelated helpers.
-"""
+"""Safe runtime consistency repair: canonical restore + exact idempotent patches + syntax validation."""
 from __future__ import annotations
 import ast, subprocess
 from pathlib import Path
@@ -13,13 +9,12 @@ CANONICAL_ROUTER="f3def13a623ed737a6128c32cba0776e2b222d9f"
 
 def read(rel): return (ROOT/rel).read_text(encoding="utf-8")
 def write_if_changed(rel,text):
-    p=ROOT/rel; old=p.read_text(encoding="utf-8")
+    p=ROOT/rel;old=p.read_text(encoding="utf-8")
     if old==text:return False
-    p.write_text(text,encoding="utf-8"); return True
+    p.write_text(text,encoding="utf-8");return True
 def git_file(commit,rel):
     try:return subprocess.check_output(["git","show",f"{commit}:{rel}"],cwd=ROOT,text=True,encoding="utf-8")
     except Exception as e:raise RuntimeError(f"cannot restore canonical {rel}: {e}") from e
-
 def restore_canonical_files():
     changed=False
     for rel,commit in (("src/jarvis/config.py",CANONICAL_CONFIG),("src/jarvis/brain/tools/__init__.py",CANONICAL_TOOLS),("src/jarvis/brain/intent_router.py",CANONICAL_ROUTER)):
@@ -36,6 +31,19 @@ def patch_agent():
         if pos<0:raise RuntimeError("agent.py missing _PURE_CHAT_RE")
         s=s[:pos]+'''_PURE_CHAT_RE = re.compile(\n    r"^\\s*(привет|здравствуй|здрасьте|доброе утро|добрый день|добрый вечер|спасибо|пожалуйста|класс|"\n    r"отлично|понял|понятно|хорошо|ага|угу|да|нет|почему|зачем|hi|hey+|hello|thanks|thank you|"\n    r"good job|nice|great|cool|got it|okay|ok)[\\s,.!?]*(джарвис|jarvis|сэр|sir)?[\\s,.!?]*$",\n    re.IGNORECASE,\n)\n\n\n'''+s[pos:]
     for old,new in {'"Right away, sir.",':'"Сделаю, сэр.",','"On it, sir.",':'"Занимаюсь этим, сэр.",','"Of course, sir.",':'"Конечно, сэр.",','"Yes, sir.",':'"Да, сэр.",','"Certainly, sir.",':'"Разумеется, сэр.",','"One moment, sir.",':'"Одну секунду, сэр.",','"Checking your vault"':'"Проверяю хранилище"','"Reading that note"':'"Читаю заметку"','"Saving that to your vault"':'"Сохраняю в хранилище"','"Looking that up"':'"Проверяю информацию"','"Opening the page"':'"Открываю страницу"','"Opening a browser"':'"Открываю браузер"','"Checking your Telegram"':'"Проверяю Telegram"','"Reading that chat"':'"Читаю чат"','"Sending that"':'"Отправляю"','"Working on your files"':'"Работаю с файлами"','"Running that"':'"Выполняю"','"In the browser"':'"Работаю в браузере"','"Setting that reminder"':'"Устанавливаю напоминание"','"Pinging your phone"':'"Отправляю уведомление"','"Getting the time"':'"Уточняю время"','"Checking the weather"':'"Проверяю погоду"','"Checking your calendar"':'"Проверяю календарь"','"Adding that to your calendar"':'"Добавляю в календарь"','"Checking your email"':'"Проверяю почту"','"Sending that email"':'"Отправляю письмо"','"Noting that down"':'"Запоминаю"','"Let me recall"':'"Вспоминаю"'}.items():s=s.replace(old,new)
+    helper='''\n\n    async def _run_pending_confirmation(self, user_text: str, on_progress: Callable | None = None) -> str:\n        """Execute the exact pending consequential action after one explicit yes/да. Never re-route it through the LLM."""\n        pending = dict(self._pending_confirm or {})\n        if not pending or not _is_affirmation(user_text):\n            return ""\n        self._confirm_granted = True\n        self._history.append({"role": "user", "content": user_text})\n        messages = [self._system, *self._history]\n        call = {"id": "confirm-pending", "name": pending["name"], "arguments": json.dumps(pending.get("args") or {}, ensure_ascii=False)}\n        outcomes = await self._execute_calls(messages, [call], "", on_progress)\n        result = str(outcomes[0]["result"]) if outcomes else ""\n        messages.append({"role": "system", "content": "Действие уже выполнено. Ответь владельцу кратко по-русски. Не вызывай инструменты."})\n        try:\n            msg = await self._llm.complete(messages, tools=[], tool_choice="none")\n            reply = _clean_reply(msg.content or "")\n        except Exception:\n            reply = "Готово, сэр." if outcomes and outcomes[0]["ok"] else "Не удалось выполнить действие, сэр."\n        self._history.append({"role": "assistant", "content": reply})\n        self._trim()\n        self._confirm_granted = False\n        self._pending_confirm = None\n        self._spawn_review()\n        return reply\n'''
+    if "async def _run_pending_confirmation(" not in s:
+        anchor="    # ---- main loop --------------------------------------------------------------------\n"
+        if anchor not in s:raise RuntimeError("agent main-loop anchor missing")
+        s=s.replace(anchor,helper+"\n"+anchor,1)
+    # Blocking path: consume an affirmation before ordinary routing.
+    old_call='''        if _catastrophic(user_text):\n            return self._refuse_catastrophic(user_text)\n        self._immediate_ack(user_text, on_progress)'''
+    new_call='''        if _catastrophic(user_text):\n            return self._refuse_catastrophic(user_text)\n        if self._pending_confirm and _is_affirmation(user_text):\n            return await self._run_pending_confirmation(user_text, on_progress)\n        self._immediate_ack(user_text, on_progress)'''
+    s=s.replace(old_call,new_call,1)
+    # Streaming path gets the same deterministic confirmation execution.
+    old_stream='''        if _catastrophic(user_text):\n            self._refuse_catastrophic(user_text)   # records user + a hard refusal\n            self._stream_done = True\n            yield _CATASTROPHIC_REFUSAL\n            return\n        self._immediate_ack(user_text, on_progress)'''
+    new_stream='''        if _catastrophic(user_text):\n            self._refuse_catastrophic(user_text)   # records user + a hard refusal\n            self._stream_done = True\n            yield _CATASTROPHIC_REFUSAL\n            return\n        if self._pending_confirm and _is_affirmation(user_text):\n            reply = await self._run_pending_confirmation(user_text, on_progress)\n            self._stream_done = True\n            yield reply\n            return\n        self._immediate_ack(user_text, on_progress)'''
+    s=s.replace(old_stream,new_stream,1)
     ast.parse(s,filename=rel);return write_if_changed(rel,s) if s!=original else False
 
 def patch_config():
@@ -69,12 +77,12 @@ def patch_wake():
 def patch_policy():
     rel="src/jarvis/brain/proactive.py";s=read(rel);original=s
     old='''    if name == "process_op":\n        return (args or {}).get("action") in {"kill", "start"}'''
-    new='''    if name == "process_op":\n        action = (args or {}).get("action")\n        target = str((args or {}).get("name") or (args or {}).get("command") or "").lower()\n        routine = ("telegram", "chrome", "msedge", "firefox", "discord", "spotify", "steam",\n                   "notepad", "calc", "calculator", "code", "winword", "excel", "powerpnt")\n        # Opening/closing ordinary desktop applications is routine local work and never asks for approval.\n        if action in {"start", "kill"} and any(x in target for x in routine):\n            return False\n        return action in {"kill", "start"}'''
+    new='''    if name == "process_op":\n        action = (args or {}).get("action")\n        target = str((args or {}).get("name") or (args or {}).get("command") or "").lower()\n        routine = ("telegram", "chrome", "msedge", "firefox", "discord", "spotify", "steam", "notepad", "calc", "calculator", "code", "winword", "excel", "powerpnt")\n        if action in {"start", "kill"} and any(x in target for x in routine):\n            return False\n        return action in {"kill", "start"}'''
     if old in s:s=s.replace(old,new)
     ast.parse(s,filename=rel);return write_if_changed(rel,s) if s!=original else False
 
 def validate():
-    checks={"src/jarvis/brain/agent.py":("_PURE_CHAT_RE = re.compile(","def _is_pure_chat(","def _is_affirmation(","def _execute_calls("),"src/jarvis/brain/intent_router.py":("def forced_tools(",),"src/jarvis/brain/tools/desktop.py":("desktop_action","desktop_screenshot"),"src/jarvis/edge/wake_word.py":("wake_word_custom_model_path","inference_framework=framework"),"src/jarvis/brain/proactive.py":("routine = (",)}
+    checks={"src/jarvis/brain/agent.py":("_PURE_CHAT_RE = re.compile(","def _is_pure_chat(","def _is_affirmation(","def _execute_calls(","def _run_pending_confirmation("),"src/jarvis/brain/intent_router.py":("def forced_tools(",),"src/jarvis/brain/tools/desktop.py":("desktop_action","desktop_screenshot"),"src/jarvis/edge/wake_word.py":("wake_word_custom_model_path","inference_framework=framework"),"src/jarvis/brain/proactive.py":("routine = (",)}
     for rel,needles in checks.items():
         s=read(rel)
         for n in needles:
