@@ -16,11 +16,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _tts_language() -> str | None:
-    """Map the human-readable reply-language setting to an ElevenLabs ISO language code.
-
-    Flash v2.5 is multilingual. Explicitly supplying the language is important for short Russian
-    utterances, where relying only on text auto-detection can produce an unwanted English accent.
-    """
+    """Map the human-readable reply-language setting to an ElevenLabs ISO language code."""
     raw = (settings.reply_language or "").strip().lower()
     if not raw:
         return None
@@ -33,6 +29,10 @@ def _tts_language() -> str | None:
         "armenian": "hy", "армянский": "hy", "hy": "hy",
     }
     return mapping.get(raw)
+
+
+def _is_russian_reply() -> bool:
+    return _tts_language() == "ru"
 
 
 def _build_elevenlabs():
@@ -79,10 +79,16 @@ def _build_piper():
 
     download_dir = _REPO_ROOT / ".piper-voices"
     download_dir.mkdir(exist_ok=True)
-    logger.info(f"TTS: Piper LOCAL (voice={settings.piper_voice}) — offline, no key, no cloud")
+    # The previous default en_US-ryan-high cannot pronounce Russian correctly and produced the
+    # "Missing phoneme from id map" warnings seen in the runtime log. If the cloud voice is down
+    # and the deployment is configured for Russian replies, use a native Russian Piper model.
+    voice = settings.piper_voice
+    if _is_russian_reply() and voice == "en_US-ryan-high":
+        voice = "ru_RU-ruslan-medium"
+    logger.info(f"TTS: Piper LOCAL (voice={voice}) — offline, no key, no cloud")
     return PiperTTSService(
         download_dir=download_dir,
-        settings=PiperTTSService.Settings(model=None, voice=settings.piper_voice, language=None),
+        settings=PiperTTSService.Settings(model=None, voice=voice, language=None),
     )
 
 
