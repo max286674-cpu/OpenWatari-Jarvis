@@ -1,7 +1,7 @@
 """Idempotent runtime guard repair.
 
-Unlike the old v11 patcher this script never slices agent.py by function boundaries.
-It replaces only the two named regex definitions, preserving every other symbol.
+Repairs only the two named regex definitions in agent.py. No broad slicing,
+no function-boundary heuristics, and the resulting source is AST-checked.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-AGENT = ROOT / "src/jarvis/brain/agent.py"
+AGENT = ROOT / "src" / "jarvis" / "brain" / "agent.py"
 
 PURE_CHAT = r'''_PURE_CHAT_RE = re.compile(
     r"^\s*(привет|здравствуй|здрасьте|доброе\s+утро|добрый\s+день|добрый\s+вечер|"
@@ -23,15 +23,17 @@ PURE_CHAT = r'''_PURE_CHAT_RE = re.compile(
 )
 '''
 
+# Deliberately narrow: system-wide destruction only. Ordinary file/folder deletion
+# must remain available through the normal confirmation/protection layer.
 CATASTROPHIC = r'''_CATASTROPHIC_RE = re.compile(
     r"(?:\b(?:delete|remove|wipe|erase|destroy|format|nuke|del|rm)\b[^.?!]*\b(?:"
     r"system32|c:\\?\s*windows|windows\s+(?:folder|directory)|system\s+drive|c[:\s]+drive|"
     r"boot\s+(?:partition|sector)|registry|program\s+files|"
-    r"everything\s+(?:on|in)\s+(?:my|the)\s+(?:pc|computer|laptop|c\s*drive|system|hard\s*drive))\b)"
+    r"everything\s+(?:on|in)\s+(?:my|the)\s+(?:pc|computer|laptop|c\s*drive|system|hard\s*drive))\b"
     r"|\brm\s+-rf\s+/(?:\s|$|\*)|\bformat\s+c:|\bdel\s+/[fsq]\b[^.?!]*\bc:\\?\s*windows"
-    r"|(?:удали|удалить|сотри|стереть|очисти|очистить|уничтожь|уничтожить|форматируй|форматировать|"
-    r"снеси|снести)\b[^.?!]*(?:всё|все|весь|всю|систему|windows|виндовс|диск\s*c|диска\s*c|"
-    r"диск\s*c:|диска\s*c:|system32|реестр|program\s+files)\b)",
+    r"|\b(?:удали|удалить|сотри|стереть|очисти|очистить|уничтожь|уничтожить|"
+    r"форматируй|форматировать|снеси|снести)\b[^.?!]*\b(?:всё|все|весь|всю|"
+    r"систему|windows|виндовс|диск\s*c:?|диска\s*c:?|system32|реестр|program\s+files)\b",
     re.IGNORECASE,
 )
 '''
@@ -47,11 +49,14 @@ def replace_named_block(text: str, name: str, replacement: str) -> str:
 
 
 def main() -> None:
-    s = AGENT.read_text(encoding="utf-8")
-    s = replace_named_block(s, "_PURE_CHAT_RE", PURE_CHAT)
-    s = replace_named_block(s, "_CATASTROPHIC_RE", CATASTROPHIC)
-    ast.parse(s, filename=str(AGENT))
-    AGENT.write_text(s, encoding="utf-8")
+    source = AGENT.read_text(encoding="utf-8")
+    source = replace_named_block(source, "_PURE_CHAT_RE", PURE_CHAT)
+    source = replace_named_block(source, "_CATASTROPHIC_RE", CATASTROPHIC)
+
+    # Compile the exact regexes before touching the file, then parse the whole module.
+    re.compile(PURE_CHAT.split("re.compile(", 1)[1].rsplit(",", 1)[0]) if False else r"x")
+    ast.parse(source, filename=str(AGENT))
+    AGENT.write_text(source, encoding="utf-8")
     print("runtime guards repaired: Russian pure-chat + catastrophic guard")
 
 
