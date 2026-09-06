@@ -156,14 +156,16 @@ class WakeWordGate(FrameProcessor):
     async def _ack(self) -> None:
         if self._priler_enabled:
             try:
+                logger.info("Priler wake ack: starting exact prerecorded reaction")
                 await self._play_priler_ack()
+                logger.info("Priler wake ack: finished")
                 return
             except Exception as exc:  # noqa: BLE001
-                logger.warning(f"Priler reaction failed; falling back to TTS ack: {exc}")
+                # Do NOT emit the old English fallback here. If Priler fails, the user must not
+                # hear a surprise English phrase before the Russian answer. A Russian fallback
+                # is safe, but only when explicitly configured; otherwise remain silent.
+                logger.error(f"Priler wake ack failed: {exc}")
 
-        # Never fall back to the old English framework acknowledgements when the assistant
-        # is configured for Russian. This keeps the first spoken response in the same language
-        # as the actual assistant reply.
         if self._ack_choices:
             raw_language = ""
             try:
@@ -174,6 +176,9 @@ class WakeWordGate(FrameProcessor):
             if raw_language in {"russian", "русский", "ru"}:
                 ack = random.choice(["Да, сэр.", "Слушаю, сэр.", "Да, сэр, я слушаю."])
             else:
+                # If Priler is enabled and failed, never use a configured English acknowledgement.
+                if self._priler_enabled:
+                    return
                 ack = random.choice(self._ack_choices)
             await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
 
