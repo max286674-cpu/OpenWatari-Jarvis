@@ -16,13 +16,8 @@ def write(rel: str, text: str) -> None:
 
 CATASTROPHIC_BLOCK = '''# Catastrophic system-destruction commands are refused before any model/tool call.
 _CATASTROPHIC_RE = re.compile(
-    r"(?:\\b(?:delete|remove|wipe|erase|destroy|format|nuke|del|rm|удали|удалить|стирай|стереть|"
-    r"сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b[^.?!]*\\b(?:"
-    r"system32|c:\\\\?\\s*windows|windows\\s+(?:folder|directory)|system\\s+drive|c[:\\s]+drive|"
-    r"boot\\s+(?:partition|sector)|registry|program\\s+files|систем(?:у|ы)|диск\\s*c|диск\\s*с|"
-    r"системн(?:ый|ого)\\s+диск|виндовс|windows|реестр|program\\s+files|"
-    r"весь\\s+(?:диск|компьютер|комп|систему)|всё\\s+(?:с|на|в)\\s+(?:диска|диск|компьютера|компе|системы))\\b)"
-    r"|\\brm\\s+-rf\\s+/(?:\\s|$|\\*)|\\bformat\\s+c:|\\bdel\\s+/[fsq]\\b[^.?!]*\\bc:\\\\?\\s*windows",
+    r"(?:\\b(?:delete|remove|wipe|erase|destroy|format|nuke|del|rm|удали|удалить|стирай|стереть|сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b[^.?!]*?(?:system32|c:\\\\s*windows|windows\\s+(?:folder|directory)|system\\s+drive|c[:\\s]+drive|boot\\s+(?:partition|sector)|registry|program\\s+files|систем(?:у|ы)|диск\\s*c|диск\\s*с|системн(?:ый|ого)\\s+диск|виндовс|windows|реестр|весь\\s+(?:диск|компьютер|комп|систему)|всё\\s+(?:с|на|в)\\s+(?:диска|диск|компьютера|компе|системы)))"
+    r"|\\brm\\s+-rf\\s+/(?:\\s|$|\\*)|\\bformat\\s+c:|\\bdel\\s+/[fsq]\\b[^.?!]*\\bc:\\\\s*windows",
     re.IGNORECASE,
 )
 _CATASTROPHIC_REFUSAL = (
@@ -32,19 +27,24 @@ _CATASTROPHIC_REFUSAL = (
 
 
 def _catastrophic(user_text: str) -> bool:
-    return bool(_CATASTROPHIC_RE.search(user_text or ""))
+    text = (user_text or "").strip().lower()
+    if not text:
+        return False
+    if not _CATASTROPHIC_RE.search(text):
+        # Explicit Russian high-risk forms with flexible word order.
+        destructive = re.search(r"\\b(удали|удалить|стирай|стереть|сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b", text)
+        system_target = re.search(r"(диск\\s*[cс]|[cс]\\s*диск|системн(?:ый|ого)\\s*диск|весь\\s*(?:диск|компьютер|комп|систем)|всё\\s*(?:с|на|в)\\s*(?:диска|диск|компьютера|компе|системы)|windows|виндовс|system32|реестр|registry)", text)
+        if destructive and system_target:
+            return True
+        return False
+    return True
 
 
 '''
 
 AFFIRM_BLOCK = '''# Russian and English confirmations. A confirmation executes the exact pending tool call once.
 _AFFIRM_RE = re.compile(
-    r"^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
-    r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that's right|correct|fine|"
-    r"absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|подтверждаю|подтверждено|"
-    r"подтверждай|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|выполни|выполнить|"
-    r"запускай|запускайте|устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|"
-    r"можно|добро|верно|точно|давай|давай делай)[\\s,.!?;:]*$",
+    r"^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that's right|correct|fine|absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|подтверждаю|подтверждено|подтверждай|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|выполни|выполнить|запускай|запускайте|устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|можно|добро|верно|точно|давай|давай делай)[\\s,.!?;:]*$",
     re.IGNORECASE,
 )
 
@@ -57,7 +57,6 @@ def _is_affirmation(text: str) -> bool:
 
 
 def patch_catastrophic(s: str) -> str:
-    """Replace the whole catastrophic section, including an existing but stale helper."""
     marker = "# Background-work intent (Phase 4.1 / Autonomy):"
     if marker not in s:
         raise RuntimeError("cannot restore _catastrophic: background-work anchor missing")
@@ -65,7 +64,6 @@ def patch_catastrophic(s: str) -> str:
     start = min(starts) if starts else -1
     if start < 0:
         return s.replace(marker, CATASTROPHIC_BLOCK + marker, 1)
-    # Include any immediately preceding comment text by starting at the nearest blank-separated block.
     section_start = s.rfind("\n\n", 0, start) + 2
     if section_start <= 1:
         section_start = start
@@ -74,7 +72,6 @@ def patch_catastrophic(s: str) -> str:
 
 
 def patch_affirmation(s: str) -> str:
-    """Replace the entire affirmation section without depending on its old comment text."""
     marker = "def _is_affirmation(text: str) -> bool:"
     pos = s.find(marker)
     if pos < 0:
@@ -137,15 +134,24 @@ def patch_spoken_english(s: str) -> str:
     }
     for old, new in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
         s = s.replace(old, new)
-    s = s.replace(
-        'I wasn\'t able to pull that up just now, sir — let me try again in a moment rather than guess.',
-        "Не удалось получить эти данные, сэр. Я не буду гадать и попробую ещё раз.",
-    )
-    s = s.replace(
-        "This request has MORE THAN ONE part. Complete EVERY part — use the right tool for each, one after another — and do not give your final reply until all parts are done or you've said which part you can't do and why.",
-        "В запросе несколько частей. Выполни каждую часть подходящим инструментом. Не сообщай о завершении, пока все части не выполнены.",
-    )
+    s = s.replace("I wasn't able to pull that up just now, sir — let me try again in a moment rather than guess.", "Не удалось получить эти данные, сэр. Я не буду гадать и попробую ещё раз.")
+    s = s.replace("This request has MORE THAN ONE part. Complete EVERY part — use the right tool for each, one after another — and do not give your final reply until all parts are done or you've said which part you can't do and why.", "В запросе несколько частей. Выполни каждую часть подходящим инструментом. Не сообщай о завершении, пока все части не выполнены.")
     s = s.replace('    "define_word", "wiki_lookup", "news_brief",\n', '    "define_word", "wiki_lookup",\n')
+    return s
+
+
+def patch_config(s: str) -> str:
+    s = s.replace('wake_word_threshold: float = 0.5', 'wake_word_threshold: float = 0.32')
+    s = s.replace('hot_mic_after_wake: bool = False', 'hot_mic_after_wake: bool = True')
+    s = s.replace('reply_language: str = "English"', 'reply_language: str = "Russian"')
+    s = s.replace('understood_languages: str = "English"', 'understood_languages: str = "Russian,English"')
+    s = s.replace('wake_ack_phrase: str = "Yes, sir?|I\'m listening, sir.|Sir?|Go ahead, sir."', 'wake_ack_phrase: str = "Да, сэр.|Слушаю, сэр.|Да, сэр, я слушаю."')
+    return s
+
+
+def patch_wake(s: str) -> str:
+    s = s.replace('threshold: float = 0.5,', 'threshold: float = 0.32,')
+    s = s.replace('"jarvis": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",', '"jarvis": "hey_jarvis",\n    "джарвис": "hey_jarvis",\n    "джарвис": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",')
     return s
 
 
@@ -156,6 +162,13 @@ def patch_agent() -> None:
     s = patch_affirmation(s)
     s = patch_spoken_english(s)
     write(p, s)
+
+
+def patch_runtime_defaults() -> None:
+    p = "src/jarvis/config.py"
+    write(p, patch_config(read(p)))
+    p = "src/jarvis/edge/wake_word.py"
+    write(p, patch_wake(read(p)))
 
 
 def patch_tests() -> None:
@@ -169,6 +182,7 @@ def patch_tests() -> None:
 
 def main() -> None:
     patch_agent()
+    patch_runtime_defaults()
     patch_tests()
     print("runtime v11 repair applied")
 
