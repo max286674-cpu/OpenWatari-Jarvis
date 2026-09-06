@@ -19,7 +19,7 @@ def _tts_language() -> str | None:
     """Map the human-readable reply-language setting to an ElevenLabs ISO language code."""
     raw = (settings.reply_language or "").strip().lower()
     if not raw:
-        return None
+        return "ru"
     mapping = {
         "russian": "ru", "русский": "ru", "ru": "ru",
         "english": "en", "английский": "en", "en": "en",
@@ -28,7 +28,7 @@ def _tts_language() -> str | None:
         "ukrainian": "uk", "украинский": "uk", "uk": "uk",
         "armenian": "hy", "армянский": "hy", "hy": "hy",
     }
-    return mapping.get(raw)
+    return mapping.get(raw, "ru")
 
 
 def _is_russian_reply() -> bool:
@@ -79,11 +79,11 @@ def _build_piper():
 
     download_dir = _REPO_ROOT / ".piper-voices"
     download_dir.mkdir(exist_ok=True)
-    # The previous default en_US-ryan-high cannot pronounce Russian correctly and produced the
-    # "Missing phoneme from id map" warnings seen in the runtime log. If the cloud voice is down
-    # and the deployment is configured for Russian replies, use a native Russian Piper model.
+    # The old en_US-ryan-high default is unsafe for this Russian-speaking deployment: it can
+    # pronounce Russian badly and emit missing-phoneme warnings. Keep an explicitly configured
+    # non-English Piper voice only when the owner deliberately chose one; otherwise force native RU.
     voice = settings.piper_voice
-    if _is_russian_reply() and voice == "en_US-ryan-high":
+    if voice == "en_US-ryan-high" or not voice:
         voice = "ru_RU-ruslan-medium"
     logger.info(f"TTS: Piper LOCAL (voice={voice}) — offline, no key, no cloud")
     return PiperTTSService(
