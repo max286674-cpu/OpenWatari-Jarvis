@@ -13,36 +13,21 @@ import sys
 import time
 from pathlib import Path
 
-
 _OPEN_RE = re.compile(r"^\s*(?:пожалуйста\s+)?(?:открой|открыть|запусти|запустить|включи|включить)\s+(.+?)\s*[.!?]*\s*$", re.I)
 _CLOSE_RE = re.compile(r"^\s*(?:пожалуйста\s+)?(?:закрой|закрыть|выключи|выключить|останови|остановить|заверши|завершить)\s+(.+?)\s*[.!?]*\s*$", re.I)
 
 _ALIASES = {
-    "телеграм": ("Telegram.exe", "Telegram"),
-    "telegram": ("Telegram.exe", "Telegram"),
-    "телеграмм": ("Telegram.exe", "Telegram"),
-    "хром": ("chrome.exe", "Google Chrome"),
-    "chrome": ("chrome.exe", "Google Chrome"),
-    "гугл хром": ("chrome.exe", "Google Chrome"),
-    "файрфокс": ("firefox.exe", "Mozilla Firefox"),
-    "firefox": ("firefox.exe", "Mozilla Firefox"),
-    "дискорд": ("Discord.exe", "Discord"),
-    "discord": ("Discord.exe", "Discord"),
-    "спотифай": ("Spotify.exe", "Spotify"),
-    "spotify": ("Spotify.exe", "Spotify"),
-    "стим": ("steam.exe", "Steam"),
-    "steam": ("steam.exe", "Steam"),
-    "калькулятор": ("calc.exe", "Calculator"),
-    "калькулятор виндовс": ("calc.exe", "Calculator"),
-    "блокнот": ("notepad.exe", "Notepad"),
-    "notepad": ("notepad.exe", "Notepad"),
-    "проводник": ("explorer.exe", "File Explorer"),
-    "эксплорер": ("explorer.exe", "File Explorer"),
-    "explorer": ("explorer.exe", "File Explorer"),
-    "cmd": ("cmd.exe", "Command Prompt"),
-    "командную строку": ("cmd.exe", "Command Prompt"),
-    "powershell": ("powershell.exe", "PowerShell"),
-    "пауэршелл": ("powershell.exe", "PowerShell"),
+    "телеграм": ("Telegram.exe", "Telegram"), "telegram": ("Telegram.exe", "Telegram"), "телеграмм": ("Telegram.exe", "Telegram"),
+    "хром": ("chrome.exe", "Google Chrome"), "chrome": ("chrome.exe", "Google Chrome"), "гугл хром": ("chrome.exe", "Google Chrome"),
+    "файрфокс": ("firefox.exe", "Mozilla Firefox"), "firefox": ("firefox.exe", "Mozilla Firefox"),
+    "дискорд": ("Discord.exe", "Discord"), "discord": ("Discord.exe", "Discord"),
+    "спотифай": ("Spotify.exe", "Spotify"), "spotify": ("Spotify.exe", "Spotify"),
+    "стим": ("steam.exe", "Steam"), "steam": ("steam.exe", "Steam"),
+    "калькулятор": ("calc.exe", "Calculator"), "калькулятор виндовс": ("calc.exe", "Calculator"),
+    "блокнот": ("notepad.exe", "Notepad"), "notepad": ("notepad.exe", "Notepad"),
+    "проводник": ("explorer.exe", "File Explorer"), "эксплорер": ("explorer.exe", "File Explorer"), "explorer": ("explorer.exe", "File Explorer"),
+    "cmd": ("cmd.exe", "Command Prompt"), "командную строку": ("cmd.exe", "Command Prompt"),
+    "powershell": ("powershell.exe", "PowerShell"), "пауэршелл": ("powershell.exe", "PowerShell"),
 }
 
 
@@ -67,11 +52,8 @@ def _process_exists(exe: str) -> bool:
 def _taskkill(exe: str) -> tuple[bool, str]:
     taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\\Windows"), "System32", "taskkill.exe")
     try:
-        r = subprocess.run(
-            [taskkill, "/IM", exe, "/T", "/F"],
-            capture_output=True, text=True, timeout=15,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        r = subprocess.run([taskkill, "/IM", exe, "/T", "/F"], capture_output=True, text=True, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return r.returncode == 0, (r.stdout or r.stderr).strip()
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -79,6 +61,13 @@ def _taskkill(exe: str) -> tuple[bool, str]:
 
 def _open(target: str) -> tuple[bool, str]:
     target_n = _norm(target)
+    if target_n in {"калькулятор", "калькулятор виндовс", "calculator", "calc"} and os.name == "nt":
+        try:
+            os.startfile("calc:")  # type: ignore[attr-defined]
+            return True, "Открыл Калькулятор, сэр."
+        except Exception as e:
+            return False, f"Не удалось открыть Калькулятор: {type(e).__name__}."
+
     alias = _ALIASES.get(target_n)
     if alias:
         exe, label = alias
@@ -98,10 +87,8 @@ def _open(target: str) -> tuple[bool, str]:
     p = Path(target.strip(' \"\'«»')).expanduser()
     if p.exists():
         try:
-            if os.name == "nt":
-                os.startfile(str(p))  # type: ignore[attr-defined]
-            else:
-                subprocess.Popen(["xdg-open", str(p)])
+            if os.name == "nt": os.startfile(str(p))  # type: ignore[attr-defined]
+            else: subprocess.Popen(["xdg-open", str(p)])
             return True, f"Открыл {p}, сэр."
         except Exception as e:
             return False, f"Не удалось открыть {p}: {type(e).__name__}."
@@ -111,10 +98,8 @@ def _open(target: str) -> tuple[bool, str]:
 def _close(target: str) -> tuple[bool, str]:
     target_n = _norm(target)
     alias = _ALIASES.get(target_n)
-    if not alias:
-        # Common direct executable names: "закрой foo.exe".
-        if re.fullmatch(r"[\w.-]+\.exe", target_n):
-            alias = (target_n, target_n)
+    if not alias and re.fullmatch(r"[\w.-]+\.exe", target_n):
+        alias = (target_n, target_n)
     if not alias:
         return False, f"Не знаю, какой процесс закрывать для «{target}», сэр."
     exe, label = alias
@@ -130,11 +115,6 @@ def _close(target: str) -> tuple[bool, str]:
 
 
 def direct_computer_command(text: str) -> str | None:
-    """Execute an unambiguous routine local computer command and return a Russian result.
-
-    Returns None when the utterance is not a supported direct command, so the normal agent remains
-    responsible for all other requests.
-    """
     if sys.platform != "win32":
         return None
     t = (text or "").strip()
@@ -142,10 +122,10 @@ def direct_computer_command(text: str) -> str | None:
         return None
     m = _OPEN_RE.match(t)
     if m:
-        ok, result = _open(m.group(1))
+        _ok, result = _open(m.group(1))
         return result
     m = _CLOSE_RE.match(t)
     if m:
-        ok, result = _close(m.group(1))
+        _ok, result = _close(m.group(1))
         return result
     return None
