@@ -1,12 +1,14 @@
 import asyncio
 
+from jarvis.brain.agent import _is_affirmation
 from jarvis.brain.computer_control import direct_command
+from jarvis.brain.intent_router import forced_tools
 from jarvis.brain.proactive import confirm_required
+from jarvis.brain.tools import tool_names
 
 
 def test_basic_computer_commands_are_recognized():
     async def run():
-        # We don't execute anything here; monkeypatch the module functions.
         import jarvis.brain.computer_control as cc
         old_open, old_close, old_find = cc.open_target, cc.close_target, cc.find_on_computer
         try:
@@ -27,6 +29,20 @@ def test_routine_process_control_needs_no_confirmation():
     assert not confirm_required("process_op", {"action": "start", "command": "notepad.exe"})
     assert not confirm_required("process_op", {"action": "kill", "name": "Telegram.exe"})
     assert not confirm_required("process_op", {"action": "list", "name": "Telegram"})
+
+
+def test_russian_confirmations_are_recognized():
+    for text in ("да", "ага", "угу", "подтверждаю", "разрешаю", "делай", "выполняй", "окей"):
+        assert _is_affirmation(text)
+
+
+def test_russian_screen_routes_to_vision_agent():
+    for text in ("посмотри что у меня на экране", "нажми на кнопку", "сделай это на компьютере", "управляй компьютером"):
+        assert forced_tools(text) == ["computer_use"]
+
+
+def test_computer_use_is_registered():
+    assert "computer_use" in set(tool_names())
 
 
 def test_unrelated_text_is_not_direct_computer_command():
