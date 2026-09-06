@@ -16,10 +16,12 @@ def write(rel: str, text: str) -> None:
 
 CATASTROPHIC_BLOCK = '''# Catastrophic system-destruction commands are refused before any model/tool call.
 _CATASTROPHIC_RE = re.compile(
-    r"(?:\\b(?:delete|remove|wipe|erase|destroy|format|nuke|del|rm)\\b[^.?!]*\\b(?:"
+    r"(?:\\b(?:delete|remove|wipe|erase|destroy|format|nuke|del|rm|удали|удалить|стирай|стереть|"
+    r"сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b[^.?!]*\\b(?:"
     r"system32|c:\\\\?\\s*windows|windows\\s+(?:folder|directory)|system\\s+drive|c[:\\s]+drive|"
-    r"boot\\s+(?:partition|sector)|registry|program\\s+files|"
-    r"everything\\s+(?:on|in)\\s+(?:my|the)\\s+(?:pc|computer|laptop|c\\s*drive|system|hard\\s*drive))\\b)"
+    r"boot\\s+(?:partition|sector)|registry|program\\s+files|систем(?:у|ы)|диск\\s*c|диск\\s*с|"
+    r"системн(?:ый|ого)\\s+диск|виндовс|windows|реестр|program\\s+files|"
+    r"весь\\s+(?:диск|компьютер|комп|систему)|всё\\s+(?:с|на|в)\\s+(?:диска|диск|компьютера|компе|системы))\\b)"
     r"|\\brm\\s+-rf\\s+/(?:\\s|$|\\*)|\\bformat\\s+c:|\\bdel\\s+/[fsq]\\b[^.?!]*\\bc:\\\\?\\s*windows",
     re.IGNORECASE,
 )
@@ -55,12 +57,20 @@ def _is_affirmation(text: str) -> bool:
 
 
 def patch_catastrophic(s: str) -> str:
-    if "def _catastrophic(user_text: str) -> bool:" in s:
-        return s
-    anchor = "# Background-work intent (Phase 4.1 / Autonomy):"
-    if anchor not in s:
+    """Replace the whole catastrophic section, including an existing but stale helper."""
+    marker = "# Background-work intent (Phase 4.1 / Autonomy):"
+    if marker not in s:
         raise RuntimeError("cannot restore _catastrophic: background-work anchor missing")
-    return s.replace(anchor, CATASTROPHIC_BLOCK + anchor, 1)
+    starts = [x for x in (s.find("# Catastrophic system-destruction commands"), s.find("_CATASTROPHIC_RE = re.compile(")) if x >= 0]
+    start = min(starts) if starts else -1
+    if start < 0:
+        return s.replace(marker, CATASTROPHIC_BLOCK + marker, 1)
+    # Include any immediately preceding comment text by starting at the nearest blank-separated block.
+    section_start = s.rfind("\n\n", 0, start) + 2
+    if section_start <= 1:
+        section_start = start
+    end = s.find(marker, start)
+    return s[:section_start] + CATASTROPHIC_BLOCK + s[end:]
 
 
 def patch_affirmation(s: str) -> str:
@@ -69,30 +79,17 @@ def patch_affirmation(s: str) -> str:
     pos = s.find(marker)
     if pos < 0:
         raise RuntimeError("cannot repair affirmation helper: function not found")
-
-    # Find the beginning of the affirmation section. Prefer the immediately preceding
-    # _AFFIRM_RE assignment; fall back to the nearest top-level comment/blank block.
     regex_pos = s.rfind("_AFFIRM_RE = re.compile(", 0, pos)
     if regex_pos < 0:
-        # If the regex was lost too, start at the closest top-level comment before the function.
         line_start = s.rfind("\n", 0, pos) + 1
         section_start = s.rfind("\n\n", 0, line_start) + 2
     else:
         section_start = s.rfind("\n", 0, regex_pos) + 1
-        # Include a preceding comment line when it is directly attached to the section.
         comment_start = s.rfind("\n", 0, section_start - 1) + 1
-        candidate = s[comment_start:section_start]
-        if candidate.lstrip().startswith("#"):
+        if s[comment_start:section_start].lstrip().startswith("#"):
             section_start = comment_start
-
-    # Find the next top-level definition after _is_affirmation.
     after = s.find("\n\ndef ", pos)
-    if after < 0:
-        # There is normally a top-level section after this helper; if not, replace to EOF.
-        section_end = len(s)
-    else:
-        section_end = after + 2
-
+    section_end = len(s) if after < 0 else after + 2
     return s[:section_start] + AFFIRM_BLOCK + s[section_end:]
 
 
@@ -137,11 +134,9 @@ def patch_spoken_english(s: str) -> str:
         "One moment, sir.": "Одну секунду, сэр.",
         '"On it"': '"Занимаюсь этим"',
         '"Opening that"': '"Открываю"',
-        '"On it"': '"Занимаюсь этим"',
     }
     for old, new in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
         s = s.replace(old, new)
-
     s = s.replace(
         'I wasn\'t able to pull that up just now, sir — let me try again in a moment rather than guess.',
         "Не удалось получить эти данные, сэр. Я не буду гадать и попробую ещё раз.",
@@ -166,7 +161,7 @@ def patch_agent() -> None:
 def patch_tests() -> None:
     p = "tests/test_runtime_v8.py"
     s = read(p)
-    extra = '''\n\ndef test_catastrophic_guard_exists_and_is_narrow():\n    from jarvis.brain.agent import _catastrophic\n    assert callable(_catastrophic)\n    assert _catastrophic("удали всё с диска C")\n    assert not _catastrophic("удали файл report.txt")\n\n\ndef test_spoken_ack_sets_are_not_english():\n    from jarvis.brain.agent import _WORK_ACKS, _CHAT_ACKS, _TOOL_PROGRESS\n    spoken = list(_WORK_ACKS) + list(_CHAT_ACKS) + list(_TOOL_PROGRESS.values())\n    forbidden = ("Right away", "On it", "Of course", "Yes, sir", "Certainly", "One moment")\n    assert not any(any(x.lower() in phrase.lower() for x in forbidden) for phrase in spoken)\n'''
+    extra = '''\n\ndef test_catastrophic_guard_exists_and_is_narrow():\n    from jarvis.brain.agent import _catastrophic\n    assert callable(_catastrophic)\n    assert _catastrophic("удали всё с диска C")\n    assert _catastrophic("удали всё с диска C:")\n    assert not _catastrophic("удали файл report.txt")\n    assert not _catastrophic("удали папку C:\\Projects")\n\n\ndef test_spoken_ack_sets_are_not_english():\n    from jarvis.brain.agent import _WORK_ACKS, _CHAT_ACKS, _TOOL_PROGRESS\n    spoken = list(_WORK_ACKS) + list(_CHAT_ACKS) + list(_TOOL_PROGRESS.values())\n    forbidden = ("Right away", "On it", "Of course", "Yes, sir", "Certainly", "One moment")\n    assert not any(any(x.lower() in phrase.lower() for x in forbidden) for phrase in spoken)\n'''
     if "test_catastrophic_guard_exists_and_is_narrow" not in s:
         s += extra
     write(p, s)
