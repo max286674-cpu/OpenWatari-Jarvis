@@ -160,8 +160,21 @@ class WakeWordGate(FrameProcessor):
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Priler reaction failed; falling back to TTS ack: {exc}")
+
+        # Never fall back to the old English framework acknowledgements when the assistant
+        # is configured for Russian. This keeps the first spoken response in the same language
+        # as the actual assistant reply.
         if self._ack_choices:
-            ack = random.choice(self._ack_choices)
+            raw_language = ""
+            try:
+                from jarvis.config import settings
+                raw_language = (settings.reply_language or "").strip().lower()
+            except Exception:
+                pass
+            if raw_language in {"russian", "русский", "ru"}:
+                ack = random.choice(["Да, сэр.", "Слушаю, сэр.", "Да, сэр, я слушаю."])
+            else:
+                ack = random.choice(self._ack_choices)
             await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
@@ -182,8 +195,7 @@ class WakeWordGate(FrameProcessor):
         if isinstance(frame, InputAudioRawFrame):
             if self._bot_speaking and (time.monotonic() - self._speaking_since) > self._max_speak_s:
                 logger.warning(
-                    f"wake gate: bot-speaking stuck >{self._max_speak_s:.0f}s — "
-                    "force-clearing; resuming wake detection"
+                    f"wake gate: bot-speaking stuck >{self._max_speak_s:.0f}s — force-clearing; resuming wake detection"
                 )
                 self._bot_speaking = False
                 self._resume_after_tts = False
