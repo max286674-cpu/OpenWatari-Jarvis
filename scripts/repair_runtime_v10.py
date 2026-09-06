@@ -14,73 +14,60 @@ def write(rel: str, text: str) -> None:
     (ROOT / rel).write_text(text, encoding="utf-8")
 
 
-def replace_once(text: str, pattern: str, replacement: str, label: str, flags: int = 0) -> str:
-    out, n = re.subn(pattern, replacement, text, count=1, flags=flags)
-    if n != 1:
-        raise RuntimeError(f"repair anchor not found: {label}")
-    return out
-
-
 def patch_agent() -> None:
     p = "src/jarvis/brain/agent.py"
     s = read(p)
 
-    affirmation = r'''_AFFIRM_RE = re.compile(
-    r"^\s*(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
-    r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that'?s right|"
-    r"correct|fine|absolutely|yes please|go|right|"
-    r"да|ага|угу|конечно|подтверждаю|подтверждено|подтверждай|разрешаю|разрешено|"
-    r"делай|делайте|выполняй|выполняйте|выполни|выполнить|запускай|запускайте|"
-    r"устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|можно|добро|"
-    r"верно|точно|давай|давай делай)\b",
+    affirmation = r'''# Confirmation is intentionally deterministic: a Russian "да" must execute the
+# exact pending action rather than starting another LLM turn.
+_AFFIRM_RE = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
+    r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that's right|correct|fine|"
+    r"absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|подтверждаю|подтверждено|"
+    r"подтверждай|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|выполни|выполнить|"
+    r"запускай|запускайте|устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|"
+    r"можно|добро|верно|точно|давай|давай делай)\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
 
 
 def _is_affirmation(text: str) -> bool:
-    t = re.sub(r"[\s,.!?;:]+", " ", (text or "").strip().lower()).strip()
-    if not t:
-        return False
-    return bool(_AFFIRM_RE.match(t))'''
+    return bool(_AFFIRM_RE.fullmatch((text or "").strip()))'''
 
-    pattern = r'_AFFIRM_RE\s*=\s*re\.compile\(.*?\n\)\s*\n\s*\ndef _is_affirmation\(text: str\) -> bool:\s*\n\s*return bool\(_AFFIRM_RE\.match\(text or ""\)\)'
-    if re.search(pattern, s, flags=re.DOTALL):
-        s = replace_once(s, pattern, affirmation, "Russian affirmation regex", re.DOTALL)
-    elif "def _is_affirmation(text: str) -> bool:" not in s:
-        # Fallback for an older checkout that has no affirmation helper yet.
-        marker = "def _is_work_intent(user_text: str) -> bool:\n"
-        if marker not in s:
-            raise RuntimeError("repair anchor not found: agent affirmation insertion")
-        pos = s.index(marker)
-        s = s[:pos] + affirmation + "\n\n" + s[pos:]
+    if "def _is_affirmation(text: str) -> bool:" not in s:
+        # Insert immediately after the existing forced-tool helper. This anchor exists in the
+        # current agent and keeps the helper available to the test suite and confirmation flow.
+        marker = 'def _wants_forced_tool(user_text: str) -> bool:\n'
+        pos = s.find(marker)
+        if pos < 0:
+            raise RuntimeError("repair anchor not found: agent forced-tool helper")
+        next_def = s.find("\n\ndef ", pos + len(marker))
+        if next_def < 0:
+            raise RuntimeError("repair anchor not found: end of forced-tool helper")
+        s = s[:next_def] + "\n\n" + affirmation + s[next_def:]
 
-    # News must go through the Russian re-voicing layer rather than raw tool output -> TTS.
+    # Never send raw news tool output straight to speech.
     s = s.replace('    "news_brief",\n', '')
     s = s.replace(
-        '    "get_time", "weather", "crypto_price", "stock_price", "fx_rate", "convert",\n'
         '    "define_word", "wiki_lookup", "news_brief",\n',
-        '    "get_time", "weather", "crypto_price", "stock_price", "fx_rate", "convert",\n'
         '    "define_word", "wiki_lookup",\n',
     )
     write(p, s)
 
 
 def patch_router() -> None:
+    # The router itself is already committed with deterministic Russian routes.
+    # Keep this function idempotent for older local checkouts.
     p = "src/jarvis/brain/intent_router.py"
     s = read(p)
     marker = "_ROUTES: list[tuple[re.Pattern[str], list[str]]] = [\n"
+    routes = (
+        '    (re.compile(r"\\b(?:закрой|закрыть|выключи|выключить|останови|остановить|заверши|завершить)\\b", re.I), ["process_op"]),\n'
+        '    (re.compile(r"\\b(?:открой|открыть|запусти|запустить|включи|включить)\\b", re.I), ["open_app"]),\n'
+    )
     if marker not in s:
         raise RuntimeError("repair anchor not found: intent route table")
-
-    # Keep the routes deterministic and high-confidence. App/process target extraction remains in
-    # the actual tools; the router only chooses which tool is allowed to run.
-    routes = r'''    # -- Russian Windows/desktop commands --
-    (re.compile(r"\b(закрой|закрыть|выключи|выключить|останови|остановить|заверши|завершить)\b", re.I), ["process_op"]),
-    (re.compile(r"\b(открой|открыть|запусти|запустить|включи|включить)\b", re.I), ["open_app"]),
-'''
-    if '"process_op"]' not in s:
-        s = s.replace(marker, marker + routes, 1)
-    elif 'r"\\b(открой|открыть|запусти|запустить' not in s:
+    if "закрой|закрыть" not in s:
         s = s.replace(marker, marker + routes, 1)
     write(p, s)
 
@@ -89,29 +76,23 @@ def patch_llm() -> None:
     p = "src/jarvis/brain/llm.py"
     s = read(p)
     if '("openrouter:", settings.openrouter_base_url' not in s:
-        candidates = [
-            '            ("ollama:", settings.ollama_base_url, "ollama"),',
-            '            ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key',
-        ]
-        for anchor in candidates:
-            if anchor in s:
-                s = s.replace(
-                    anchor,
-                    anchor + '\n            ("openrouter:", settings.openrouter_base_url, settings.openrouter_api_key or "missing-openrouter-key"),',
-                    1,
-                )
-                break
-        else:
+        anchor = '            ("ollama:", settings.ollama_base_url, "ollama"),'
+        if anchor not in s:
+            anchor = '            ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key'
+        if anchor not in s:
             raise RuntimeError("repair anchor not found: OpenRouter resolver")
+        s = s.replace(
+            anchor,
+            anchor + '\n            ("openrouter:", settings.openrouter_base_url, settings.openrouter_api_key or "missing-openrouter-key"),',
+            1,
+        )
     write(p, s)
 
 
 def patch_config() -> None:
     p = "src/jarvis/config.py"
     s = read(p)
-
     if "openrouter_api_key:" not in s:
-        # Preserve the existing Settings schema. Insert next to the existing provider keys.
         anchors = [
             '    freellmapi_api_key: str | None = None\n',
             '    minimax_api_key: str | None = None\n',
@@ -120,19 +101,17 @@ def patch_config() -> None:
         if anchor is None:
             raise RuntimeError("repair anchor not found: config provider key block")
         addition = anchor + (
-            '    # OpenRouter: OpenAI-compatible gateway for the owner\'s model pool.\n'
+            "    # OpenRouter: OpenAI-compatible gateway for the owner's model pool.\n"
             '    openrouter_api_key: str | None = None\n'
             '    openrouter_base_url: str = "https://openrouter.ai/api/v1"\n'
         )
         s = s.replace(anchor, addition, 1)
-
-    if "llm_first_token_timeout_seconds" in s:
-        s = re.sub(
-            r'llm_first_token_timeout_seconds:\s*float\s*=\s*[^\n]+',
-            'llm_first_token_timeout_seconds: float = 6.0',
-            s,
-            count=1,
-        )
+    s = re.sub(
+        r'llm_first_token_timeout_seconds:\s*float\s*=\s*[^\n]+',
+        'llm_first_token_timeout_seconds: float = 6.0',
+        s,
+        count=1,
+    )
     write(p, s)
 
 
