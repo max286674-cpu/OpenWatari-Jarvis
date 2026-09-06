@@ -40,19 +40,21 @@ class JarvisBrain(FrameProcessor):
         self._turn_task: asyncio.Task | None = None
 
     async def warmup(self) -> None:
+        # Proven voice-assistant pattern: cold-start the brain before the first real utterance.
+        # This keeps model loading out of the user's first conversational turn.
         await self._agent.warmup()
         self._start_scheduler()
 
     def _start_scheduler(self) -> None:
-        """Start the proactive scheduler and teach it to SPEAK fired reminders through us."""
+        """Start the proactive scheduler and route fired reminders through the same TTS path."""
         try:
             from jarvis.brain.scheduler import SCHEDULER
 
             loop = asyncio.get_running_loop()
 
             def speak(message: str) -> None:
-                # Called from the scheduler (same loop); push a spoken reminder downstream.
-                loop.create_task(self.push_frame(TTSSpeakFrame(f"Reminder, sir: {message}")))
+                # Keep all assistant speech in the configured reply language.
+                loop.create_task(self.push_frame(TTSSpeakFrame(f"Напоминание, сэр: {message}")))
 
             SCHEDULER.start(on_speak=speak)
         except Exception as e:  # noqa: BLE001
