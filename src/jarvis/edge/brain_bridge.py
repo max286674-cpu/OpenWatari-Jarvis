@@ -27,7 +27,7 @@ from jarvis.brain.agent import JarvisAgent
 
 _CANCEL_RE = re.compile(
     r"\b(stop|cancel|abort|abandon|never mind|nevermind|forget it|leave it|drop it|"
-    r"shut up|pause|give up)\b",
+    r"shut up|pause|give up|отмена|отмени|стоп|хватит)\b",
     re.IGNORECASE,
 )
 
@@ -79,23 +79,18 @@ class JarvisBrain(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _start_or_supersede_turn(self, text: str) -> None:
-        """Start a turn, or let the owner interrupt a long/stuck turn with a new instruction.
-
-        The old behaviour ignored transcripts while a tool was running, which made a stuck browser
-        action feel like a loop. Once speech reaches the brain it is already wake-gated and
-        speaker-verified, so a new utterance from the owner should be able to cancel or replace the
-        current task.
-        """
+        """Start a turn, or let the owner interrupt a long/stuck turn with a new instruction."""
         if self._turn_task and not self._turn_task.done():
             if _CANCEL_RE.search(text):
                 logger.info(f"heard while busy: {text!r} — cancelling current task")
                 self._turn_task.cancel()
-                await self.push_frame(TTSSpeakFrame("Cancelled, sir."))
+                await self.push_frame(TTSSpeakFrame("Отменяю, сэр."))
                 self._busy = False
                 return
             logger.info(f"heard while busy: {text!r} — superseding current task")
             self._turn_task.cancel()
-            await self.push_frame(TTSSpeakFrame("Stopping that and switching, sir."))
+            # Never send framework control text in English. The assistant is configured to reply in Russian.
+            await self.push_frame(TTSSpeakFrame("Переключаюсь, сэр."))
         self._turn_task = asyncio.create_task(self._handle(text))
 
     async def _handle(self, text: str) -> None:
@@ -121,6 +116,6 @@ class JarvisBrain(FrameProcessor):
             raise
         except Exception:  # noqa: BLE001
             logger.exception("brain turn failed")
-            await self.push_frame(TTSSpeakFrame("Sorry sir, I hit an error handling that."))
+            await self.push_frame(TTSSpeakFrame("Извините, сэр, при обработке команды произошла ошибка."))
         finally:
             self._busy = False
