@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 
 def test_priler_voice_defaults_to_current_remaster(monkeypatch):
     monkeypatch.delenv("JARVIS_PRILER_VOICE", raising=False)
