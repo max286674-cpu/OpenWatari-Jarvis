@@ -100,6 +100,14 @@ class WakeWordGate(FrameProcessor):
         self._barge_in = barge_in
         self._barge_threshold = min(0.95, threshold + 0.15)
         self._needs_reset = False
+
+        if self._priler_enabled:
+            try:
+                from jarvis.edge.priler_reactions import warmup as priler_warmup
+                priler_warmup("reply")
+            except Exception as exc:  # pragma: no cover - network/cache/audio dependency
+                logger.error(f"Priler warmup failed; wake ack will be unavailable: {exc}")
+
         logger.info(
             f"wake words active: {self._names} (threshold {threshold}"
             + (", barge-in on wake word" if barge_in else "")
@@ -162,9 +170,9 @@ class WakeWordGate(FrameProcessor):
                 return
             except Exception as exc:  # noqa: BLE001
                 # Do NOT emit the old English fallback here. If Priler fails, the user must not
-                # hear a surprise English phrase before the Russian answer. A Russian fallback
-                # is safe, but only when explicitly configured; otherwise remain silent.
+                # hear a surprise English phrase before the Russian answer.
                 logger.error(f"Priler wake ack failed: {exc}")
+                return
 
         if self._ack_choices:
             raw_language = ""
@@ -176,9 +184,6 @@ class WakeWordGate(FrameProcessor):
             if raw_language in {"russian", "русский", "ru"}:
                 ack = random.choice(["Да, сэр.", "Слушаю, сэр.", "Да, сэр, я слушаю."])
             else:
-                # If Priler is enabled and failed, never use a configured English acknowledgement.
-                if self._priler_enabled:
-                    return
                 ack = random.choice(self._ack_choices)
             await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
 
