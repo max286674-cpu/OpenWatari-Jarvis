@@ -8,69 +8,59 @@ license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["voice-assistant", "pipecat", "speech", "tts", "stt", "wake-word", "llm-agent", "self-hosted"]
 
-# Base deps shared by edge + brain. Provider-specific heavy deps live in optional groups
-# so a CPU-only edge install doesn't pull GPU/cloud stacks it won't use.
 dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "loguru>=0.7",
-    "rich>=13.0",            # the setup wizard's terminal UI (degrades to plain text if missing)
+    "rich>=13.0",
 ]
 
 [project.scripts]
 jarvis-setup = "jarvis.setup_wizard:main"
 
 [project.optional-dependencies]
-# The real-time voice pipeline (edge). Pinned in Phase 0; providers added per-phase.
 edge = [
     "pipecat-ai[silero,webrtc]>=0.0.90",
-    "pyaudio>=0.2.11",          # local mic/speaker transport (pipecat.transports.local.audio)
+    "pyaudio>=0.2.11",
     "textual>=0.79",
 ]
-# Cloud voice providers (default for quality per user decision): ElevenLabs TTS + Deepgram STT.
 cloud-voice = [
     "pipecat-ai[elevenlabs,deepgram]>=0.0.90",
 ]
-# Local CPU-friendly fallbacks (Phase 1): wake word + local STT/TTS.
-# Local STT: faster-whisper (multilingual) + moonshine-onnx (English, ~3x faster, STT_PROVIDER=moonshine).
 local-voice = [
     "openwakeword>=0.6",
     "pipecat-ai[whisper,piper]>=0.0.90",
     "kokoro-onnx>=0.4",
     "useful-moonshine-onnx>=2025.11",
+    "pygame>=2.6",
 ]
-# The 24/7 orchestrator (brain): own LLM + FastAPI + OpenClaw bridge + scheduler + channels.
 brain = [
-    "openai>=1.40",            # OpenAI-compatible client -> freellmapi (Jarvis's own LLM)
-    "tzdata>=2024.1",          # IANA tz db (Windows has none) for Europe/Berlin scheduling
+    "openai>=1.40",
+    "tzdata>=2024.1",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",
     "httpx>=0.27",
     "apscheduler>=3.10",
-    "sqlalchemy>=2.0",         # SQLite jobstore so reminders survive a restart (Phase 4)
-    "yt-dlp>=2024.8",          # resolve a song -> YouTube video for free playback (no Premium)
-    "ytmusicapi>=1.7",         # YouTube Music search (music-tuned, free) — the Spotify replacement
-    "redis>=5.0",              # L4 hot-cache backend (Phase 9b); graceful no-op if unreachable
+    "sqlalchemy>=2.0",
+    "yt-dlp>=2024.8",
+    "ytmusicapi>=1.7",
+    "redis>=5.0",
 ]
-# Phase 3 channels: Telethon user-client to READ unread Telegram DMs (Bot API can't).
 channels = [
     "telethon>=1.36",
-    "py-tgcalls>=2.3",        # stream music INTO a Telegram group voice chat (plays on the phone)
+    "py-tgcalls>=2.3",
 ]
-# Phase 3 interactive browsing: Playwright drives a Browserbase headless Chrome over CDP.
-# (web_search/scrape_url/Spotify/vault need nothing here — they're plain httpx/filesystem.)
 browse = [
     "playwright>=1.47",
 ]
-# Phase 5 speaker biometrics: SpeechBrain ECAPA voiceprint (pulls torch — opt-in only).
 identity = [
-    "pyaudio>=0.2.11",          # mic capture for bench/enroll_voice.py
+    "pyaudio>=0.2.11",
     "speechbrain>=1.0",
     "torch>=2.2",
     "torchaudio>=2.2",
-    "soxr>=0.3",                # resample live mic (44.1/48k) -> 16k for ECAPA (speaker_id.embed)
+    "soxr>=0.3",
 ]
 dev = [
     "ruff>=0.6",
