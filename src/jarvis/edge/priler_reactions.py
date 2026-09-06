@@ -106,6 +106,21 @@ def random_reply() -> str:
     return random_reaction("reply")
 
 
+def warmup(category: str = "reply") -> None:
+    """Pre-download every valid reaction in a category before the edge starts listening."""
+    choices = available_reactions(category)
+    if not choices:
+        raise RuntimeError(
+            f"Priler voice pack '{voice()}' has no '{category}' reaction for '{language()}'"
+        )
+    for reaction in choices:
+        ensure_cached(reaction)
+    logger.info(
+        "Priler warmup complete: voice={} language={} category={} clips={}",
+        voice(), language(), category, len(choices),
+    )
+
+
 def play_blocking(reaction: str) -> None:
     """Play one prerecorded reaction and return when it finishes."""
     path = ensure_cached(reaction)
