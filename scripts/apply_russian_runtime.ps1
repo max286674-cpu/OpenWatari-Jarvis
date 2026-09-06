@@ -3,8 +3,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 
 & "$PSScriptRoot\fix_russian_runtime.ps1"
 
-# The base migration historically replaced the example fast-model line after inserting it.
-# Repair it idempotently so the example remains a valid copy template.
+# Repair the example template idempotently.
 $example = '.env.example'
 $text = Get-Content $example -Raw -Encoding UTF8
 $text = [regex]::Replace($text, '(?m)^# JARVIS_LLM_FAST_MODEL is set above for the fast Russian voice/chat path\s*$', 'JARVIS_LLM_FAST_MODEL=openrouter:qwen/qwen3-30b-a3b-instruct-2507')
@@ -13,6 +12,22 @@ if ($text -notmatch '(?m)^JARVIS_LLM_PRIMARY_MODEL=') {
     $text = $text.Replace($anchor, $anchor + "`r`nJARVIS_LLM_PRIMARY_MODEL=openrouter:qwen/qwen3-30b-a3b-instruct-2507`r`nJARVIS_LLM_FAST_MODEL=openrouter:qwen/qwen3-30b-a3b-instruct-2507")
 }
 Set-Content $example -Value $text -Encoding UTF8 -NoNewline
+
+# Migrate a key already present in local .env under the common generic name without printing it.
+$envPath = '.env'
+if (Test-Path $envPath) {
+    $envText = Get-Content $envPath -Raw -Encoding UTF8
+    if ($envText -match '(?m)^OPENROUTER_API_KEY\s*=\s*(\S+)\s*$') {
+        $key = $Matches[1]
+        if ($envText -match '(?m)^JARVIS_OPENROUTER_API_KEY\s*=') {
+            $envText = [regex]::Replace($envText, '(?m)^JARVIS_OPENROUTER_API_KEY\s*=.*$', 'JARVIS_OPENROUTER_API_KEY=' + $key, 1)
+        } else {
+            $envText += "`r`nJARVIS_OPENROUTER_API_KEY=$key`r`n"
+        }
+        Set-Content $envPath -Value $envText -Encoding UTF8 -NoNewline
+        Write-Host 'Migrated existing OPENROUTER_API_KEY to JARVIS_OPENROUTER_API_KEY (secret not printed).'
+    }
+}
 
 # Lightweight post-patch assertions. These fail loudly instead of leaving a half-migrated install.
 $checks = @{
