@@ -78,7 +78,7 @@ class WakeWordGate(FrameProcessor):
         try:
             from jarvis.edge.priler_reactions import enabled as priler_enabled
             self._priler_enabled = priler_enabled()
-        except Exception as exc:  # pragma: no cover - optional voice bridge
+        except Exception as exc:
             logger.debug(f"Priler reaction bridge unavailable: {exc}")
 
         import openwakeword
@@ -100,12 +100,13 @@ class WakeWordGate(FrameProcessor):
         self._barge_in = barge_in
         self._barge_threshold = min(0.95, threshold + 0.15)
         self._needs_reset = False
+        self._ack_in_progress = False
 
         if self._priler_enabled:
             try:
                 from jarvis.edge.priler_reactions import warmup as priler_warmup
                 priler_warmup("reply")
-            except Exception as exc:  # pragma: no cover - network/cache/audio dependency
+            except Exception as exc:
                 logger.error(f"Priler warmup failed; wake ack will be unavailable: {exc}")
 
         logger.info(
@@ -121,7 +122,7 @@ class WakeWordGate(FrameProcessor):
 
     @property
     def is_idle(self) -> bool:
-        return not self._awake and not self._bot_speaking
+        return not self._awake and not self._bot_speaking and not self._ack_in_progress
 
     def _wake(self) -> None:
         if self._hot_mic:
@@ -136,7 +137,6 @@ class WakeWordGate(FrameProcessor):
             samples = samples[:: frame.num_channels]
         if frame.sample_rate and frame.sample_rate != 16000:
             import soxr
-
             samples = soxr.resample(samples.astype(np.float32), frame.sample_rate, 16000).astype(np.int16)
         scores = self._model.predict(samples)
         min_score = threshold if threshold is not None else self._threshold
@@ -162,30 +162,40 @@ class WakeWordGate(FrameProcessor):
             await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
 
     async def _ack(self) -> None:
-        if self._priler_enabled:
-            try:
-                logger.info("Priler wake ack: starting exact prerecorded reaction")
-                await self._play_priler_ack()
-                logger.info("Priler wake ack: finished")
-                return
-            except Exception as exc:  # noqa: BLE001
-                # Do NOT emit the old English fallback here. If Priler fails, the user must not
-                # hear a surprise English phrase before the Russian answer.
-                logger.error(f"Priler wake ack failed: {exc}")
-                return
+        """Play acknowledgement completely before STT is opened for the command.
 
-        if self._ack_choices:
-            raw_language = ""
-            try:
-                from jarvis.config import settings
-                raw_language = (settings.reply_language or "").strip().lower()
-            except Exception:
-                pass
-            if raw_language in {"russian", "русский", "ru"}:
-                ack = random.choice(["Да, сэр.", "Слушаю, сэр.", "Да, сэр, я слушаю."])
-            else:
-                ack = random.choice(self._ack_choices)
-            await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
+        This prevents the old race where Priler was started in a background task while the same
+        microphone frames immediately reached STT. That race could produce partial/garbled turns,
+        duplicate replies and apparent long delays.
+        """
+        self._ack_in_progress = True
+        try:
+            if self._priler_enabled:
+                try:
+                    logger.info("Priler wake ack: starting exact prerecorded reaction")
+                    await self._play_priler_ack()
+                    logger.info("Priler wake ack: finished")
+                    return
+                except Exception as exc:
+                    logger.error(f"Priler wake ack failed: {exc}")
+                    return
+
+            if self._ack_choices:
+                raw_language = ""
+                try:
+                    from jarvis.config import settings
+                    raw_language = (settings.reply_language or "").strip().lower()
+                except Exception:
+                    pass
+                if raw_language in {"russian", "русский", "ru"}:
+                    ack = random.choice(["Да, сэр.", "Слушаю, сэр.", "Да, сэр, я слушаю."])
+                else:
+                    ack = random.choice(self._ack_choices)
+                await self.push_frame(TTSSpeakFrame(ack), FrameDirection.DOWNSTREAM)
+        finally:
+            self._ack_in_progress = False
+            self._wake()
+            self._needs_reset = True
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -204,11 +214,16 @@ class WakeWordGate(FrameProcessor):
 
         if isinstance(frame, InputAudioRawFrame):
             if self._bot_speaking and (time.monotonic() - self._speaking_since) > self._max_speak_s:
-                logger.warning(
-                    f"wake gate: bot-speaking stuck >{self._max_speak_s:.0f}s — force-clearing; resuming wake detection"
-                )
+                logger.warning(f"wake gate: bot-speaking stuck >{self._max_speak_s:.0f}s — force-clearing; resuming wake detection")
                 self._bot_speaking = False
                 self._resume_after_tts = False
+
+            # While the exact acknowledgement is playing, keep the command out of STT. The previous
+            # implementation launched _ack() with create_task() but left the mic open immediately,
+            # which was a direct source of races and phantom/partial transcriptions.
+            if self._ack_in_progress:
+                return
+
             if self._bot_speaking and self._suppress_during_tts:
                 if self._barge_in:
                     if self._needs_reset:
@@ -235,10 +250,8 @@ class WakeWordGate(FrameProcessor):
                     return
                 hit = self._detect(frame)
                 if hit:
-                    self._wake()
-                    logger.info(f"wake: '{hit}' detected — listening")
-                    if self._priler_enabled or self._ack_choices:
-                        asyncio.create_task(self._ack())
+                    logger.info(f"wake: '{hit}' detected — acknowledgement first, then listening")
+                    asyncio.create_task(self._ack())
                 return
             return
 
