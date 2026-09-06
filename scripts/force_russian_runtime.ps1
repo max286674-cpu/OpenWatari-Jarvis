@@ -10,7 +10,6 @@ function Replace-Text([string]$path, [string]$old, [string]$new) {
     Set-Content $p ($s.Replace($old,$new)) -Encoding UTF8
 }
 
-# Existing source defaults are generic, but this personal deployment is Russian.
 Replace-Text 'src/jarvis/config.py' 'understood_languages: str = "English"' 'understood_languages: str = "Russian,English"'
 Replace-Text 'src/jarvis/config.py' 'reply_language: str = "English"' 'reply_language: str = "Russian"'
 Replace-Text 'src/jarvis/config.py' 'wake_words: str = "jarvis,alfred,robbin,assist,time to work,wake up,six-one-nine"' 'wake_words: str = "jarvis"'
@@ -21,42 +20,10 @@ Replace-Text 'src/jarvis/config.py' 'deepgram_endpointing_ms: int = 700' 'deepgr
 Replace-Text 'src/jarvis/config.py' 'whisper_language: str = "en"' 'whisper_language: str = "ru"'
 Replace-Text 'src/jarvis/config.py' 'piper_voice: str = "en_US-ryan-high"' 'piper_voice: str = "ru_RU-ruslan-medium"'
 
-# Replace EVERY hard-coded English progress/ack phrase in the agent with Russian.
 $agentPath = Join-Path $root 'src/jarvis/brain/agent.py'
 $agent = Get-Content $agentPath -Raw -Encoding UTF8
 $replacements = @{
-'Right away, sir — putting that to the team lead'='Сейчас, сэр — передаю задачу команде'
-'Checking your vault'='Проверяю хранилище'
-'Reading that note'='Читаю заметку'
-'Saving that to your vault'='Сохраняю в хранилище'
-'Looking that up'='Проверяю информацию'
-'Opening the page'='Открываю страницу'
-'Opening a browser'='Открываю браузер'
-'Checking your Telegram'='Проверяю Telegram'
-'Reading that chat'='Читаю переписку'
-'Sending that'='Отправляю'
-'Pulling that from your playlist'='Ищу это в плейлисте'
-'Cueing it up in your music room'='Готовлю музыку к воспроизведению'
-'Leaving the music room'='Останавливаю музыку'
-'Finding that song'='Ищу композицию'
-'Stopping the music'='Останавливаю музыку'
-'Opening that'='Открываю'
-'Working on your files'='Работаю с файлами'
-'On it'='Занимаюсь, сэр'
-'Running that'='Выполняю команду'
-'In the browser'='Работаю в браузере'
-'Authorizing the protocol'='Запускаю протокол'
-'Setting that reminder'='Устанавливаю напоминание'
-'Pinging your phone'='Отправляю уведомление на телефон'
-'Getting the time'='Уточняю время'
-'Checking the weather'='Проверяю погоду'
-'Checking your calendar'='Проверяю календарь'
-'Adding that to your calendar'='Добавляю в календарь'
-'Checking your email'='Проверяю почту'
-'Sending that email'='Отправляю письмо'
-'Noting that down'='Записываю'
-'Let me recall'='Вспоминаю'
-'Checking that device'='Проверяю устройство'
+'Right away, sir — putting that to the team lead'='Сейчас, сэр — передаю задачу команде'; 'Checking your vault'='Проверяю хранилище'; 'Reading that note'='Читаю заметку'; 'Saving that to your vault'='Сохраняю в хранилище'; 'Looking that up'='Проверяю информацию'; 'Opening the page'='Открываю страницу'; 'Opening a browser'='Открываю браузер'; 'Checking your Telegram'='Проверяю Telegram'; 'Reading that chat'='Читаю переписку'; 'Sending that'='Отправляю'; 'Pulling that from your playlist'='Ищу это в плейлисте'; 'Cueing it up in your music room'='Готовлю музыку к воспроизведению'; 'Leaving the music room'='Останавливаю музыку'; 'Finding that song'='Ищу композицию'; 'Stopping the music'='Останавливаю музыку'; 'Opening that'='Открываю'; 'Working on your files'='Работаю с файлами'; 'On it'='Занимаюсь, сэр'; 'Running that'='Выполняю команду'; 'In the browser'='Работаю в браузере'; 'Authorizing the protocol'='Запускаю протокол'; 'Setting that reminder'='Устанавливаю напоминание'; 'Pinging your phone'='Отправляю уведомление на телефон'; 'Getting the time'='Уточняю время'; 'Checking the weather'='Проверяю погоду'; 'Checking your calendar'='Проверяю календарь'; 'Adding that to your calendar'='Добавляю в календарь'; 'Checking your email'='Проверяю почту'; 'Sending that email'='Отправляю письмо'; 'Noting that down'='Записываю'; 'Let me recall'='Вспоминаю'; 'Checking that device'='Проверяю устройство'
 }
 foreach ($k in $replacements.Keys) { $agent = $agent.Replace($k,$replacements[$k]) }
 $agent = $agent.Replace('("Right away, sir.", "On it, sir.", "Of course, sir.", "Let me take care of that, sir.",','("Сейчас, сэр.", "Уже занимаюсь, сэр.", "Разумеется, сэр.", "Будет сделано, сэр.",')
@@ -64,7 +31,20 @@ $agent = $agent.Replace('"Consider it done, sir.")','"Принято, сэр.")'
 $agent = $agent.Replace('("Yes, sir.", "Certainly, sir.", "Of course, sir.", "One moment, sir.")','("Да, сэр.", "Разумеется, сэр.", "Конечно, сэр.", "Слушаю, сэр.")')
 Set-Content $agentPath $agent -Encoding UTF8
 
-# Local .env is authoritative over config.py. Change only language/voice/latency values; never touch secrets.
+# Strengthen the spoken-language rule in the actual persona template. Tool/web/news English must be translated.
+$personaPath = Join-Path $root 'personality/jarvis.md'
+$persona = Get-Content $personaPath -Raw -Encoding UTF8
+$anchor = '- {language_line}'
+$rule = @'
+- {language_line}
+- **For this deployment, all spoken output must be natural Russian.** Translate English tool results, news headlines, search results, webpage text, and status messages into Russian before speaking. Preserve English only for unavoidable proper names, URLs, model names, product names, or text explicitly requested as a quote.
+- Never use English acknowledgement/progress phrases such as "Yes, sir", "One moment, sir", "Certainly", "Right away", or "On it". If a progress acknowledgement is needed, use a short Russian phrase.
+'@
+if ($persona.Contains($anchor) -and -not $persona.Contains('all spoken output must be natural Russian')) {
+    $persona = $persona.Replace($anchor,$rule.TrimEnd())
+    Set-Content $personaPath $persona -Encoding UTF8
+}
+
 $envPath = Join-Path $root '.env'
 if (Test-Path $envPath) {
     $env = Get-Content $envPath -Raw -Encoding UTF8
