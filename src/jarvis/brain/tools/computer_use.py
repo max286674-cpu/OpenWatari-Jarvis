@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import sys
 from io import BytesIO
@@ -15,7 +16,6 @@ from typing import Any
 
 from jarvis.brain.tools.base import tool_error
 from jarvis.config import settings
-
 
 _ACTIONS = {"click", "double_click", "right_click", "type", "press", "hotkey", "scroll", "done"}
 
@@ -32,7 +32,6 @@ def _gui():
 def _image_data_url() -> tuple[str, int, int]:
     p = _gui()
     shot = p.screenshot()
-    # JPEG keeps vision requests small enough for fast voice interaction.
     buf = BytesIO()
     shot.save(buf, format="JPEG", quality=82, optimize=True)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii"), shot.width, shot.height
@@ -57,13 +56,14 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 
 async def _vision_decision(task: str, image_url: str, width: int, height: int) -> dict[str, Any] | None:
-    if not settings.openrouter_api_key:
-        raise RuntimeError("JARVIS_OPENROUTER_API_KEY is not set")
+    key = settings.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("JARVIS_OPENROUTER_API_KEY / OPENROUTER_API_KEY is not set")
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(
         base_url=settings.openrouter_base_url,
-        api_key=settings.openrouter_api_key,
+        api_key=key,
         timeout=min(15.0, float(settings.llm_request_timeout_seconds)),
         max_retries=1,
     )
@@ -134,18 +134,19 @@ async def computer_use(args: dict) -> str:
         return "Управление компьютером отключено в настройках."
     max_steps = max(1, min(10, int(args.get("max_steps") or settings.computer_max_steps)))
     try:
+        import asyncio
         for step in range(max_steps):
-            image, width, height = await __import__("asyncio").to_thread(_image_data_url)
+            image, width, height = await asyncio.to_thread(_image_data_url)
             decision = await _vision_decision(task, image, width, height)
             if not decision:
                 return "Не удалось получить корректное решение по экрану."
             action = str(decision.get("action") or "").lower()
             if action == "done":
                 return f"Задача на компьютере завершена за {step + 1} шагов."
-            result = await __import__("asyncio").to_thread(_execute, decision)
+            result = await asyncio.to_thread(_execute, decision)
             if result.startswith("Слишком") or result.startswith("Некорректно"):
                 return result
-            await __import__("asyncio").sleep(0.18)
+            await asyncio.sleep(0.18)
         return f"Остановился после {max_steps} шагов; задача не подтверждена как завершённая."
     except Exception as e:
         return tool_error("computer vision", e)
