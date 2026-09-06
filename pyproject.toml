@@ -55,6 +55,13 @@ channels = [
 browse = [
     "playwright>=1.47",
 ]
+office = [
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+]
+desktop = [
+    "pyautogui>=0.9.54",
+]
 identity = [
     "pyaudio>=0.2.11",
     "speechbrain>=1.0",
@@ -81,3 +88,4 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
