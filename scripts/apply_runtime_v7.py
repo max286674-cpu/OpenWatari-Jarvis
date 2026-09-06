@@ -70,6 +70,8 @@ def patch_bridge() -> None:
 def patch_agent() -> None:
     p = "src/jarvis/brain/agent.py"
     s = read(p)
+    if '\nimport sys\n' not in s:
+        s = s.replace('import re\n', 'import re\nimport subprocess\nimport sys\n', 1)
     s = re.sub(r'(?ms)^    async def _await_with_progress\(self, coro, on_progress: Callable \| None, name: str = ""\):\n.*?(?=^    def _immediate_ack)', '''    async def _await_with_progress(self, coro, on_progress: Callable | None, name: str = ""):\n        task = asyncio.ensure_future(coro)\n        try:\n            return await asyncio.wait_for(task, timeout=max(1.0, settings.llm_request_timeout_seconds))\n        except Exception:\n            if not task.done():\n                task.cancel()\n            raise\n\n''', s, count=1)
     s = re.sub(r'(?ms)^    def _immediate_ack\(self, user_text: str, on_progress: Callable \| None\) -> None:\n.*?(?=^    async def respond_stream)', '''    def _immediate_ack(self, user_text: str, on_progress: Callable | None) -> None:\n        # Priler is the only spoken acknowledgement.\n        return\n\n''', s, count=1)
     s = s.replace('                logger.exception(f"tool {name} raised")\n', '                logger.error(f"tool {name} failed: {type(e).__name__}")\n', 1)
