@@ -1,197 +1,56 @@
-"""Jarvis's Phase 3 tool registry — knowledge & channels.
-
-Each tool module exposes ``SCHEMAS`` (OpenAI function schemas the LLM sees) and ``HANDLERS``
-(name -> async ``handler(args: dict) -> str``). The agent merges these with its built-ins
-(get_time, delegate_to_fleet). Every handler degrades gracefully when its integration isn't
-configured, so the full set can always be registered safely (see ``tools/base.py``).
-
-Adding a capability = drop a module here and list it in ``_MODULES``.
-"""
-
+"""Jarvis tool registry."""
 from __future__ import annotations
-
 from typing import Any, Awaitable, Callable
+from jarvis.brain.tools import activity, approvals, browser, calendar, camera, channels, coaching, coding, composio, contacts, desktop, documents, gmail, graphmem, localplay, macros, memory, multimodal, music, notify, notion, objectives, protocols, reminders, relationship, routines, skills, smarthome, system, tasks, telegram, undo, utility, vault, voicechat, web
 
-from jarvis.brain.tools import (
-    activity,
-    approvals,
-    browser,
-    calendar,
-    camera,
-    channels,
-    coaching,
-    coding,
-    composio,
-    contacts,
-    documents,
-    gmail,
-    graphmem,
-    localplay,
-    macros,
-    memory,
-    multimodal,
-    music,
-    notify,
-    notion,
-    objectives,
-    protocols,
-    reminders,
-    relationship,
-    routines,
-    skills,
-    smarthome,
-    system,
-    tasks,
-    telegram,
-    undo,
-    utility,
-    vault,
-    voicechat,
-    web,
-)
-
-_MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, browser,
-            protocols, reminders, notify, gmail, calendar, smarthome, utility, routines,
-            coding, skills, notion, tasks, contacts, documents, composio, channels,
-            macros, multimodal, undo, graphmem, activity, coaching, camera, objectives,
-            approvals, relationship]  # noqa: E501
+_MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, desktop, browser, protocols, reminders, notify, gmail, calendar, smarthome, utility, routines, coding, skills, notion, tasks, contacts, documents, composio, channels, macros, multimodal, undo, graphmem, activity, coaching, camera, objectives, approvals, relationship]
 
 Handler = Callable[[dict], Awaitable[str]]
 
-# --- Lazy tool groups (fine-tuning.md Item 2) ---------------------------------------------
-# Every handler is ALWAYS in the registry below (so tests, the proactive engine, and direct
-# handler calls keep working). These groups are about what the AGENT *advertises to the model on a
-# given turn*: low-frequency modules are held back until the turn actually needs them, keeping the
-# per-turn schema surface lean. No capability is removed — a group simply lights up when relevant.
 _LAZY_GROUPS: dict[str, list] = {
-    "coding": [coding],                  # read/write source, tests, lint, git — only for dev work
-    "office": [notion, gmail, calendar],  # email, calendar, Notion — when he asks about them
-    "home": [smarthome, voicechat],      # smart-home control + Telegram music-room streaming
-    "docs": [documents],                 # read a local document + answer questions grounded in it
-    "apps": [composio],                  # 250+ external apps via Composio (GitHub/Slack/Drive/...)
-    "channels": [channels],              # YouTube channel ops (list / random / latest) — T1
-    "macros": [macros],                  # User-defined macro sequences + if_then — T2
-    "screen": [multimodal],              # screenshot + OCR the screen — T6 (only on "look at my screen")
-    "camera": [camera],                  # webcam vision (look_around) + visual presence — Phase 3.2/3.3
-    "undo": [undo],                      # undo_last / list_recent_actions — T7 (only on "undo that")
-    "graph": [graphmem],                 # L5b structured relations + multi-hop recall (only when linking)
-    "activity": [activity],              # screen-time / current activity / tracking privacy switch — Phase 0
-    "coaching": [coaching],              # field skill reviews + progress (e.g. German quiz) — Phase 2
-    "objectives": [objectives],          # multi-day objectives Watari drives (assign/status/…) — Phase 4.1
-    "approvals": [approvals],            # approve/reject the outward steps autonomous work deferred — 4.2
-    "relationship": [relationship],      # sensitivities / running jokes / how-we-stand — Phase 6.2
-}
-# Substring triggers (lowercased) that activate a group for a turn. Broad on purpose — a miss just
-# means a one-turn delay (the follow-up usually contains the word, and groups stay warm one turn).
-LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
-    "coding": ("code", "coding", "source", "function", "bug", "refactor", "commit", "git ",
-               "lint", "unit test", "run the test", "run tests", "repo", "push", "branch",
-               "revert", "your code", "self-improve", "self improve", "improve yourself",
-               "pull request", "diff", "the suite", "issue", "file a bug", "open an issue",
-               "github issue", "ticket"),
-    "office": ("email", "e-mail", "mail", "inbox", "gmail", "draft", "calendar", "schedule",
-               "event", "meeting", "appointment", "agenda", "notion", "document", "page",
-               "task list", "my tasks", "task", "tasks", "deadline", "due", "to-do", "todo",
-               "to do", "on my plate", "what's due", "whats due", "what do i need to do",
-               "what needs", "dashboard", "overdue"),
-    "home": ("smart home", "home assistant", "light", "lamp", "thermostat", "heating", "lock",
-             "unlock", "music room", "voice chat", "stream music", "play in the room"),
-    "docs": ("document", "this file", "read this", "the pdf", "a pdf", "the doc", "this doc",
-             "in the file", "ask the document", "close the document", "read the file",
-             "this report", "the attachment"),
-    "apps": ("github", "gitlab", "slack", "discord", "google drive", "gdrive", "google doc",
-             "google sheet", "spreadsheet", "stripe", "linear", "jira", "trello", "asana",
-             "airtable", "reddit", "youtube", "linkedin", "instagram", "coinbase", "supabase",
-             "hubspot", "salesforce", "calendly", "an issue", "a pr", "pull request",
-             "post a message", "send a message to", "add a row", "create a channel", "in slack",
-             "on github", "to slack", "a repo", "my repos"),
-    "channels": ("youtube channel", "channel ", "from channel", "random video", "random from",
-                 "latest from", "latest video", "what's new on", "new from", "upload from",
-                 "of videos", "lofi girl", "veritasium", "mrbeast"),
-    "macros": ("macro", "macros", "routine", "morning routine", "evening routine", "shortcut",
-               "if then", "if ", "branching", "every morning", "every day at", "recurring",
-               "set up a"),
-    "screen": ("my screen", "the screen", "look at my", "what's on screen", "whats on screen",
-               "screenshot", "read the screen", "on my display", "see my screen", "what am i looking"),
-    "camera": ("camera", "webcam", "look around", "in front of me", "can you see", "look through",
-               "am i at my desk", "are you watching", "who's here", "who is here", "with your eyes",
-               "point the camera", "through the camera", "look at this", "learn my face",
-               "recognise me", "recognize me", "remember my face", "remember what i look like",
-               "do you recognise", "do you recognize", "who am i", "enroll my face", "enrol my face"),
-    "undo": ("undo", "undo that", "revert that", "take that back", "roll back", "rollback",
-             "what did you just do", "recent actions", "last action"),
-    "graph": ("related to", "connected to", "connection between", "link ", "linked to", "how is",
-              "how are", "associate", "association", "relationship between", "what's tied to",
-              "whats tied to", "map out", "knowledge graph"),
-    "activity": ("screen time", "screentime", "screen-time", "what am i doing", "what have i been",
-                 "how long have i", "how much time", "on my computer", "on the computer", "focused",
-                 "productivity", "how long was i", "stop watching my screen", "pause tracking",
-                 "pause activity", "resume tracking", "activity tracking", "am i wasting"),
-    "coaching": ("quiz me", "test me", "test my", "quiz my", "practise", "practice", "my german",
-                 "my french", "my spanish", "review my", "my level", "how's my", "hows my",
-                 "am i improving", "am i progressing", "skill", "flashcard", "coaching", "learn german",
-                 "language practice", "check my", "vocab", "vocabulary"),
-    "objectives": ("objective", "objectives", "take this on", "take on this", "own this", "drive this",
-                   "drive it to", "make it happen", "over the next", "across days", "work on it over",
-                   "what are you working on", "what are you driving", "your objectives", "how's the",
-                   "hows the", "progress on", "get it launch", "launch-ready", "launch ready",
-                   "carry this", "keep pushing on", "long-term goal", "multi-day"),
-    "approvals": ("approve", "approval", "approvals", "needs my sign", "sign-off", "sign off",
-                  "waiting on me", "waiting for me", "pending action", "pending actions", "anything pending",
-                  "go ahead and send", "go ahead and", "permission to", "reject that", "don't send it",
-                  "dont send it", "drop that one", "let it through", "authorise", "authorize"),
-    "relationship": ("sensitive subject", "sore subject", "sore spot", "go easy on", "be gentle about",
-                     "touchy subject", "running joke", "inside joke", "our joke", "read the room",
-                     "how am i doing", "how are we doing", "handle gently", "don't bring up", "dont bring up"),
+    "coding": [coding], "office": [notion, gmail, calendar], "home": [smarthome, voicechat],
+    "docs": [documents], "apps": [composio], "channels": [channels], "macros": [macros],
+    "screen": [multimodal, desktop], "camera": [camera], "undo": [undo], "graph": [graphmem],
+    "activity": [activity], "coaching": [coaching], "objectives": [objectives],
+    "approvals": [approvals], "relationship": [relationship],
 }
 
+LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
+    "coding": ("code","coding","source","function","bug","refactor","commit","git ","lint","test","repo","github"),
+    "office": ("email","mail","inbox","gmail","calendar","schedule","event","meeting","appointment","notion","document","task"),
+    "home": ("smart home","home assistant","light","lamp","thermostat","heating","lock","unlock","music room","voice chat"),
+    "docs": ("document","this file","read this","pdf","doc","report","attachment"),
+    "apps": ("github","gitlab","slack","discord","google drive","google doc","google sheet","spreadsheet","jira","trello","asana","youtube"),
+    "channels": ("youtube channel","latest video","random video","channel "),
+    "macros": ("macro","routine","shortcut","if then","every morning","every day"),
+    "screen": ("screen","screenshot","display","look at my","on my screen","what am i looking"),
+    "camera": ("camera","webcam","look around","can you see","look through"),
+    "undo": ("undo","revert","roll back","recent actions","last action"),
+    "graph": ("related to","connected to","connection between","linked to","relationship between","knowledge graph"),
+    "activity": ("screen time","screentime","what am i doing","productivity","activity tracking"),
+    "coaching": ("quiz me","test me","practice","german","french","spanish","coaching","vocabulary"),
+    "objectives": ("objective","take this on","own this","drive this","long-term goal","multi-day"),
+    "approvals": ("approve","approval","pending action","go ahead and send","authorize","reject that"),
+    "relationship": ("sensitive subject","running joke","inside joke","read the room","handle gently"),
+}
 
 def _schemas_of(mods: list) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for mod in mods:
-        out.extend(mod.SCHEMAS)
+    out=[]
+    for mod in mods: out.extend(mod.SCHEMAS)
     return out
 
-
-def tool_schemas() -> list[dict[str, Any]]:
-    """The FULL registry of schemas (every group). Used by tests + the report's registry view."""
-    return _schemas_of(_MODULES)
-
-
-def core_tool_schemas() -> list[dict[str, Any]]:
-    """Schemas advertised on every turn (core groups only) — the lean per-turn surface."""
-    return _schemas_of(CORE_MODULES)
-
-
-def group_tool_schemas(group: str) -> list[dict[str, Any]]:
-    """Schemas for one lazy group, added to a turn when that group activates."""
-    return _schemas_of(_LAZY_GROUPS.get(group, []))
-
-
+def tool_schemas() -> list[dict[str, Any]]: return _schemas_of(_MODULES)
+def core_tool_schemas() -> list[dict[str, Any]]: return _schemas_of(CORE_MODULES)
+def group_tool_schemas(group: str) -> list[dict[str, Any]]: return _schemas_of(_LAZY_GROUPS.get(group, []))
 def groups_for_text(text: str) -> set[str]:
-    """Which lazy groups a user utterance should activate (substring trigger match)."""
-    t = (text or "").lower()
-    return {g for g, kws in LAZY_GROUP_TRIGGERS.items() if any(k in t for k in kws)}
-
-
+    t=(text or "").lower(); return {g for g,kws in LAZY_GROUP_TRIGGERS.items() if any(k in t for k in kws)}
 def schemas_by_name(names) -> list[dict[str, Any]]:
-    """Schemas for the given tool names, pulled from the FULL registry (any group). Used by the
-    B1 intent router to narrow a turn to exactly the right tool(s). Silently skips unknown names."""
-    want = set(names)
-    return [s for s in tool_schemas() if s["function"]["name"] in want]
-
-
+    want=set(names); return [s for s in tool_schemas() if s["function"]["name"] in want]
 def tool_handlers() -> dict[str, Handler]:
-    handlers: dict[str, Handler] = {}
-    for mod in _MODULES:
-        handlers.update(mod.HANDLERS)
+    handlers={}
+    for mod in _MODULES: handlers.update(mod.HANDLERS)
     return handlers
-
-
-def tool_names() -> list[str]:
-    return [s["function"]["name"] for s in tool_schemas()]
-
+def tool_names() -> list[str]: return [s["function"]["name"] for s in tool_schemas()]
 
 _LAZY_MODULES = {m for mods in _LAZY_GROUPS.values() for m in mods}
-# Core modules are advertised on every turn; lazy ones only when their group is active.
 CORE_MODULES = [m for m in _MODULES if m not in _LAZY_MODULES]
