@@ -1,5 +1,5 @@
 from jarvis.brain.agent import _is_affirmation
-from jarvis.brain.computer_direct import direct_computer_command
+from jarvis.brain.computer_direct import _CLOSE_RE, _OPEN_RE
 from jarvis.brain.proactive import confirm_required
 
 
@@ -20,7 +20,7 @@ def test_confirmation_only_for_consequential_actions():
 
 
 def test_russian_open_close_commands_are_deterministic():
-    # The direct layer must claim these commands before the LLM. We don't execute them in CI;
-    # this checks that the command grammar is accepted by the deterministic router.
-    assert direct_computer_command("открой Telegram") is None or isinstance(direct_computer_command("открой Telegram"), str)
-    assert direct_computer_command("закрой Telegram") is None or isinstance(direct_computer_command("закрой Telegram"), str)
+    assert _OPEN_RE.match("открой Telegram")
+    assert _OPEN_RE.match("запусти Chrome")
+    assert _CLOSE_RE.match("закрой Telegram")
+    assert _CLOSE_RE.match("выключи Discord")
