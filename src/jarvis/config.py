@@ -1,26 +1,36 @@
 """Central configuration for Jarvis (edge + brain)."""
 
 from __future__ import annotations
+
 from enum import Enum
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class STTProvider(str, Enum):
     deepgram = "deepgram"
     whisper = "whisper"
     moonshine = "moonshine"
 
+
 class TTSProvider(str, Enum):
     elevenlabs = "elevenlabs"
     piper = "piper"
     kokoro = "kokoro"
+
 
 class LLMBackend(str, Enum):
     freellmapi = "freellmapi"
     ollama = "ollama"
     openai = "openai"
 
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", env_prefix="JARVIS_")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", env_prefix="JARVIS_"
+    )
+
     assistant_name: str = "Watari"
     user_name: str = ""
     user_address: str = ""
@@ -78,11 +88,21 @@ class Settings(BaseSettings):
     mic_gain: float = 1.0
     piper_voice: str = "ru_RU-ruslan-medium"
     kokoro_voice: str = "am_michael"
+
+    # Windows computer agent.
     desktop_tools_enabled: bool = True
     computer_max_steps: int = 8
     computer_vision_model: str = "qwen/qwen3-vl-30b-a3b-instruct"
+
+    # OpenRouter is the intended cloud brain/vision backend. OpenRouter exposes an OpenAI-compatible
+    # Chat Completions API, so the existing AsyncOpenAI client can use it without a separate SDK.
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    llm_primary_model: str = "qwen/qwen3-30b-a3b-instruct-2507"
+    llm_fallback_models: str = ""
+    vision_models: str = "qwen/qwen3-vl-30b-a3b-instruct"
+
+    openrouter_headers: bool = True
     brain_mode: str = "local"
     brain_ws_url: str = "ws://127.0.0.1:8765/voice"
     brain_host: str = "127.0.0.1"
@@ -103,12 +123,13 @@ class Settings(BaseSettings):
     openclaw_request_timeout_seconds: int = 30
     openclaw_cli_path: str = "openclaw"
     openclaw_cli_ssh_target: str | None = None
-    freellmapi_base_url: str = "http://localhost:3001/v1"
+
+    # Compatibility names used by the existing LLM client. If an OpenRouter key is present, the
+    # validator below automatically routes this compatibility client to OpenRouter instead of a
+    # missing local freellmapi proxy.
+    freellmapi_base_url: str = "https://openrouter.ai/api/v1"
     freellmapi_api_key: str | None = None
-    llm_primary_model: str = "minimax:MiniMax-Text-01"
-    llm_fallback_models: str = "groq:llama-3.3-70b-versatile,groq:llama-3.1-8b-instant,gemini-3.5-flash"
-    vision_models: str = "qwen/qwen3-vl-30b-a3b-instruct,gemini-3.5-flash"
-    llm_request_timeout_seconds: int = 20
+
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     cerebras_api_key: str | None = None
@@ -116,10 +137,38 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434/v1"
     minimax_api_key: str | None = None
     minimax_base_url: str = "https://api.minimax.io/v1"
+    llm_request_timeout_seconds: int = 20
     llm_first_token_timeout_seconds: float = 4.0
     llm_unhealthy_cooldown_seconds: float = 45.0
     llm_fast_model: str | None = None
     tool_turns_prefer_fallback: bool = True
-    llm_thinking_model: str | None = "minimax:MiniMax-M2.5-highspeed"
+    llm_thinking_model: str | None = None
+
+    @model_validator(mode="after")
+    def _wire_openrouter(self) -> "Settings":
+        """Make an OpenRouter key automatically activate the existing OpenAI-compatible LLM client."""
+        if self.openrouter_api_key:
+            self.freellmapi_base_url = self.openrouter_base_url
+            self.freellmapi_api_key = self.openrouter_api_key
+        return self
+
+    @property
+    def llm_chain(self) -> list[str]:
+        """Ordered text-model chain consumed by the existing LLM client."""
+        primary = (self.llm_primary_model or "").strip()
+        fallbacks = [x.strip() for x in self.llm_fallback_models.split(",") if x.strip()]
+        return [x for x in [primary, *fallbacks] if x]
+
+    @property
+    def vision_chain(self) -> list[str]:
+        """Ordered vision-model chain consumed by the existing LLM client."""
+        primary = (self.computer_vision_model or "").strip()
+        fallbacks = [x.strip() for x in self.vision_models.split(",") if x.strip()]
+        out: list[str] = []
+        for model in [primary, *fallbacks]:
+            if model and model not in out:
+                out.append(model)
+        return out
+
 
 settings = Settings()
