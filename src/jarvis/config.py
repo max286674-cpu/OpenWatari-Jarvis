@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 
 from pydantic import model_validator
@@ -146,10 +147,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _wire_openrouter(self) -> "Settings":
-        """Make an OpenRouter key automatically activate the existing OpenAI-compatible LLM client."""
-        if self.openrouter_api_key:
+        """Make either JARVIS_OPENROUTER_API_KEY or OPENROUTER_API_KEY activate OpenRouter."""
+        key = self.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+        if key:
+            self.openrouter_api_key = key
             self.freellmapi_base_url = self.openrouter_base_url
-            self.freellmapi_api_key = self.openrouter_api_key
+            self.freellmapi_api_key = key
         return self
 
     @property
