@@ -12,11 +12,8 @@ distribute a fork with confidence.
 ## How to read this
 
 - **Permissive (MIT / BSD / Apache-2.0 / Unlicense):** you may use, modify, and redistribute freely.
-  Your only real obligation is to **retain the dependency's copyright + license notice** in
-  distributions (this file plus the upstream packages' own `LICENSE` files satisfy that). Apache-2.0
-  additionally grants patent rights and asks you to preserve any `NOTICE` file the package ships.
-- **Weak copyleft (LGPL):** see the dedicated note below — it is compatible with shipping your own
-  MIT code, with conditions.
+- **Weak copyleft (LGPL):** see the dedicated note below.
+- Third-party model/audio assets can have terms separate from the code that loads them.
 
 ## Direct dependencies
 
@@ -45,52 +42,48 @@ distribute a fork with confidence.
 | `playwright` | headless browser driver | Apache-2.0 |
 | `speechbrain` | ECAPA speaker embeddings | Apache-2.0 |
 | `torch`, `torchaudio` | tensor backend for speaker-ID | BSD-3-Clause |
+| `pygame` | optional playback of external MP3 reaction clips | LGPL-2.1-or-later |
 | `numpy`, `scipy` | numerics | BSD-3-Clause |
-| `ruff`, `pytest`, `pytest-asyncio` | dev tooling (not shipped at runtime) | MIT |
+| `ruff`, `pytest`, `pytest-asyncio` | dev tooling | MIT |
 
-Each installed package keeps its full license text in its `*.dist-info/` directory inside your
-environment; that is the authoritative copy.
+## Priler/Jarvis reaction voice packs
+
+OpenWatari can optionally fetch prerecorded reaction clips from the **current** `Priler/jarvis`
+repository at runtime. The clips are deliberately **not vendored into this repository**.
+
+Source: https://github.com/Priler/jarvis
+
+The upstream repository contains three current voice packs: `jarvis-howdy`, `jarvis-og`, and
+`jarvis-remaster`. Their `voice.toml` files identify Abraham (Priler) as the author. The current
+repository's `LICENSE.txt` declares **Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International (CC BY-NC-SA 4.0)** for the distributed material, while its Rust `Cargo.toml`
+separately declares the workspace as GPL-3.0-only. Do **not** assume the audio recordings inherit
+the Rust source license.
+
+If you redistribute the downloaded recordings, review the upstream asset terms and retain the
+required attribution/license information. The OpenWatari integration only downloads the selected
+recordings on demand.
 
 ## The one copyleft dependency: `py-tgcalls` (LGPL-3.0)
 
-`py-tgcalls` and its native core `ntgcalls` are **LGPL-3.0**. They are pulled in **only** by the
-optional `channels` extra and used **only** for streaming audio *into* a Telegram group voice chat
-(the "Music Room" feature). LGPL-3.0 is *weak* copyleft:
-
-- Using it as an **unmodified, separately-installed (`pip`) library** that your MIT code merely calls
-  is permitted, and **does not** force your own code to become LGPL.
-- You must (a) keep its LGPL license and notices, (b) not statically bundle a modified copy without
-  also offering that modified source under LGPL, and (c) leave it replaceable by the end user (a
-  normal `pip` dependency already satisfies this).
-- **If you want a 100%-permissive stack:** simply don't install the voice-chat streaming piece. Skip
-  `py-tgcalls` and Telegram **text** messaging still works via `telethon` (MIT); you only lose
-  in-call music streaming.
+`py-tgcalls` and its native core `ntgcalls` are **LGPL-3.0**. They are pulled in only by the
+optional `channels` extra and used only for streaming audio into a Telegram group voice chat.
 
 ## Cloud services (Terms of Service, not open-source licenses)
 
 These are bring-your-own-key services. The framework ships no keys; you accept each provider's Terms
-when you sign up. They are **not** covered by this project's MIT license:
+when you sign up. They are not covered by this project's MIT license.
 
-- **ElevenLabs** (TTS), **Deepgram** (STT), **OpenAI-compatible LLM provider / freellmapi**,
-  **Tavily** (search), **Jina Reader** (scrape), **Browserbase** (cloud browser),
-  **Google** (Gmail/Calendar OAuth), **Notion**, **Home Assistant**, **Picovoice** (Porcupine
-  custom wake words), **GitHub**, **ntfy**.
-- **Media:** `yt-dlp` / YouTube Music playback is intended for **personal use** — respect YouTube's
-  Terms of Service in your jurisdiction.
+- ElevenLabs (TTS), Deepgram (STT), OpenAI-compatible LLM provider / freellmapi, Tavily, Jina Reader,
+  Browserbase, Google, Notion, Home Assistant, Picovoice, GitHub, ntfy.
+- Media playback: respect the applicable service Terms of Service.
 
 ## Pretrained models
 
-Some local engines download model weights on first use (openWakeWord wake words, Kokoro/Piper
-voices, faster-whisper, SpeechBrain ECAPA, the optional sentence-transformers embedder). Model
-weights can carry **their own** licenses distinct from the code that loads them — check the upstream
-model card before redistributing any weights with your fork.
+Local engines can download model weights on first use. Model weights can carry licenses distinct from
+the code that loads them; check the upstream model card before redistributing any weights.
 
 ## Naming & trademark note
 
-This project is **OpenWatari** and the assistant is **Watari** — names chosen specifically so the
-public brand does **not** rely on a franchise-associated mark. *Jarvis* is referenced only as the
-blueprint/inspiration and is **not** used as the project's brand; the internal Python package keeps
-the short name `jarvis` (import paths/CLI) for stability, which is a code identifier, not a public
-trademark. The MIT license grants **copyright** permissions, not **trademark** rights — if you fork
-under a different public name, pick one that's your own and update the persona file
-(`personality/jarvis.md`) and the wizard's display-name step accordingly.
+This project is **OpenWatari** and the assistant is **Watari**. *Jarvis* is referenced only as the
+blueprint/inspiration; the internal Python package keeps the short name `jarvis` for compatibility.
