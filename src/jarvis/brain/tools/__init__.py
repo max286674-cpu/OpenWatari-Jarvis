@@ -1,16 +1,16 @@
 """Jarvis tool registry."""
 from __future__ import annotations
 from typing import Any, Awaitable, Callable
-from jarvis.brain.tools import activity, approvals, browser, calendar, camera, channels, coaching, coding, composio, contacts, desktop, documents, gmail, graphmem, localplay, macros, memory, multimodal, music, notify, notion, objectives, protocols, reminders, relationship, routines, skills, smarthome, system, tasks, telegram, undo, utility, vault, voicechat, web
+from jarvis.brain.tools import activity, approvals, browser, calendar, camera, channels, coaching, coding, composio, computer_use, contacts, desktop, documents, gmail, graphmem, localplay, macros, memory, multimodal, music, notify, notion, objectives, protocols, reminders, relationship, routines, skills, smarthome, system, tasks, telegram, undo, utility, vault, voicechat, web
 
-_MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, desktop, browser, protocols, reminders, notify, gmail, calendar, smarthome, utility, routines, coding, skills, notion, tasks, contacts, documents, composio, channels, macros, multimodal, undo, graphmem, activity, coaching, camera, objectives, approvals, relationship]
+_MODULES = [vault, memory, web, telegram, voicechat, music, localplay, system, desktop, computer_use, browser, protocols, reminders, notify, gmail, calendar, smarthome, utility, routines, coding, skills, notion, tasks, contacts, documents, composio, channels, macros, multimodal, undo, graphmem, activity, coaching, camera, objectives, approvals, relationship]
 
 Handler = Callable[[dict], Awaitable[str]]
 
 _LAZY_GROUPS: dict[str, list] = {
     "coding": [coding], "office": [notion, gmail, calendar], "home": [smarthome, voicechat],
     "docs": [documents], "apps": [composio], "channels": [channels], "macros": [macros],
-    "screen": [multimodal, desktop], "camera": [camera], "undo": [undo], "graph": [graphmem],
+    "screen": [multimodal, desktop, computer_use], "camera": [camera], "undo": [undo], "graph": [graphmem],
     "activity": [activity], "coaching": [coaching], "objectives": [objectives],
     "approvals": [approvals], "relationship": [relationship],
 }
@@ -23,7 +23,7 @@ LAZY_GROUP_TRIGGERS: dict[str, tuple[str, ...]] = {
     "apps": ("github","gitlab","slack","discord","google drive","google doc","google sheet","spreadsheet","jira","trello","asana","youtube"),
     "channels": ("youtube channel","latest video","random video","channel "),
     "macros": ("macro","routine","shortcut","if then","every morning","every day"),
-    "screen": ("screen","screenshot","display","look at my","on my screen","what am i looking"),
+    "screen": ("screen","screenshot","display","look at my","on my screen","what am i looking","экран","скриншот","посмотри на мой","что у меня на экране","нажми","кликни","компьютер","рабочем столе","в окне"),
     "camera": ("camera","webcam","look around","can you see","look through"),
     "undo": ("undo","revert","roll back","recent actions","last action"),
     "graph": ("related to","connected to","connection between","linked to","relationship between","knowledge graph"),
