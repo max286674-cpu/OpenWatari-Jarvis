@@ -40,21 +40,19 @@ CATASTROPHIC = r'''_CATASTROPHIC_RE = re.compile(
 
 
 def replace_named_block(text: str, name: str, replacement: str) -> str:
+    # A re.compile definition ends with either ')' or '),' depending on formatting.
     pattern = re.compile(
-        rf"(?ms)^{re.escape(name)}\s*=\s*re\.compile\(.*?^\)\n",
+        rf"(?ms)^{re.escape(name)}\s*=\s*re\.compile\(.*?^\)\s*,?\s*$",
     )
     if not pattern.search(text):
         raise RuntimeError(f"cannot find {name} definition in agent.py")
-    return pattern.sub(lambda _: replacement + "\n", text, count=1)
+    return pattern.sub(lambda _: replacement.rstrip() + "\n", text, count=1)
 
 
 def main() -> None:
     source = AGENT.read_text(encoding="utf-8")
     source = replace_named_block(source, "_PURE_CHAT_RE", PURE_CHAT)
     source = replace_named_block(source, "_CATASTROPHIC_RE", CATASTROPHIC)
-
-    # Compile the exact regexes before touching the file, then parse the whole module.
-    re.compile(PURE_CHAT.split("re.compile(", 1)[1].rsplit(",", 1)[0]) if False else r"x")
     ast.parse(source, filename=str(AGENT))
     AGENT.write_text(source, encoding="utf-8")
     print("runtime guards repaired: Russian pure-chat + catastrophic guard")
