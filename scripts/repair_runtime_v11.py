@@ -1,6 +1,12 @@
+"""Safe runtime consistency repair.
+
+The old version performed structural regex slicing in agent.py. That could delete unrelated helpers.
+This version only performs exact, idempotent replacements and validates invariants. It must be safe to
+run repeatedly.
+"""
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,211 +16,119 @@ def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
-def write(rel: str, text: str) -> None:
-    (ROOT / rel).write_text(text, encoding="utf-8")
-
-
-CATASTROPHIC_BLOCK = '''# Catastrophic system-destruction commands are refused before any model/tool call.
-_CATASTROPHIC_RE = re.compile(
-    r"(?:\\b(?:delete|remove|wipe|erase|destroy|format|nuke|del|rm|удали|удалить|стирай|стереть|сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b[^.?!]*?(?:system32|c:\\\\s*windows|windows\\s+(?:folder|directory)|system\\s+drive|c[:\\s]+drive|boot\\s+(?:partition|sector)|registry|program\\s+files|систем(?:у|ы)|диск\\s*c|диск\\s*с|системн(?:ый|ого)\\s+диск|виндовс|windows|реестр|весь\\s+(?:диск|компьютер|комп|систему)|всё\\s+(?:с|на|в)\\s+(?:диска|диск|компьютера|компе|системы)))"
-    r"|\\brm\\s+-rf\\s+/(?:\\s|$|\\*)|\\bformat\\s+c:|\\bdel\\s+/[fsq]\\b[^.?!]*\\bc:\\\\s*windows",
-    re.IGNORECASE,
-)
-_CATASTROPHIC_REFUSAL = (
-    "Нет, сэр. Я не буду стирать систему: это необратимо и уничтожит данные. "
-    "Если вы имели в виду конкретный файл или папку, укажите их точно."
-)
-
-
-def _catastrophic(user_text: str) -> bool:
-    text = (user_text or "").strip().lower()
-    if not text:
+def write_if_changed(rel: str, text: str) -> bool:
+    p = ROOT / rel
+    old = p.read_text(encoding="utf-8")
+    if old == text:
         return False
-    if not _CATASTROPHIC_RE.search(text):
-        destructive = re.search(r"\\b(удали|удалить|стирай|стереть|сотри|снести|уничтожь|уничтожить|форматируй|форматировать|очисти|очистить)\\b", text)
-        system_target = re.search(r"(диск\\s*[cс]|[cс]\\s*диск|системн(?:ый|ого)\\s*диск|весь\\s*(?:диск|компьютер|комп|систем)|всё\\s*(?:с|на|в)\\s*(?:диска|диск|компьютера|компе|системы)|windows|виндовс|system32|реестр|registry)", text)
-        if destructive and system_target:
-            return True
-        return False
+    p.write_text(text, encoding="utf-8")
     return True
 
 
-'''
+def repair_agent() -> bool:
+    rel = "src/jarvis/brain/agent.py"
+    s = read(rel)
+    original = s
 
-AFFIRM_BLOCK = '''# Russian and English confirmations. A confirmation executes the exact pending tool call once.
-_AFFIRM_RE = re.compile(
-    r"^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that's right|correct|fine|absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|подтверждаю|подтверждено|подтверждай|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|выполни|выполнить|запускай|запускайте|устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|можно|добро|верно|точно|давай|давай делай)[\\s,.!?;:]*$",
-    re.IGNORECASE,
-)
-
-
-def _is_affirmation(text: str) -> bool:
-    t = re.sub(r"[\\s,.!?;:]+", " ", (text or "").strip().lower()).strip()
-    return bool(_AFFIRM_RE.fullmatch(t))
-
-'''
-
-PURE_CHAT_BLOCK = '''# High-confidence pure-chat matcher. Keep this helper present because _immediate_ack calls _is_pure_chat.
-_PURE_CHAT_RE = re.compile(
-    r"^\\s*(hi|hey+|hello|hiya|yo|howdy|good\\s*(morning|afternoon|evening|night)|greetings|"
-    r"how\\s*(are|'?re)\\s*(you|ya|things)|how\\s*(are\\s*)?you\\s*doing|how'?s\\s*it\\s*going|"
-    r"how\\s*have\\s*you\\s*been|what'?s\\s*up|sup|"
-    r"thank(s| you)( so much| a lot| very much)?|cheers|much appreciated|appreciate it|"
-    r"well done|good job|nice(\\s*(work|one))?|awesome|great(\\s*job)?|amazing|brilliant|perfect|excellent|"
-    r"good\\s*night|goodnight|bye|goodbye|see\\s*(you|ya)( later| soon)?|talk\\s*(to\\s*you\\s*)?later|"
-    r"tell me a joke|say something funny|you'?re (funny|hilarious|great|the best)|that'?s funny|ha+|lol|lmao|"
-    r"how do you feel|are you (ok|okay|there|alright|awake|listening)|you good|you there|"
-    r"i (love|like|appreciate) you|love you|"
-    r"cool|nice|neat|got it|gotcha|i see|makes sense|no worries|my bad|of course|"
-    r"never\\s*mind|nevermind|forget it|just (saying|checking|kidding))"
-    r"[\\s,.!'?]*(watari|jarvis|sir|buddy|mate|man|dude|please|then|too|though|there|everyone|all)?[\\s,.!'?]*$",
-    re.IGNORECASE,
-)
-
-'''
-
-
-def patch_catastrophic(s: str) -> str:
-    marker = "# Background-work intent (Phase 4.1 / Autonomy):"
-    if marker not in s:
-        raise RuntimeError("cannot restore _catastrophic: background-work anchor missing")
-    starts = [x for x in (s.find("# Catastrophic system-destruction commands"), s.find("_CATASTROPHIC_RE = re.compile(")) if x >= 0]
-    start = min(starts) if starts else -1
-    if start < 0:
-        return s.replace(marker, CATASTROPHIC_BLOCK + marker, 1)
-    section_start = s.rfind("\n\n", 0, start) + 2
-    if section_start <= 1:
-        section_start = start
-    end = s.find(marker, start)
-    return s[:section_start] + CATASTROPHIC_BLOCK + s[end:]
-
-
-def patch_affirmation(s: str) -> str:
-    marker = "def _is_affirmation(text: str) -> bool:"
-    pos = s.find(marker)
-    if pos < 0:
-        raise RuntimeError("cannot repair affirmation helper: function not found")
-    regex_pos = s.rfind("_AFFIRM_RE = re.compile(", 0, pos)
-    if regex_pos < 0:
-        line_start = s.rfind("\n", 0, pos) + 1
-        section_start = s.rfind("\n\n", 0, line_start) + 2
-    else:
-        section_start = s.rfind("\n", 0, regex_pos) + 1
-        comment_start = s.rfind("\n", 0, section_start - 1) + 1
-        if s[comment_start:section_start].lstrip().startswith("#"):
-            section_start = comment_start
-    after = s.find("\n\ndef ", pos)
-    section_end = len(s) if after < 0 else after + 2
-    return s[:section_start] + AFFIRM_BLOCK + s[section_end:]
-
-
-def patch_pure_chat(s: str) -> str:
-    """Repair the dependency used by _immediate_ack after any affirmation rewrite."""
-    if "_PURE_CHAT_RE = re.compile(" in s:
-        return s
-    marker = "def _is_pure_chat(text: str) -> bool:"
-    pos = s.find(marker)
-    if pos < 0:
-        raise RuntimeError("cannot restore pure-chat helper: function not found")
-    return s[:pos] + PURE_CHAT_BLOCK + s[pos:]
-
-
-def patch_spoken_english(s: str) -> str:
-    replacements = {
-        "Right away, sir — putting that to the team lead": "Сделаю, сэр — передаю задачу",
-        "Checking your vault": "Проверяю хранилище",
-        "Reading that note": "Читаю заметку",
-        "Saving that to your vault": "Сохраняю в хранилище",
-        "Looking that up": "Проверяю информацию",
-        "Opening the page": "Открываю страницу",
-        "Opening a browser": "Открываю браузер",
-        "Checking your Telegram": "Проверяю Telegram",
-        "Reading that chat": "Читаю чат",
-        "Sending that": "Отправляю",
-        "Pulling that from your playlist": "Ищу в вашем списке",
-        "Cueing it up in your music room": "Запускаю музыку",
-        "Leaving the music room": "Останавливаю музыку",
-        "Finding that song": "Ищу композицию",
-        "Stopping the music": "Останавливаю музыку",
-        "Working on your files": "Работаю с файлами",
-        "Running that": "Выполняю",
-        "In the browser": "Работаю в браузере",
-        "Authorizing the protocol": "Авторизую протокол",
-        "Setting that reminder": "Устанавливаю напоминание",
-        "Pinging your phone": "Отправляю уведомление",
-        "Getting the time": "Уточняю время",
-        "Checking the weather": "Проверяю погоду",
-        "Checking your calendar": "Проверяю календарь",
-        "Adding that to your calendar": "Добавляю в календарь",
-        "Checking your email": "Проверяю почту",
-        "Sending that email": "Отправляю письмо",
-        "Noting that down": "Запоминаю",
-        "Let me recall": "Вспоминаю",
-        "Right away, sir.": "Сделаю, сэр.",
-        "On it, sir.": "Занимаюсь этим, сэр.",
-        "Of course, sir.": "Конечно, сэр.",
-        "Let me take care of that, sir.": "Сейчас займусь этим, сэр.",
-        "Consider it done, sir.": "Будет сделано, сэр.",
-        "Yes, sir.": "Да, сэр.",
-        "Certainly, sir.": "Разумеется, сэр.",
-        "One moment, sir.": "Одну секунду, сэр.",
-        '"On it"': '"Занимаюсь этим"',
-        '"Opening that"': '"Открываю"',
-    }
-    for old, new in sorted(replacements.items(), key=lambda kv: len(kv[0]), reverse=True):
+    old = '''_AFFIRM_RE = re.compile(\n    r"^\\s*(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"\n    r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that'?s right|"\n    r"correct|fine|absolutely|yes please|go|right)\\b",\n    re.IGNORECASE,\n)'''
+    new = '''_AFFIRM_RE = re.compile(\n    r"^\\s*(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"\n    r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that'?s right|"\n    r"correct|fine|absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|"\n    r"подтверждаю|подтверждено|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|"\n    r"выполни|выполнить|запускай|запускайте|устанавливай|устанавливайте|установи|"\n    r"установить|продолжай|продолжайте|можно|добро|верно|точно|давай|давай делай)\\b",\n    re.IGNORECASE,\n)'''
+    if old in s:
         s = s.replace(old, new)
-    s = s.replace("I wasn't able to pull that up just now, sir — let me try again in a moment rather than guess.", "Не удалось получить эти данные, сэр. Я не буду гадать и попробую ещё раз.")
-    s = s.replace("This request has MORE THAN ONE part. Complete EVERY part — use the right tool for each, one after another — and do not give your final reply until all parts are done or you've said which part you can't do and why.", "В запросе несколько частей. Выполни каждую часть подходящим инструментом. Не сообщай о завершении, пока все части не выполнены.")
-    s = s.replace('    "define_word", "wiki_lookup", "news_brief",\n', '    "define_word", "wiki_lookup",\n')
-    return s
+
+    if "_PURE_CHAT_RE = re.compile(" not in s:
+        marker = "def _is_pure_chat(text: str) -> bool:"
+        pos = s.find(marker)
+        if pos < 0:
+            raise RuntimeError("agent.py is missing _PURE_CHAT_RE and _is_pure_chat")
+        block = '''_PURE_CHAT_RE = re.compile(\n    r"^\\s*(привет|здравствуй|здрасьте|доброе утро|добрый день|добрый вечер|спасибо|"\n    r"пожалуйста|класс|отлично|понял|понятно|хорошо|ага|угу|да|нет|почему|зачем|"\n    r"hi|hey+|hello|thanks|thank you|good job|nice|great|cool|got it|okay|ok)"\n    r"[\\s,.!?]*(джарвис|jarvis|сэр|sir)?[\\s,.!?]*$",\n    re.IGNORECASE,\n)\n\n\n'''
+        s = s[:pos] + block + s[pos:]
+
+    replacements = {
+        '"Right away, sir.",': '"Сделаю, сэр.",',
+        '"On it, sir.",': '"Занимаюсь этим, сэр.",',
+        '"Of course, sir.",': '"Конечно, сэр.",',
+        '"Let me take care of that, sir.",': '"Сейчас займусь этим, сэр.",',
+        '"Consider it done, sir.",': '"Будет сделано, сэр.",',
+        '"Yes, sir.",': '"Да, сэр.",',
+        '"Certainly, sir.",': '"Разумеется, сэр.",',
+        '"One moment, sir.",': '"Одну секунду, сэр.",',
+        '"Right away, sir — putting that to the team lead"': '"Сделаю, сэр — передаю задачу"',
+        '"Checking your vault"': '"Проверяю хранилище"',
+        '"Reading that note"': '"Читаю заметку"',
+        '"Saving that to your vault"': '"Сохраняю в хранилище"',
+        '"Looking that up"': '"Проверяю информацию"',
+        '"Opening the page"': '"Открываю страницу"',
+        '"Opening a browser"': '"Открываю браузер"',
+        '"Checking your Telegram"': '"Проверяю Telegram"',
+        '"Reading that chat"': '"Читаю чат"',
+        '"Sending that"': '"Отправляю"',
+        '"Working on your files"': '"Работаю с файлами"',
+        '"Running that"': '"Выполняю"',
+        '"In the browser"': '"Работаю в браузере"',
+        '"Setting that reminder"': '"Устанавливаю напоминание"',
+        '"Pinging your phone"': '"Отправляю уведомление"',
+        '"Getting the time"': '"Уточняю время"',
+        '"Checking the weather"': '"Проверяю погоду"',
+        '"Checking your calendar"': '"Проверяю календарь"',
+        '"Adding that to your calendar"': '"Добавляю в календарь"',
+        '"Checking your email"': '"Проверяю почту"',
+        '"Sending that email"': '"Отправляю письмо"',
+        '"Noting that down"': '"Запоминаю"',
+        '"Let me recall"': '"Вспоминаю"',
+        '"I wasn\'t able to pull that up just now, sir — let me try again in a moment rather than guess."': '"Не удалось получить эти данные, сэр. Я не буду гадать и попробую ещё раз."',
+        '"Sorry sir, I didn\'t catch that — could you say it again?"': '"Не расслышал, сэр. Повторите, пожалуйста."',
+        '"I\'ve done what I can on that, sir."': '"Я сделал всё, что смог, сэр."',
+        '"Here\'s what I found, sir."': '"Вот что я нашёл, сэр."',
+    }
+    for old, new in replacements.items():
+        s = s.replace(old, new)
+
+    ast.parse(s, filename=rel)
+    return write_if_changed(rel, s) if s != original else False
 
 
-def patch_config(s: str) -> str:
-    s = s.replace('wake_word_threshold: float = 0.5', 'wake_word_threshold: float = 0.32')
-    s = s.replace('hot_mic_after_wake: bool = False', 'hot_mic_after_wake: bool = True')
-    s = s.replace('reply_language: str = "English"', 'reply_language: str = "Russian"')
-    s = s.replace('understood_languages: str = "English"', 'understood_languages: str = "Russian,English"')
-    s = s.replace('wake_ack_phrase: str = "Yes, sir?|I\'m listening, sir.|Sir?|Go ahead, sir."', 'wake_ack_phrase: str = "Да, сэр.|Слушаю, сэр.|Да, сэр, я слушаю."')
-    return s
+def repair_config() -> bool:
+    rel = "src/jarvis/config.py"
+    s = read(rel)
+    original = s
+    for old, new in (
+        ('wake_word_threshold: float = 0.5', 'wake_word_threshold: float = 0.32'),
+        ('hot_mic_after_wake: bool = False', 'hot_mic_after_wake: bool = True'),
+        ('reply_language: str = "English"', 'reply_language: str = "Russian"'),
+        ('understood_languages: str = "English"', 'understood_languages: str = "Russian,English"'),
+    ):
+        s = s.replace(old, new)
+    return write_if_changed(rel, s) if s != original else False
 
 
-def patch_wake(s: str) -> str:
+def repair_wake() -> bool:
+    rel = "src/jarvis/edge/wake_word.py"
+    s = read(rel)
+    original = s
     s = s.replace('threshold: float = 0.5,', 'threshold: float = 0.32,')
-    s = s.replace('"jarvis": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",', '"jarvis": "hey_jarvis",\n    "джарвис": "hey_jarvis",\n    "hey jarvis": "hey_jarvis",')
-    return s
+    return write_if_changed(rel, s) if s != original else False
 
 
-def patch_agent() -> None:
-    p = "src/jarvis/brain/agent.py"
-    s = read(p)
-    s = patch_catastrophic(s)
-    s = patch_affirmation(s)
-    s = patch_pure_chat(s)
-    s = patch_spoken_english(s)
-    write(p, s)
-
-
-def patch_runtime_defaults() -> None:
-    p = "src/jarvis/config.py"
-    write(p, patch_config(read(p)))
-    p = "src/jarvis/edge/wake_word.py"
-    write(p, patch_wake(read(p)))
-
-
-def patch_tests() -> None:
-    p = "tests/test_runtime_v8.py"
-    s = read(p)
-    extra = '''\n\ndef test_catastrophic_guard_exists_and_is_narrow():\n    from jarvis.brain.agent import _catastrophic\n    assert callable(_catastrophic)\n    assert _catastrophic("удали всё с диска C")\n    assert _catastrophic("удали всё с диска C:")\n    assert not _catastrophic("удали файл report.txt")\n    assert not _catastrophic("удали папку C:\\Projects")\n\n\ndef test_spoken_ack_sets_are_not_english():\n    from jarvis.brain.agent import _WORK_ACKS, _CHAT_ACKS, _TOOL_PROGRESS\n    spoken = list(_WORK_ACKS) + list(_CHAT_ACKS) + list(_TOOL_PROGRESS.values())\n    forbidden = ("Right away", "On it", "Of course", "Yes, sir", "Certainly", "One moment")\n    assert not any(any(x.lower() in phrase.lower() for x in forbidden) for phrase in spoken)\n'''
-    if "test_catastrophic_guard_exists_and_is_narrow" not in s:
-        s += extra
-    write(p, s)
+def validate() -> None:
+    checks = {
+        "src/jarvis/brain/agent.py": ("_PURE_CHAT_RE = re.compile(", "def _is_pure_chat(", "def _is_affirmation(", "def _execute_calls("),
+        "src/jarvis/brain/intent_router.py": ("def forced_tools(",),
+    }
+    for rel, needles in checks.items():
+        s = read(rel)
+        for needle in needles:
+            if needle not in s:
+                raise RuntimeError(f"runtime invariant missing: {rel}: {needle}")
+        ast.parse(s, filename=rel)
 
 
 def main() -> None:
-    patch_agent()
-    patch_runtime_defaults()
-    patch_tests()
-    print("runtime v11 repair applied")
+    changed = repair_agent()
+    changed = repair_config() or changed
+    changed = repair_wake() or changed
+    validate()
+    state = "files updated" if changed else "already clean"
+    print(f"runtime repair: OK (idempotent, non-destructive); {state}")
 
 
 if __name__ == "__main__":
