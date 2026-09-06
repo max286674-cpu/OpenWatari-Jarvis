@@ -8,7 +8,7 @@ so they work offline and never crash the brain.
 
 from __future__ import annotations
 
-from jarvis.brain.memory import STORE
+import jarvis.brain.memory as memory_module
 from jarvis.brain.tools.base import tool_error
 from jarvis.config import settings
 
@@ -23,7 +23,7 @@ async def remember(args: dict) -> str:
     if isinstance(tags, str):
         tags = [t for t in tags.replace(";", ",").split(",") if t.strip()]
     try:
-        STORE.remember(text, tags=tags)
+        memory_module.STORE.remember(text, tags=tags)
         return "Noted, sir — I'll remember that."
     except Exception as e:  # noqa: BLE001
         return tool_error("remember", e)
@@ -39,7 +39,7 @@ async def recall(args: dict) -> str:
     layers = args.get("layers")  # optional: ['L1','L2','L3','L5'] to narrow
     try:
         # fused_recall returns tagged dicts; tag each hit with its layer so the LLM can cite.
-        hits = await STORE.fused_recall(query, limit=settings.memory_recall_limit, layers=tuple(layers) if layers else None)
+        hits = await memory_module.STORE.fused_recall(query, limit=settings.memory_recall_limit, layers=tuple(layers) if layers else None)
         if not hits:
             return f"I don't have anything stored about '{query}', sir."
         tag = {"L1": "learned", "L2": "journal", "L3": "vault", "L5": "semantic"}
@@ -60,7 +60,7 @@ async def forget(args: dict) -> str:
     if not query:
         return "What should I forget, sir?"
     try:
-        gone = STORE.forget(query)
+        gone = memory_module.STORE.forget(query)
         return f"Forgotten, sir — I've dropped the note about '{query}'." if gone else (
             f"I had nothing stored about '{query}', sir."
         )
@@ -72,7 +72,7 @@ async def read_journal(args: dict) -> str:
     if not settings.memory_enabled:
         return "My journal is switched off right now, sir."
     try:
-        text = STORE.read_journal()
+        text = memory_module.STORE.read_journal()
         return text or "My journal is empty so far, sir."
     except Exception as e:  # noqa: BLE001
         return tool_error("read journal", e)

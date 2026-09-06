@@ -1,7 +1,7 @@
 """Build the assistant's system prompt from its personality + markdown memory files.
 
 The persona file (``personality/<JARVIS_PERSONA_FILE>``, default jarvis.md) is a TEMPLATE for who it
-is — identity tokens are filled from config (see ``_apply_identity``). ``memory/*.md`` is the user's
+is вЂ” identity tokens are filled from config (see ``_apply_identity``). ``memory/*.md`` is the user's
 profile (who they are, projects, environment) + the proactive mandate; personal profile files are
 gitignored and fall back to shipped ``*.example.md`` templates. All plain Markdown, editable without
 touching code.
@@ -69,7 +69,7 @@ def _identity_tokens() -> dict[str, str]:
     understood = (s.understood_languages or "English").strip()
     reply = (s.reply_language or "English").strip()
     if understood.lower() != reply.lower():
-        language_line = (f"They may speak {understood} — understand any of them, but **always reply "
+        language_line = (f"They may speak {understood} вЂ” understand any of them, but **always reply "
                          f"in {reply}**. Never switch languages even if they do.")
     else:
         language_line = f"Speak and understand {reply}."
@@ -90,11 +90,11 @@ def _apply_identity(text: str) -> str:
 # Always-on context: injected into EVERY turn, so it is kept deliberately lean (see
 # fine-tuning.md, Item 1). Order matters: who the owner is, the proactive mandate, his ventures,
 # then the environment. Two files are intentionally NOT here:
-#   * tools.md       — duplicated the tool schemas the model already receives every turn.
-#   * openclaw-fleet.md — its actionable rule (delegate to ispir only) is already in the persona.
+#   * tools.md       вЂ” duplicated the tool schemas the model already receives every turn.
+#   * openclaw-fleet.md вЂ” its actionable rule (delegate to ispir only) is already in the persona.
 # Both stay on disk as on-demand reference (readable via read_source / the vault), they're just
 # not paid for on every turn. Files are loaded ONLY if listed here (no glob) to keep the prompt
-# disciplined — a new memory file must be added explicitly and weighed against the token budget.
+# disciplined вЂ” a new memory file must be added explicitly and weighed against the token budget.
 _ALWAYS_ON = [
     "about-you.md",
     "proactive-companion.md",
@@ -110,7 +110,7 @@ def _read(p: Path) -> str:
     except FileNotFoundError:
         logger.warning(f"brain context: missing {p.name}")
         return ""
-    # Strip leading HTML comments — they're human-facing documentation, not for the LLM.
+    # Strip leading HTML comments вЂ” they're human-facing documentation, not for the LLM.
     # Comments are kept in the FILE so authors see the placeholder docs, but excluded from the
     # prompt to save ~1.5KB per turn.
     import re
@@ -121,7 +121,7 @@ def _read(p: Path) -> str:
 def _resolve_memory(name: str) -> Path | None:
     """Prefer the user's private profile file; fall back to the shipped ``.example`` template.
 
-    Personal profile files (about-you.md, projects.md, …) are gitignored — a fresh clone only has
+    Personal profile files (about-you.md, projects.md, вЂ¦) are gitignored вЂ” a fresh clone only has
     the ``*.example.md`` templates, so the assistant still boots with generic context until the user
     fills in (or the setup wizard copies) their own.
     """
@@ -135,7 +135,7 @@ def _resolve_memory(name: str) -> Path | None:
 def load_memory_files() -> list[tuple[str, str]]:
     """Return (filename, content) for each ALWAYS-ON memory file, in order, missing ones skipped.
 
-    Only files in ``_ALWAYS_ON`` are loaded — other ``memory/*.md`` are on-demand reference and
+    Only files in ``_ALWAYS_ON`` are loaded вЂ” other ``memory/*.md`` are on-demand reference and
     deliberately excluded from the per-turn prompt (see ``_ALWAYS_ON`` note above). Each resolves to
     the user's private file if present, else the shipped ``.example`` template.
     """
@@ -148,34 +148,51 @@ def load_memory_files() -> list[tuple[str, str]]:
 
 
 def _learned_digest() -> str:
-    """Recent learned facts (L1) as a short bullet list for the system prompt."""
+    """Recent learned facts (L1) as a short, hard-bounded bullet list."""
     if not settings.memory_enabled:
         return ""
     try:
         from jarvis.brain.memory import STORE
 
         facts = STORE.recent_digest(settings.memory_digest_max)
-        # Bound each line so the injected digest can't drift the system prompt over its token budget
-        # as facts accumulate (the full fact is always reachable via `recall`; this is just a teaser).
         cap = settings.memory_digest_fact_chars
+        max_digest_chars = 500
+
         lines = []
+        total_chars = 0
+
         for f in facts:
             f = f.strip()
             if len(f) > cap:
-                f = f[: cap - 1].rstrip() + "…"
-            lines.append(f"- {f}")
+                f = f[: cap - 1].rstrip() + "?"
+
+            line = f"- {f}"
+            remaining = max_digest_chars - total_chars
+
+            if remaining <= 0:
+                break
+
+            if len(line) > remaining:
+                line = line[:remaining].rstrip()
+                if line:
+                    lines.append(line)
+                break
+
+            lines.append(line)
+            total_chars += len(line)
+
         return "\n".join(lines)
+
     except Exception as e:  # noqa: BLE001
         logger.warning(f"learned-memory digest unavailable: {e}")
         return ""
-
 
 def _vault_reachable(p: Path) -> bool:
     """True only if the path is a directory we can actually list (not a cloud placeholder)."""
     try:
         if not p.is_dir():
             return False
-        next(p.iterdir(), None)  # touch it — proves read access, not just existence
+        next(p.iterdir(), None)  # touch it вЂ” proves read access, not just existence
         return True
     except OSError:
         return False
@@ -184,14 +201,14 @@ def _vault_reachable(p: Path) -> bool:
 def validate_vault(retries: int = 3, grace: float = 0.4) -> tuple[bool, str]:
     """L3 must always be readable. Returns (ok, message) and logs loudly if not.
 
-    A momentary blip — the 15-min vault sync's delete→move window, an antivirus lock, or a
-    OneDrive 'online-only' placeholder rehydrating — must NOT fire the 'I've lost your vault'
+    A momentary blip вЂ” the 15-min vault sync's deleteв†’move window, an antivirus lock, or a
+    OneDrive 'online-only' placeholder rehydrating вЂ” must NOT fire the 'I've lost your vault'
     alarm. So we retry with a short grace; only a *sustained* failure is reported as lost access.
     """
     import time
 
     if not settings.vault_path:
-        msg = "Obsidian vault (L3) is NOT configured — set JARVIS_VAULT_PATH to the local mirror."
+        msg = "Obsidian vault (L3) is NOT configured вЂ” set JARVIS_VAULT_PATH to the local mirror."
         logger.warning(msg)
         return False, msg
     p = Path(settings.vault_path)
@@ -213,6 +230,15 @@ def build_system_prompt() -> str:
     parts: list[str] = []
     if persona:
         parts.append(persona)
+
+    owner_name = (settings.user_name or "the user").strip()
+
+    parts.append(
+        "# Identity\n"
+        "You are Watari, the user's personal AI assistant.\n"
+        "The owner and principal you serve is {owner_name}.\n"
+        "Address and treat {owner_name} as your principal."
+    )
     mem_blocks = [f"## {name}\n{content}" for name, content in load_memory_files() if content]
     if mem_blocks:
         parts.append(
@@ -225,7 +251,7 @@ def build_system_prompt() -> str:
         parts.append(
             f"# Recently learned about {who} (use `recall` for older)\n" + digest
         )
-    # Learned delegation bias (one line, only once domains repeat) — see fleet.routing_hint.
+    # Learned delegation bias (one line, only once domains repeat) вЂ” see fleet.routing_hint.
     try:
         from jarvis.brain.fleet import routing_hint
 
@@ -234,7 +260,7 @@ def build_system_prompt() -> str:
             parts.append(hint)
     except Exception:  # noqa: BLE001
         pass
-    # T12 — Composio catalog awareness. Without this, the LLM has no idea that 17 apps with
+    # T12 вЂ” Composio catalog awareness. Without this, the LLM has no idea that 17 apps with
     # hundreds of actions exist and defaults to "I can't" when the right tool is one
     # composio_find_tools() away. Inject a compact summary so every tool is on the LLM's radar.
     try:
@@ -245,12 +271,12 @@ def build_system_prompt() -> str:
     except Exception:  # noqa: BLE001
         pass
 
-    # Operating rules — loaded from `personality/operating-rules.md` so anyone can fork the repo
+    # Operating rules вЂ” loaded from `personality/operating-rules.md` so anyone can fork the repo
     # and customise the rules without touching Python. See the top of that file for the pattern.
     # Falls back to a minimal hardcoded default only if the file is missing/corrupt (so a brand-new
     # brain without the boilerplate still ships with sane behaviour).
     try:
-        from jarvis.config import settings as _s  # noqa: F401 — imported for type only
+        from jarvis.config import settings as _s  # noqa: F401 вЂ” imported for type only
         op_rules_path = _OPERATING_RULES_PATH
         if op_rules_path.is_file():
             rules_text = op_rules_path.read_text(encoding="utf-8", errors="ignore").strip()
