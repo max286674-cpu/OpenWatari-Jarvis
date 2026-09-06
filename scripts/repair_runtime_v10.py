@@ -21,30 +21,39 @@ def patch_agent() -> None:
     affirmation = r'''# Confirmation is intentionally deterministic: a Russian "да" must execute the
 # exact pending action rather than starting another LLM turn.
 _AFFIRM_RE = re.compile(
-    r"^\s*(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
+    r"^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
     r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that's right|correct|fine|"
     r"absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|подтверждаю|подтверждено|"
     r"подтверждай|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|выполни|выполнить|"
     r"запускай|запускайте|устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|"
-    r"можно|добро|верно|точно|давай|давай делай)\s*[.!?]*\s*$",
+    r"можно|добро|верно|точно|давай|давай делай)[\s,.!?;:]*$",
     re.IGNORECASE,
 )
 
 
 def _is_affirmation(text: str) -> bool:
-    return bool(_AFFIRM_RE.fullmatch((text or "").strip()))'''
+    t = re.sub(r"[\s,.!?;:]+", " ", (text or "").strip().lower()).strip()
+    return bool(_AFFIRM_RE.fullmatch(t))'''
 
-    if "def _is_affirmation(text: str) -> bool:" not in s:
-        # Insert immediately after the existing forced-tool helper. This anchor exists in the
-        # current agent and keeps the helper available to the test suite and confirmation flow.
-        marker = 'def _wants_forced_tool(user_text: str) -> bool:\n'
+    # Replace the entire existing affirmation helper wherever it is located.
+    block = re.compile(
+        r'# A short affirmation.*?\n_AFFIRM_RE\s*=\s*re\.compile\(.*?\n\s*\)\s*\n\s*\ndef _is_affirmation\(text: str\) -> bool:\s*\n\s*return bool\(_AFFIRM_RE\.match\(text or ""\)\)',
+        re.DOTALL,
+    )
+    s2, n = block.subn(affirmation, s, count=1)
+    if n == 0:
+        block2 = re.compile(
+            r'_AFFIRM_RE\s*=\s*re\.compile\(.*?\n\s*\)\s*\n\s*\ndef _is_affirmation\(text: str\) -> bool:\s*\n\s*return bool\(_AFFIRM_RE\.[^\n]+\)',
+            re.DOTALL,
+        )
+        s2, n = block2.subn(affirmation, s, count=1)
+    if n == 0:
+        marker = "def _is_work_intent(user_text: str) -> bool:\n"
         pos = s.find(marker)
         if pos < 0:
-            raise RuntimeError("repair anchor not found: agent forced-tool helper")
-        next_def = s.find("\n\ndef ", pos + len(marker))
-        if next_def < 0:
-            raise RuntimeError("repair anchor not found: end of forced-tool helper")
-        s = s[:next_def] + "\n\n" + affirmation + s[next_def:]
+            raise RuntimeError("repair anchor not found: agent affirmation")
+        s2 = s[:pos] + affirmation + "\n\n" + s[pos:]
+    s = s2
 
     # Never send raw news tool output straight to speech.
     s = s.replace('    "news_brief",\n', '')
@@ -56,8 +65,6 @@ def _is_affirmation(text: str) -> bool:
 
 
 def patch_router() -> None:
-    # The router itself is already committed with deterministic Russian routes.
-    # Keep this function idempotent for older local checkouts.
     p = "src/jarvis/brain/intent_router.py"
     s = read(p)
     marker = "_ROUTES: list[tuple[re.Pattern[str], list[str]]] = [\n"
@@ -76,10 +83,12 @@ def patch_llm() -> None:
     p = "src/jarvis/brain/llm.py"
     s = read(p)
     if '("openrouter:", settings.openrouter_base_url' not in s:
-        anchor = '            ("ollama:", settings.ollama_base_url, "ollama"),'
-        if anchor not in s:
-            anchor = '            ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key'
-        if anchor not in s:
+        anchors = [
+            '            ("ollama:", settings.ollama_base_url, "ollama"),',
+            '            ("ollama:", settings.ollama_base_url, "ollama"),  # Ollama ignores the key',
+        ]
+        anchor = next((a for a in anchors if a in s), None)
+        if anchor is None:
             raise RuntimeError("repair anchor not found: OpenRouter resolver")
         s = s.replace(
             anchor,
