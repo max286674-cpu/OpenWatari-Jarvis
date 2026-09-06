@@ -165,8 +165,8 @@ class WakeWordGate(FrameProcessor):
         """Play acknowledgement completely before STT is opened for the command.
 
         This prevents the old race where Priler was started in a background task while the same
-        microphone frames immediately reached STT. That race could produce partial/garbled turns,
-        duplicate replies and apparent long delays.
+        microphone frames immediately reached STT. If the prerecorded clip is unavailable, the
+        assistant MUST still acknowledge in Russian instead of silently returning.
         """
         self._ack_in_progress = True
         try:
@@ -177,7 +177,11 @@ class WakeWordGate(FrameProcessor):
                     logger.info("Priler wake ack: finished")
                     return
                 except Exception as exc:
-                    logger.error(f"Priler wake ack failed: {exc}")
+                    logger.error(f"Priler wake ack failed; falling back to TTS: {exc}")
+                    try:
+                        await self.push_frame(TTSSpeakFrame("Да, сэр."), FrameDirection.DOWNSTREAM)
+                    except Exception:
+                        logger.exception("Russian fallback wake acknowledgement failed")
                     return
 
             if self._ack_choices:
