@@ -1,9 +1,8 @@
-"""Optional playback bridge for the current Priler/Jarvis reaction voice packs.
+"""Bridge to the current Priler/Jarvis prerecorded reaction packs.
 
-Important: these are prerecorded reaction clips, not a general-purpose TTS model. We keep the
-assets out of this repository and fetch them on first use from the upstream Priler repository.
-That lets OpenWatari use the exact current Jarvis reaction recordings while keeping arbitrary
-LLM replies on the normal TTS path.
+The upstream project defines the available reaction clips in ``voice.toml``.  We mirror that
+metadata at runtime instead of guessing filenames/counts, and download only the selected clips.
+These are prerecorded reactions, not a general-purpose TTS model.
 """
 
 from __future__ import annotations
@@ -14,15 +13,17 @@ import random
 import threading
 import urllib.request
 from pathlib import Path
+from typing import Any
+import tomllib
 
 from loguru import logger
 
 _REPO = "https://raw.githubusercontent.com/Priler/jarvis/master/resources/sound/voices"
 _CACHE = Path(__file__).resolve().parents[3] / ".priler-voices"
 _LOCK = threading.Lock()
-
 _ALLOWED_VOICES = {"jarvis-howdy", "jarvis-og", "jarvis-remaster"}
 _ALLOWED_LANGS = {"ru", "ua", "en"}
+_METADATA_NAME = "voice.toml"
 
 
 def enabled() -> bool:
@@ -42,18 +43,43 @@ def language() -> str:
 
 
 def _path(reaction: str) -> Path:
-    if not reaction or "/" in reaction or "\\" in reaction or not reaction.endswith(".mp3"):
+    if not reaction or "/" in reaction or "\\" in reaction or reaction.startswith("."):
         raise ValueError(f"invalid Priler reaction name: {reaction!r}")
     return _CACHE / voice() / language() / reaction
 
 
-def _download(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{_REPO}/{voice()}/{language()}/{path.name}"
-    tmp = path.with_suffix(".tmp")
-    logger.info(f"Priler voice: downloading {url}")
-    urllib.request.urlretrieve(url, tmp)
-    tmp.replace(path)
+def _download_bytes(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_name(destination.name + ".tmp")
+    logger.info("Priler voice: downloading {}", url)
+    try:
+        urllib.request.urlretrieve(url, tmp)
+        tmp.replace(destination)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _metadata_path() -> Path:
+    return _CACHE / voice() / _METADATA_NAME
+
+
+def _load_metadata() -> dict[str, Any]:
+    path = _metadata_path()
+    if not path.exists() or path.stat().st_size == 0:
+        _download_bytes(f"{_REPO}/{voice()}/{_METADATA_NAME}", path)
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def available_reactions(category: str, lang: str | None = None) -> list[str]:
+    """Return the exact clip names declared by the selected upstream voice pack."""
+    lang = (lang or language()).lower()
+    reactions = _load_metadata().get("reactions", {}).get(lang, {})
+    names = reactions.get(category, [])
+    if not isinstance(names, list):
+        return []
+    return [f"{name}.mp3" for name in names if isinstance(name, str) and name]
 
 
 def ensure_cached(reaction: str) -> Path:
@@ -62,14 +88,22 @@ def ensure_cached(reaction: str) -> Path:
         return path
     with _LOCK:
         if not path.exists() or path.stat().st_size == 0:
-            _download(path)
+            url = f"{_REPO}/{voice()}/{language()}/{path.name}"
+            _download_bytes(url, path)
     return path
 
 
+def random_reaction(category: str = "reply") -> str:
+    choices = available_reactions(category)
+    if not choices:
+        raise RuntimeError(
+            f"Priler voice pack '{voice}' has no '{category}' reaction for '{language()}'"
+        )
+    return random.choice(choices)
+
+
 def random_reply() -> str:
-    # Current remaster/howdy/og packs expose reply1..reply6 depending on the selected voice.
-    maximum = 6 if voice() == "jarvis-remaster" else 3
-    return f"reply{random.randint(1, maximum)}.mp3"
+    return random_reaction("reply")
 
 
 def play_blocking(reaction: str) -> None:
@@ -95,5 +129,9 @@ async def play(reaction: str) -> None:
     await asyncio.to_thread(play_blocking, reaction)
 
 
+async def play_random(category: str = "reply") -> None:
+    await play(random_reaction(category))
+
+
 async def play_random_reply() -> None:
-    await play(random_reply())
+    await play_random("reply")
