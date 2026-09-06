@@ -4,9 +4,6 @@ On each finished transcript it runs Jarvis's own agent loop (personality + memor
 and speaks the reply. Runs the brain IN-PROCESS on the edge for now; the same `JarvisAgent`
 will later sit behind the edge<->brain WebSocket (`shared/protocol.py`) when the 24/7 VPS
 brain service lands (Phase 4) — the pipeline contract here doesn't change.
-
-Tool progress (e.g. consulting the fleet) is spoken as a short filler so Jarvis never goes
-silent during a longer turn.
 """
 
 from __future__ import annotations
@@ -40,8 +37,6 @@ class JarvisBrain(FrameProcessor):
         self._turn_task: asyncio.Task | None = None
 
     async def warmup(self) -> None:
-        # Proven voice-assistant pattern: cold-start the brain before the first real utterance.
-        # This keeps model loading out of the user's first conversational turn.
         await self._agent.warmup()
         self._start_scheduler()
 
@@ -53,7 +48,6 @@ class JarvisBrain(FrameProcessor):
             loop = asyncio.get_running_loop()
 
             def speak(message: str) -> None:
-                # Keep all assistant speech in the configured reply language.
                 loop.create_task(self.push_frame(TTSSpeakFrame(f"Напоминание, сэр: {message}")))
 
             SCHEDULER.start(on_speak=speak)
@@ -63,7 +57,6 @@ class JarvisBrain(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
-        # Barge-in: abort the in-flight turn so Jarvis stops talking and listens.
         if isinstance(frame, InterruptionFrame):
             if self._turn_task and not self._turn_task.done():
                 logger.info("brain: interrupted — cancelling current turn")
@@ -76,7 +69,7 @@ class JarvisBrain(FrameProcessor):
             text = (getattr(frame, "text", "") or "").strip()
             if text:
                 await self._start_or_supersede_turn(text)
-            return  # consume the transcription
+            return
 
         await self.push_frame(frame, direction)
 
@@ -91,8 +84,8 @@ class JarvisBrain(FrameProcessor):
                 return
             logger.info(f"heard while busy: {text!r} — superseding current task")
             self._turn_task.cancel()
-            # Never send framework control text in English. The assistant is configured to reply in Russian.
-            await self.push_frame(TTSSpeakFrame("Переключаюсь, сэр."))
+            # Do not speak a bridge-level filler. The Priler wake acknowledgement is the
+            # acknowledgement layer; arbitrary bridge filler only creates duplicate speech.
         self._turn_task = asyncio.create_task(self._handle(text))
 
     async def _handle(self, text: str) -> None:
@@ -100,12 +93,11 @@ class JarvisBrain(FrameProcessor):
         try:
             logger.info(f"heard: {text!r}")
 
-            def progress(note: str) -> None:
-                # Spoken filler so a longer (e.g. fleet) turn isn't dead air.
-                asyncio.create_task(self.push_frame(TTSSpeakFrame(note)))
+            # Progress callbacks are intentionally silent. Tool execution should not produce
+            # English framework chatter; the agent's final Russian sentence is the spoken result.
+            def progress(_note: str) -> None:
+                return None
 
-            # Stream sentence-by-sentence so Watari starts speaking the first sentence while the
-            # rest is still being generated (instead of waiting for the whole reply, then talking).
             full: list[str] = []
             async for sentence in self._agent.respond_stream(text, on_progress=progress):
                 if sentence:
