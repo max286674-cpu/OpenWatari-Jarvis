@@ -1,6 +1,6 @@
 """Bridge to the current Priler/Jarvis prerecorded reaction packs.
 
-The upstream project defines the available reaction clips in ``voice.toml``.  We mirror that
+The upstream project defines the available reaction clips in ``voice.toml``. We mirror that
 metadata at runtime instead of guessing filenames/counts, and download only the selected clips.
 These are prerecorded reactions, not a general-purpose TTS model.
 """
@@ -73,7 +73,7 @@ def _load_metadata() -> dict[str, Any]:
 
 
 def available_reactions(category: str, lang: str | None = None) -> list[str]:
-    """Return the exact clip names declared by the selected upstream voice pack."""
+    """Return exact clip names declared by the selected upstream voice pack."""
     lang = (lang or language()).lower()
     reactions = _load_metadata().get("reactions", {}).get(lang, {})
     names = reactions.get(category, [])
@@ -97,7 +97,7 @@ def random_reaction(category: str = "reply") -> str:
     choices = available_reactions(category)
     if not choices:
         raise RuntimeError(
-            f"Priler voice pack '{voice}' has no '{category}' reaction for '{language()}'"
+            f"Priler voice pack '{voice()}' has no '{category}' reaction for '{language()}'"
         )
     return random.choice(choices)
 
