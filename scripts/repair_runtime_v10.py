@@ -17,38 +17,35 @@ def patch_agent() -> None:
     affirmation = '''# Confirmation is intentionally deterministic: a Russian "да" must execute the
 # exact pending action rather than starting another LLM turn.
 _AFFIRM_RE = re.compile(
-    r"^\\s*(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
+    r"^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|please do|please go ahead|confirm|"
     r"confirmed|affirmative|sounds good|go for it|proceed|send it|do that|that's right|correct|fine|"
     r"absolutely|yes please|go|right|да|ага|угу|ок|окей|хорошо|конечно|подтверждаю|подтверждено|"
     r"подтверждай|разрешаю|разрешено|делай|делайте|выполняй|выполняйте|выполни|выполнить|"
     r"запускай|запускайте|устанавливай|устанавливайте|установи|установить|продолжай|продолжайте|"
-    r"можно|добро|верно|точно|давай|давай делай)\\s*[.!?]*\\s*$",
+    r"можно|добро|верно|точно|давай|давай делай)[\\s,.!?;:]*$",
     re.IGNORECASE,
 )
 
 def _is_affirmation(text: str) -> bool:
-    return bool(_AFFIRM_RE.fullmatch((text or "").strip()))'''
+    t = re.sub(r"[\\s,.!?;:]+", " ", (text or "").strip().lower()).strip()
+    return bool(_AFFIRM_RE.fullmatch(t))'''
 
-    # Replace the existing confirmation block safely. Callable replacement prevents
-    # backslashes such as \s in the replacement text from being interpreted by re.sub.
+    # Replace BOTH the current repaired block and the original legacy English-only block.
+    # Callable replacement is mandatory because the replacement itself contains regex backslashes.
     block = re.compile(
-        r"(?ms)^# Confirmation is intentionally deterministic:.*?^def _is_affirmation\(text: str\) -> bool:\n    return bool\(_AFFIRM_RE\.fullmatch\(.*?\)\)"
+        r"(?ms)^# (?:A short affirmation that grants a pending confirmation|Confirmation is intentionally deterministic):.*?"
+        r"^def _is_affirmation\(text: str\) -> bool:\n    return .*?(?=\n\n# Pure conversational turns|\n\ndef _is_pure_chat|\Z)"
     )
     s2, n = block.subn(lambda _m: affirmation, s, count=1)
     if n == 0:
-        marker = 'def _wants_forced_tool(user_text: str):\n'
-        pos = s.find(marker)
-        if pos < 0:
-            marker = 'def _wants_forced_tool(user_text: str) -> bool:\n'
-            pos = s.find(marker)
-        if pos < 0:
-            raise RuntimeError("repair anchor not found: agent forced-tool helper")
-        next_def = s.find("\n\ndef ", pos + len(marker))
-        if next_def < 0:
-            raise RuntimeError("repair anchor not found: end of forced-tool helper")
-        s2 = s[:next_def] + "\n\n" + affirmation + s[next_def:]
-    s = s2
-    write(p, s)
+        # Last-resort replacement of any _AFFIRM_RE + helper block, regardless of its comment.
+        block2 = re.compile(
+            r"(?ms)^_AFFIRM_RE = re\.compile\(.*?^def _is_affirmation\(text: str\) -> bool:\n    return .*?(?=\n\n#|\n\ndef )"
+        )
+        s2, n = block2.subn(lambda _m: affirmation + "\n\n", s, count=1)
+    if n == 0:
+        raise RuntimeError("repair anchor not found: affirmation helper")
+    write(p, s2)
 
 def patch_router() -> None:
     p = "src/jarvis/brain/intent_router.py"
