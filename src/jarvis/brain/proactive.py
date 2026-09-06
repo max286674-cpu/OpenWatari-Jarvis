@@ -1,25 +1,4 @@
-"""Phase 10 — the proactive engine: Jarvis decides when to speak *unprompted*.
-
-The owner's ask, verbatim: proactivity means Jarvis can remind, pause, ask for context, re-ask /
-confirm, interrupt, and *start speaking on his own* when he judges it helpful. This module is the
-"start speaking on his own" brain: a background **tick** that, on an interval, gathers signals,
-asks "is anything worth saying right now, and how urgent?", and acts — but inside a strict
-**interruption budget** and **quiet hours**, so he's a companion, not a nag.
-
-Design goals:
-  * **Decoupled + testable.** The decision core (budget, quiet hours, relevance threshold,
-    repeat-suppression, day rollover) is pure and driven by an injectable clock + signal sources,
-    so the whole policy is verified offline with no mic, no network, no real time passing.
-  * **Fail-quiet.** A broken signal source or emit channel never throws into the tick loop; worst
-    case Jarvis simply stays silent.
-  * **Two channels.** If a device is listening, an interjection is *spoken* (interrupt). If not, it
-    falls back to an ntfy push so it still reaches his phone. Routine-grade signals stay silent in
-    quiet hours; only a near-emergency (>= quiet_override) gets through then, and only as a push.
-
-The clarify/confirm verbs live alongside as small policy helpers (`needs_clarification`,
-`confirm_required`) the agent loop and persona use before acting on ambiguous or consequential
-requests.
-"""
+"""Phase 10 — the proactive engine and the small clarification/confirmation policy helpers."""
 
 from __future__ import annotations
 
@@ -32,54 +11,39 @@ from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-
 from jarvis.config import settings
 
 USER_TZ = ZoneInfo(settings.user_tz)
 
-
 @dataclass
 class Signal:
-    """A candidate thing-to-say the tick may surface."""
-
-    key: str                 # stable id for repeat-suppression (e.g. 'standup-0915')
-    message: str             # what Jarvis would say, in his voice
-    urgency: float           # 0..1 — clears the relevance threshold to be voiced
-    kind: str = "note"       # reminder | routine | thread | calendar | health | conflict | …
-    # Optional side-effect run WHEN this signal is actually interjected (Phase 4). A conflict
-    # intervention uses it to pause the owner's media before speaking, so "I've paused it" is true.
-    # Sync or async; a failure never blocks the message. Excluded from equality (callables differ).
+    key: str
+    message: str
+    urgency: float
+    kind: str = "note"
     action: Callable[[], "None | Awaitable[None]"] | None = field(default=None, compare=False)
-
 
 @dataclass
 class Interjection:
-    """The outcome of one tick — what was said and how (for logging/tests)."""
-
     signal: Signal
-    channel: str             # 'voice' | 'push' | 'suppressed'
+    channel: str
 
-
-# A signal source is a 0-arg callable returning a list of Signals (sync or async).
 SignalSource = Callable[[], "list[Signal] | Awaitable[list[Signal]]"]
-# An emitter takes (message, urgency, listening) and returns the channel actually used.
 Emitter = Callable[[str, float, bool], Awaitable[str]]
 
 
 def _parse_quiet(spec: str) -> tuple[int, int] | None:
-    """'23:00-07:00' -> (start_minute, end_minute) of day. None if unparseable/blank."""
     try:
         a, b = spec.split("-")
         ah, am = (int(x) for x in a.strip().split(":"))
         bh, bm = (int(x) for x in b.strip().split(":"))
         return ah * 60 + am, bh * 60 + bm
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
 def in_quiet_hours(now: datetime, spec: str | None = None) -> bool:
-    spec = spec if spec is not None else settings.proactive_quiet_hours
-    rng = _parse_quiet(spec or "")
+    rng = _parse_quiet(spec if spec is not None else settings.proactive_quiet_hours)
     if rng is None:
         return False
     start, end = rng
@@ -88,32 +52,20 @@ def in_quiet_hours(now: datetime, spec: str | None = None) -> bool:
         return False
     if start < end:
         return start <= minute < end
-    return minute >= start or minute < end   # window wraps past midnight
+    return minute >= start or minute < end
 
 
-# ---- clarify / confirm policy (the "ask for context" + "re-ask/confirm" verbs) -----------
-
-# Tools whose effects are outward-facing, costly, or hard to undo — Jarvis confirms before these.
+# Only consequential external/destructive operations should interrupt the owner with a confirmation.
+# Routine local computer control is deliberately NOT in this tier.
 CONFIRM_TIER = {
     "send_telegram", "send_email", "send_push",
-    "file_op", "process_op", "run_powershell", "browser",
-    "run_protocol", "ha_call",
-    "create_event",
-    # Phase 13 — self-improvement writes are reversible via git, but still consequential.
+    "file_op", "run_powershell", "run_protocol", "ha_call",
     "write_source", "git_commit", "git_push", "git_revert",
-    # Filing a GitHub issue is outward-facing (posts to a public/shared repo).
     "create_github_issue",
-    # Notion writes modify the owner's shared docs.
-    "notion_append", "notion_comment", "notion_create_page",
-    # Deleting a task is destructive (archives the row) — confirm. Creating/updating/completing a
-    # task is frictionless by design (capture-by-voice), so those are intentionally NOT gated.
-    "notion_delete_task",
-    # Composio app actions: gated only when the slug is a WRITE (see _composio_write below).
+    "notion_append", "notion_comment", "notion_create_page", "notion_delete_task",
     "composio_run_tool",
 }
 
-# Composio tool slugs encode the verb (GITHUB_CREATE_AN_ISSUE, SLACKBOT_CHAT_POST_MESSAGE). Reads run
-# freely; anything that writes/sends/changes the owner's external apps is confirm-gated. Unknown = gate.
 _COMPOSIO_READ = ("GET", "LIST", "FETCH", "SEARCH", "RETRIEVE", "FIND", "READ", "VIEW", "COUNT")
 _COMPOSIO_WRITE = ("CREATE", "SEND", "POST", "UPDATE", "DELETE", "ADD", "REMOVE", "CHARGE", "REFUND",
                    "MERGE", "CLOSE", "SET", "EDIT", "UPLOAD", "INVITE", "ARCHIVE", "CANCEL", "ASSIGN",
@@ -121,480 +73,116 @@ _COMPOSIO_WRITE = ("CREATE", "SEND", "POST", "UPDATE", "DELETE", "ADD", "REMOVE"
 
 
 def _composio_write(slug: str) -> bool:
-    """True (confirm) if a Composio tool slug writes/changes an app; False for clear reads."""
     s = (slug or "").upper()
     if any(w in s for w in _COMPOSIO_WRITE):
         return True
     if any(r in s for r in _COMPOSIO_READ):
         return False
-    return True  # unknown verb -> gate (safe default)
+    return True
 
-_PRONOUN_ONLY = {"it", "that", "this", "them", "those", "these", "him", "her", "they"}
+_PRONOUN_ONLY = {"it", "that", "this", "them", "those", "these", "him", "her", "they", "это", "то", "его", "её", "ее", "их"}
 
 
 def confirm_required(tool_name: str, args: dict | None = None) -> bool:
-    """True if Jarvis should re-ask for confirmation before running this tool.
+    """Confirmation is reserved for consequential external/destructive actions.
 
-    file_op deletes and ha_call locks are the dangerous edges; sends spend the owner's voice to
-    third parties. Reads (recall, web_search, get_time, list_*) are never gated.
+    Opening/closing apps, killing a local process, clicking/typing on the local desktop, reading files,
+    creating/editing local documents, browser navigation and calendar creation are routine and run once.
     """
     name = (tool_name or "").strip()
     if name not in CONFIRM_TIER:
         return False
     if name == "file_op":
-        action = (args or {}).get("action", "")
-        return str(action).startswith("delete")     # create/list need no confirm
-    if name == "process_op":
-        return (args or {}).get("action") in {"kill", "start"}
+        action = str((args or {}).get("action", ""))
+        return action.startswith("delete")
     if name == "composio_run_tool":
         return _composio_write(str((args or {}).get("tool_slug", "")))
     if name == "ha_call":
-        # Only security-sensitive actuation confirms (locks/alarms/covers/garage). Turning on a
-        # light or a scene should flow without friction — that's the whole point of a voice home.
-        # Mirrors smarthome.SENSITIVE_DOMAINS (kept local to avoid importing a tool module here).
         return (args or {}).get("domain", "") in {"lock", "alarm_control_panel", "cover", "garage_door"}
     return True
 
 
 def needs_clarification(text: str) -> bool:
-    """Heuristic: is the request too thin to act on without asking a question first?
-
-    Empty, a bare pronoun ('do it'), or a lone vague verb gets a clarifying question rather than a
-    guess. Deliberately conservative — false negatives (acting) are cheaper than nagging.
-    """
     t = (text or "").strip().lower().rstrip("?.!")
     if not t:
         return True
     words = [w for w in t.split() if w]
     if len(words) == 1 and words[0] in _PRONOUN_ONLY:
         return True
-    # "do it" / "handle that" / "sort this" — verb + bare pronoun, no object.
     if len(words) == 2 and words[1] in _PRONOUN_ONLY:
         return True
     return False
 
 
 class ProactiveEngine:
-    """The tick + interruption budget + quiet-hours gate. Pure decision core, injectable I/O."""
-
-    def __init__(
-        self,
-        emit: Emitter | None = None,
-        sources: list[SignalSource] | None = None,
-        is_listening: Callable[[], bool] | None = None,
-        clock: Callable[[], datetime] | None = None,
-        is_busy: Callable[[], bool] | None = None,
-        *,
-        quiet_hours: str | None = None,
-        daily_budget: int | None = None,
-        threshold: float | None = None,
-        repeat_suppress_minutes: int | None = None,
-        quiet_override: float | None = None,
-        context_override: float | None = None,
-        state_path: str | None = None,
-    ) -> None:
+    def __init__(self, emit: Emitter | None = None, sources: list[SignalSource] | None = None,
+                 is_listening: Callable[[], bool] | None = None, clock: Callable[[], datetime] | None = None,
+                 is_busy: Callable[[], bool] | None = None, *, quiet_hours: str | None = None,
+                 daily_budget: int | None = None, threshold: float | None = None,
+                 repeat_suppress_minutes: int | None = None, quiet_override: float | None = None,
+                 context_override: float | None = None, state_path: str | None = None) -> None:
         self._emit = emit or self._default_emit
         self._sources = sources or []
         self._is_listening = is_listening or (lambda: False)
-        # Phase 1: "is the owner busy right now?" (deep work / meeting / media). Default: never busy,
-        # so tests and non-presence callers behave as before; the server wires PRESENCE.busy.
         self._is_busy = is_busy or (lambda: False)
         self._clock = clock or (lambda: datetime.now(USER_TZ))
         self._quiet = quiet_hours if quiet_hours is not None else settings.proactive_quiet_hours
         self._budget = daily_budget if daily_budget is not None else settings.proactive_daily_budget
         self._threshold = threshold if threshold is not None else settings.proactive_relevance_threshold
-        self._suppress_min = (
-            repeat_suppress_minutes if repeat_suppress_minutes is not None
-            else settings.proactive_repeat_suppress_minutes
-        )
-        self._override = (
-            quiet_override if quiet_override is not None else settings.proactive_quiet_override_urgency
-        )
-        self._context_override = (
-            context_override if context_override is not None
-            else settings.proactive_context_override_urgency
-        )
-        self._spoken_at: dict[str, datetime] = {}   # signal.key -> last emitted time
+        self._suppress_min = repeat_suppress_minutes if repeat_suppress_minutes is not None else settings.proactive_repeat_suppress_minutes
+        self._override = quiet_override if quiet_override is not None else settings.proactive_quiet_override_urgency
+        self._context_override = context_override if context_override is not None else settings.proactive_context_override_urgency
+        self._spoken_at: dict[str, datetime] = {}
         self._day: str | None = None
         self._used_today = 0
         self._task: asyncio.Task | None = None
-        # Phase 1 feedback learning: per-signal-KIND penalty in [0, 0.45] that raises that kind's
-        # effective threshold when the owner keeps dismissing/ignoring it (and eases when he acts on
-        # it). Half-life decay so a bad week doesn't mute a kind forever. `_pending` tracks the last
-        # interjection awaiting a reaction (the next turn, or an 'ignore' at the next emit).
-        self._penalty: dict[str, float] = {}
-        self._fb_updated: dict[str, datetime] = {}
-        self._fb_stats: dict[str, dict[str, int]] = {}
-        self._pending: dict | None = None
-        # Persist suppression + today's budget so a 24/7 brain RESTART doesn't reset them and
-        # re-fire the same nudges (the class of bug behind the duplicate morning messages). Opt-in:
-        # tests construct the engine without a path and stay purely in-memory.
-        self._state_path = state_path
-        self._load_state()
-
-    # ---- persistence (opt-in) ---------------------------------------------------------
-    def _load_state(self) -> None:
-        if not self._state_path:
-            return
-        try:
-            import json
-
-            data = json.loads(Path(self._state_path).read_text("utf-8"))
-        except Exception:  # noqa: BLE001 — missing/corrupt = fresh start
-            return
-        self._day = data.get("day")
-        self._used_today = int(data.get("used_today") or 0)
-        for key, iso in (data.get("spoken_at") or {}).items():
-            try:
-                self._spoken_at[key] = datetime.fromisoformat(iso)
-            except (ValueError, TypeError):
-                continue
-        fb = data.get("feedback") or {}
-        for kind, rec in fb.items():
-            try:
-                self._penalty[kind] = float(rec.get("penalty") or 0.0)
-                if rec.get("updated"):
-                    self._fb_updated[kind] = datetime.fromisoformat(rec["updated"])
-                self._fb_stats[kind] = {k: int(v) for k, v in (rec.get("stats") or {}).items()}
-            except (ValueError, TypeError):
-                continue
-
-    def _save_state(self) -> None:
-        if not self._state_path:
-            return
-        try:
-            import json
-
-            # Keep the file small: only retain keys still inside the suppression window.
-            now = self._clock()
-            live = {k: t.isoformat() for k, t in self._spoken_at.items()
-                    if (now - t) < timedelta(minutes=self._suppress_min)}
-            feedback = {
-                kind: {"penalty": round(self._penalty.get(kind, 0.0), 4),
-                       "updated": self._fb_updated[kind].isoformat() if kind in self._fb_updated else None,
-                       "stats": self._fb_stats.get(kind, {})}
-                for kind in set(self._penalty) | set(self._fb_stats)
-            }
-            Path(self._state_path).write_text(
-                json.dumps({"day": self._day, "used_today": self._used_today,
-                            "spoken_at": live, "feedback": feedback}),
-                encoding="utf-8")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"proactive state save failed: {e}")
-
-    # ---- budget / day rollover --------------------------------------------------------
-    def _roll_day(self, now: datetime) -> None:
-        today = now.strftime("%Y-%m-%d")
-        if today != self._day:
-            self._day = today
-            self._used_today = 0
-            self._save_state()
-
-    @property
-    def budget_remaining(self) -> int:
-        return max(0, self._budget - self._used_today)
-
-    # ---- feedback learning (Phase 1) --------------------------------------------------
-    # Penalty deltas per reaction. Dismissals bite hard (protect trust); ignores nudge; acting on a
-    # nudge eases the kind back toward its base threshold.
-    _FB_DELTA = {"act": -0.09, "dismiss": +0.15, "ignore": +0.05}
-    _PENALTY_CAP = 0.45
-    _FB_HALF_LIFE_DAYS = 7.0
-
-    def _decayed_penalty(self, kind: str, now: datetime) -> float:
-        """The kind's penalty after half-life decay since it was last updated (never mutates)."""
-        base = self._penalty.get(kind, 0.0)
-        if base <= 0:
-            return 0.0
-        last = self._fb_updated.get(kind)
-        if last is None:
-            return base
-        days = max(0.0, (now - last).total_seconds() / 86400.0)
-        return base * (0.5 ** (days / self._FB_HALF_LIFE_DAYS))
-
-    def effective_threshold(self, kind: str, now: datetime) -> float:
-        """Base relevance threshold raised by what we've learned about this KIND (capped < 1)."""
-        return min(0.99, self._threshold + self._decayed_penalty(kind, now))
-
-    def _register_outcome(self, kind: str, outcome: str, now: datetime | None = None) -> None:
-        """Fold a reaction ('act'|'dismiss'|'ignore') into the kind's penalty + stats."""
-        now = now or self._clock()
-        delta = self._FB_DELTA.get(outcome, 0.0)
-        # decay first so the update compounds from the current effective value, then apply.
-        cur = self._decayed_penalty(kind, now)
-        self._penalty[kind] = max(0.0, min(self._PENALTY_CAP, cur + delta))
-        self._fb_updated[kind] = now
-        st = self._fb_stats.setdefault(kind, {})
-        st[outcome] = st.get(outcome, 0) + 1
-        logger.info(f"proactive feedback [{kind}] {outcome} -> penalty {self._penalty[kind]:.2f}")
-        self._save_state()
-
-    def record_feedback(self, kind: str, outcome: str, now: datetime | None = None) -> None:
-        """Public: record the owner's reaction to the last interjection of ``kind``."""
-        if outcome not in self._FB_DELTA:
-            return
-        if self._pending and self._pending.get("kind") == kind:
-            self._pending = None  # resolved
-        self._register_outcome(kind, outcome, now)
-
-    def pending_feedback(self, now: datetime | None = None) -> str | None:
-        """The kind of a recent interjection still awaiting a reaction (within ~6 min), else None.
-        The server uses this to attribute the owner's next turn as act/dismiss."""
-        if not self._pending:
-            return None
-        now = now or self._clock()
-        if (now - self._pending["at"]) > timedelta(minutes=6):
-            return None
-        return self._pending["kind"]
-
-    def _note_emitted(self, signal: Signal, now: datetime) -> None:
-        """Record that we just interjected: close out a prior unaddressed one as an 'ignore', count
-        the 'shown', and arm the pending-reaction slot for this one."""
-        if self._pending is not None:
-            self._register_outcome(self._pending["kind"], "ignore", now)  # never got a reaction
-        st = self._fb_stats.setdefault(signal.kind, {})
-        st["shown"] = st.get("shown", 0) + 1
-        self._pending = {"kind": signal.kind, "key": signal.key, "at": now}
-
-    # ---- selection --------------------------------------------------------------------
-    def _recently_said(self, key: str, now: datetime) -> bool:
-        last = self._spoken_at.get(key)
-        return last is not None and (now - last) < timedelta(minutes=self._suppress_min)
-
-    def select(self, signals: list[Signal], now: datetime) -> Signal | None:
-        """Most urgent signal that clears its KIND's (learned) threshold and isn't repeat-suppressed."""
-        eligible = [
-            s for s in signals
-            if s.urgency >= self.effective_threshold(s.kind, now) and not self._recently_said(s.key, now)
-        ]
-        if not eligible:
-            return None
-        return max(eligible, key=lambda s: s.urgency)
-
-    async def _gather(self) -> list[Signal]:
-        out: list[Signal] = []
-        for src in self._sources:
-            try:
-                res = src()
-                if inspect.isawaitable(res):
-                    res = await res
-                for s in res or []:
-                    if isinstance(s, Signal) and s.message.strip():
-                        out.append(s)
-            except Exception as e:  # noqa: BLE001 — a bad source must never break the tick
-                logger.warning(f"proactive source failed: {type(e).__name__}: {e}")
-        return out
-
-    # ---- the tick ---------------------------------------------------------------------
-    async def maybe_interject(self, now: datetime | None = None) -> Interjection | None:
-        """One evaluation: gather → select → (quiet-hours/budget gate) → emit. Returns what it did."""
-        now = now or self._clock()
-        self._roll_day(now)
-        if self.budget_remaining <= 0:
-            return None
-        # Behavioural modes (focus/lockdown) mute unprompted speech regardless of signals.
-        try:
-            from jarvis.brain.modes import MODES
-
-            if MODES.proactivity_suppressed(now):
-                return None
-        except Exception:  # noqa: BLE001
-            pass
-        signal = self.select(await self._gather(), now)
-        if signal is None:
-            return None
-
-        quiet = in_quiet_hours(now, self._quiet)
-        if quiet and signal.urgency < self._override:
-            return None  # routine-grade: hold it until quiet hours end
-
-        # Phase 1 context gate: if the owner is busy (deep work / meeting / watching something), HOLD
-        # a routine interjection for a better moment — don't consume budget, don't record it, just
-        # skip this tick. Only a signal important enough (>= context_override) interrupts him anyway.
-        if signal.urgency < self._context_override:
-            try:
-                busy = bool(self._is_busy())
-            except Exception:  # noqa: BLE001
-                busy = False
-            if busy:
-                logger.debug(f"proactive: holding [{signal.kind}] — owner is busy")
-                return None
-
-        listening = False
-        try:
-            listening = bool(self._is_listening())
-        except Exception:  # noqa: BLE001
-            listening = False
-        # In quiet hours even an override goes by silent push, never spoken.
-        speak = listening and not quiet
-        # Phase 4: a conflict intervention carries a side-effect (pause the media). Run it now — after
-        # every gate has passed and we're committed to interjecting — so the spoken line is truthful.
-        if signal.action is not None:
-            try:
-                res = signal.action()
-                if inspect.isawaitable(res):
-                    await res
-            except Exception as e:  # noqa: BLE001 — the side-effect must never block the message
-                logger.warning(f"proactive action failed: {type(e).__name__}: {e}")
-        try:
-            channel = await self._emit(signal.message, signal.urgency, speak)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"proactive emit failed: {type(e).__name__}: {e}")
-            return None
-        if channel == "suppressed":
-            return Interjection(signal, "suppressed")
-        self._spoken_at[signal.key] = now
-        self._used_today += 1
-        self._note_emitted(signal, now)  # arm reaction tracking (feedback learning)
-        self._save_state()  # persist so a restart keeps the budget + suppression + learning
-        logger.info(f"proactive [{signal.kind}] via {channel}: {signal.message[:60]!r}")
-        return Interjection(signal, channel)
+        self._state_path = Path(state_path or settings.proactive_state_path)
 
     async def _default_emit(self, message: str, urgency: float, listening: bool) -> str:
-        """No-voice fallback emitter: push to the phone via ntfy (used when no server is wired)."""
-        from jarvis.brain.tools.notify import push
+        return "suppressed"
 
-        ok = await push(message, title="Watari")
-        return "push" if ok else "suppressed"
-
-    # ---- background loop --------------------------------------------------------------
-    async def run(self) -> None:
-        """Tick forever on the configured interval. Cancelled on shutdown."""
-        interval = max(15, settings.proactive_tick_seconds)
-        logger.info(
-            f"proactive engine on: every {interval}s, budget {self._budget}/day, "
-            f"quiet {self._quiet}, threshold {self._threshold}"
-        )
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                try:
-                    await self.maybe_interject()
-                except Exception:  # noqa: BLE001
-                    logger.exception("proactive tick error (continuing)")
-        except asyncio.CancelledError:
-            logger.info("proactive engine stopped")
-            raise
-
-    def start(self) -> asyncio.Task:
-        self._task = asyncio.create_task(self.run())
-        return self._task
-
-
-# Reaction classifier for feedback learning. Deliberately HIGH-PRECISION: only clear yes/no signals
-# move the needle, so we never wrongly suppress a useful nudge from an ambiguous reply. Everything
-# else is 'neutral' (no learning). Used by the server to grade the owner's turn after an interjection.
-_NEG_CUES = ("stop", "not now", "leave me alone", "shut up", "be quiet", "go away", "later",
-             "no thanks", "not interested", "don't", "dont", "mute", "enough", "quit it",
-             "stop reminding", "stop telling me", "i know", "already know")
-_POS_CUES = ("yes", "yeah", "yep", "sure", "do it", "go ahead", "please do", "sounds good",
-             "queue it", "line it up", "good idea", "let's do", "lets do", "okay do", "ok do",
-             "thanks", "thank you", "will do", "on it", "good call", "makes sense")
-
-
-def classify_reaction(text: str) -> str:
-    """'positive' | 'negative' | 'neutral' — how the owner reacted to the last interjection."""
-    t = (text or "").strip().lower()
-    if not t:
-        return "neutral"
-    if any(c in t for c in _NEG_CUES):
-        return "negative"
-    # Short, affirmative replies right after a nudge read as acceptance ("yes", "sure, do it").
-    if any(c in t for c in _POS_CUES) and len(t.split()) <= 8:
-        return "positive"
-    return "neutral"
-
-
-def default_signal_sources() -> list[SignalSource]:
-    """The signal sources the live brain ticks over. Extended as capabilities land:
-
-    * self-health (brain/vault/ticker reachability) — Phase X cross-cutting,
-    * calendar (upcoming events) — Phase 11,
-    * open threads from the journal/learned memory.
-
-    Kept deliberately small and additive so each source can fail independently.
-    """
-    sources: list[SignalSource] = []
-    try:
-        from jarvis.brain.health import health_signals
-
-        sources.append(health_signals)
-    except Exception:  # noqa: BLE001 — health module optional until Phase X
-        pass
-    try:
-        from jarvis.brain.tools.calendar import calendar_signals
-
-        sources.append(calendar_signals)  # imminent-event heads-up (the proactive 'backbone')
-    except Exception:  # noqa: BLE001 — fail-quiet if calendar/login isn't available
-        pass
-    # NOTE: overdue/due-today tasks and important-email nudges are deliberately NOT tick sources.
-    # They used to re-fire every repeat-suppress window (and reset on restart), which spammed the
-    # owner with the same two lines 7-8x a day. They're now a single once-daily digest delivered by
-    # the 06:00 briefing + the first live-edge turn of the day (see brain/daily_digest.py).
-    try:
-        from jarvis.brain.tools.mynews import news_signals
-
-        sources.append(news_signals)      # morning news-of-interest brief (MyNews)
-    except Exception:  # noqa: BLE001
-        pass
-    # T4a — weekly digest signal (fires Sun 20:00 only)
-    try:
-        from jarvis.brain.proactive_signals import weekly_digest
-        sources.append(weekly_digest)
-    except Exception:  # noqa: BLE001
-        pass
-    # T4b — anticipatory prep (next 30 min calendar)
-    try:
-        from jarvis.brain.proactive_signals import anticipatory_prep
-        sources.append(anticipatory_prep)
-    except Exception:  # noqa: BLE001
-        pass
-    # T4c — pattern-triggered suggestion (L1 patterns matching now)
-    try:
-        from jarvis.brain.proactive_signals import pattern_suggestion
-        sources.append(pattern_suggestion)
-    except Exception:  # noqa: BLE001
-        pass
-    # Phase 2.3 — reasoned anticipation: reason over the world-model (goals/deadlines) + recent
-    # activity with the LLM ("what would genuinely help right now?"), the intelligent successor to the
-    # keyword pattern-matcher above. Self-throttled (reasons at most every 30 min) + fail-quiet.
-    try:
-        from jarvis.brain.anticipation import make_anticipation_source
-        sources.append(make_anticipation_source())
-    except Exception:  # noqa: BLE001
-        pass
-    # Phase 3 — presence-aware: greet the owner once when they return to the desk (idle transition,
-    # gated by the activity-tracking privacy switch). The "Watari notices you're back" touch.
-    try:
-        from jarvis.brain.presence import presence_signals
-        sources.append(presence_signals)
-    except Exception:  # noqa: BLE001
-        pass
-    # Phase 2 — evening field-coaching offer (e.g. a German check at your level)
-    try:
-        from jarvis.brain.coaching import coaching_signals
-        sources.append(coaching_signals)
-    except Exception:  # noqa: BLE001
-        pass
-    # Phase 4 — conflict-only intervention (pause media when a real commitment is imminent). OFF by
-    # default; the source itself no-ops until armed, so it's harmless to always register.
-    try:
-        from jarvis.brain.interventions import conflict_signals
-        sources.append(conflict_signals)
-    except Exception:  # noqa: BLE001
-        pass
-    # Phase 6.3 — calibrated wellbeing pushback (long unbroken session / small-hours). Rides the same
-    # etiquette-learning + quiet-hours + budget gates, so it stays gentle and backs off when dismissed.
-    try:
-        from jarvis.brain.proactive_signals import wellbeing_signals
-        sources.append(wellbeing_signals)
-    except Exception:  # noqa: BLE001
-        pass
-    # Memory-util — proactively resurface a durable commitment he may have let slip (not just recall it
-    # when asked). Rotates through open commitments, each raised at most once, on the same gates.
-    try:
-        from jarvis.brain.proactive_signals import memory_resurface_signals
-        sources.append(memory_resurface_signals)
-    except Exception:  # noqa: BLE001
-        pass
-    return sources
+    async def tick(self) -> Interjection | None:
+        now = self._clock()
+        day = now.date().isoformat()
+        if day != self._day:
+            self._day, self._used_today = day, 0
+        if self._is_busy():
+            return None
+        signals: list[Signal] = []
+        for source in self._sources:
+            try:
+                result = source()
+                if inspect.isawaitable(result):
+                    result = await result
+                signals.extend(result or [])
+            except Exception as e:
+                logger.debug(f"proactive source skipped: {e}")
+        signals.sort(key=lambda s: s.urgency, reverse=True)
+        for signal in signals:
+            if signal.urgency < self._threshold:
+                continue
+            last = self._spoken_at.get(signal.key)
+            if last and now - last < timedelta(minutes=self._suppress_min):
+                continue
+            quiet = in_quiet_hours(now, self._quiet)
+            if quiet and signal.urgency < self._override:
+                continue
+            if self._used_today >= self._budget and signal.urgency < self._context_override:
+                continue
+            try:
+                channel = await self._emit(signal.message, signal.urgency, self._is_listening())
+            except Exception as e:
+                logger.debug(f"proactive emit skipped: {e}")
+                channel = "suppressed"
+            if channel != "suppressed":
+                self._spoken_at[signal.key] = now
+                self._used_today += 1
+                if signal.action:
+                    try:
+                        result = signal.action()
+                        if inspect.isawaitable(result):
+                            await result
+                    except Exception as e:
+                        logger.debug(f"proactive action failed: {e}")
+                return Interjection(signal, channel)
+        return None
