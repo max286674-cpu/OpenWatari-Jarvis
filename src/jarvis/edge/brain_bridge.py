@@ -1,9 +1,8 @@
 """JarvisBrain — the real brain in the voice pipeline (replaces EchoBrain in Phase 2).
 
-On each finished transcript it runs Jarvis's own agent loop (personality + memory + tools)
-and speaks the reply. Runs the brain IN-PROCESS on the edge for now; the same `JarvisAgent`
-will later sit behind the edge<->brain WebSocket (`shared/protocol.py`) when the 24/7 VPS
-brain service lands (Phase 4) — the pipeline contract here doesn't change.
+On each finished transcript it runs Jarvis's own agent loop (personality + memory + tools) and
+speaks the reply. Unambiguous local computer commands are handled deterministically before the
+LLM so a weak/fallback model can never claim it opened or closed an application without doing it.
 """
 
 from __future__ import annotations
@@ -12,15 +11,11 @@ import asyncio
 import re
 
 from loguru import logger
-from pipecat.frames.frames import (
-    Frame,
-    InterruptionFrame,
-    TranscriptionFrame,
-    TTSSpeakFrame,
-)
+from pipecat.frames.frames import Frame, InterruptionFrame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from jarvis.brain.agent import JarvisAgent
+from jarvis.brain.computer_direct import direct_computer_command
 
 _CANCEL_RE = re.compile(
     r"\b(stop|cancel|abort|abandon|never mind|nevermind|forget it|leave it|drop it|"
@@ -84,8 +79,6 @@ class JarvisBrain(FrameProcessor):
                 return
             logger.info(f"heard while busy: {text!r} — superseding current task")
             self._turn_task.cancel()
-            # Do not speak a bridge-level filler. The Priler wake acknowledgement is the
-            # acknowledgement layer; arbitrary bridge filler only creates duplicate speech.
         self._turn_task = asyncio.create_task(self._handle(text))
 
     async def _handle(self, text: str) -> None:
@@ -93,8 +86,16 @@ class JarvisBrain(FrameProcessor):
         try:
             logger.info(f"heard: {text!r}")
 
-            # Progress callbacks are intentionally silent. Tool execution should not produce
-            # English framework chatter; the agent's final Russian sentence is the spoken result.
+            # Deterministic local computer path. This deliberately runs before JarvisAgent/LLM for
+            # clear Russian open/close commands. It returns None for everything else.
+            direct = direct_computer_command(text)
+            if direct is not None:
+                logger.info(f"DIRECT COMPUTER: {text!r} -> {direct!r}")
+                await self.push_frame(TTSSpeakFrame(direct))
+                return
+
+            # Progress callbacks are intentionally silent. Tool execution should not produce English
+            # framework chatter; the agent's final Russian sentence is the spoken result.
             def progress(_note: str) -> None:
                 return None
 
